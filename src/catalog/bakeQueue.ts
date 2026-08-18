@@ -31,10 +31,10 @@ export async function bakeTicketsInBackground(
   }
 
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const chunkSize = stage.sheetCapacity;
   let done = 0;
 
-  for (let i = 0; i < pending.length; i += chunkSize) {
+  for (let i = 0; i < pending.length; ) {
+    const chunkSize = Math.max(1, stage.sheetCapacity);
     const chunk = pending.slice(i, i + chunkSize);
     try {
       const bitmaps = await stage.captureSheet(chunk, dpr);
@@ -54,6 +54,7 @@ export async function bakeTicketsInBackground(
       done += chunk.length;
       onProgress?.({ done, total });
     }
+    i += chunk.length;
     // Free the main thread between sheets (SnapDOM is the heavy part).
     await yieldToMain();
   }

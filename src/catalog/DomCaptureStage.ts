@@ -3,10 +3,12 @@ import { captureSheetToBitmaps } from './captureDomTicket';
 import { attachTicketCard, TicketCard } from './ticketCardElement';
 import type { Ticket } from './tickets';
 
-/** Tickets per SnapDOM call. Smaller sheets = shorter main-thread spikes. */
+/** Packed sheet is always 5 columns (same as the catalog). Rows grow with capacity. */
 export const SHEET_COLS = 5;
-export const SHEET_ROWS = 5;
-export const SHEET_CAPACITY = SHEET_COLS * SHEET_ROWS; // 25
+/** Upper bound for the toolbar — pool grows to the selected size, not this eagerly. */
+export const MAX_SHEET_CAPACITY = 100;
+export const SHEET_SIZE_OPTIONS = [1, 2, 5, 10, 15, 25, 50, 100] as const;
+export const DEFAULT_SHEET_CAPACITY = 25;
 
 /**
  * Offscreen packed sheet: bind many CSS tickets → one SnapDOM → crop bitmaps.
@@ -17,6 +19,8 @@ export class DomCaptureStage {
   private cards: TicketCard[] = [];
   private ready = false;
   private chain: Promise<unknown> = Promise.resolve();
+  /** Tickets bound into the next SnapDOM call. */
+  private capacity = DEFAULT_SHEET_CAPACITY;
 
   constructor(host: HTMLElement) {
     this.host = host;
@@ -30,7 +34,7 @@ export class DomCaptureStage {
     s.left = '-10000px';
     s.top = '0';
     s.width = `${SHEET_COLS * CARD_WIDTH}px`;
-    s.height = `${SHEET_ROWS * CARD_HEIGHT}px`;
+    s.height = `${CARD_HEIGHT}px`;
     s.overflow = 'hidden';
     s.pointerEvents = 'none';
     s.opacity = '1';
@@ -41,21 +45,8 @@ export class DomCaptureStage {
     sheet.className = 'captureSheet';
     sheet.style.position = 'relative';
     sheet.style.width = `${SHEET_COLS * CARD_WIDTH}px`;
-    sheet.style.height = `${SHEET_ROWS * CARD_HEIGHT}px`;
+    sheet.style.height = `${CARD_HEIGHT}px`;
     sheet.style.background = 'transparent';
-
-    for (let i = 0; i < SHEET_CAPACITY; i++) {
-      const card = attachTicketCard(new TicketCard());
-      const col = i % SHEET_COLS;
-      const row = Math.floor(i / SHEET_COLS);
-      card.dom.style.left = `${col * CARD_WIDTH}px`;
-      card.dom.style.top = `${row * CARD_HEIGHT}px`;
-      card.dom.style.transform = 'none';
-      card.dom.style.filter = 'none';
-      card.hide();
-      sheet.appendChild(card.dom);
-      this.cards.push(card);
-    }
 
     this.host.appendChild(sheet);
     this.sheet = sheet;
@@ -67,7 +58,12 @@ export class DomCaptureStage {
   }
 
   get sheetCapacity(): number {
-    return SHEET_CAPACITY;
+    return this.capacity;
+  }
+
+  /** Takes effect on the next sheet (including mid-bake). */
+  setSheetCapacity(n: number): void {
+    this.capacity = Math.min(MAX_SHEET_CAPACITY, Math.max(1, Math.round(n)));
   }
 
   captureSheet(tickets: readonly Ticket[], dpr = window.devicePixelRatio || 1): Promise<ImageBitmap[]> {
@@ -75,16 +71,22 @@ export class DomCaptureStage {
       if (!this.ready || !this.sheet) throw new Error('DomCaptureStage: not mounted');
       if (tickets.length === 0) return [];
 
-      const n = Math.min(tickets.length, SHEET_CAPACITY);
-      for (let i = 0; i < SHEET_CAPACITY; i++) {
+      const n = Math.min(tickets.length, this.capacity);
+      this.ensureCards(n);
+
+      // SnapDOM clones the whole sheet subtree — only the tickets in this
+      // sheet stay attached. Unused pool cards are detached, not hidden.
+      for (let i = 0; i < this.cards.length; i++) {
         const card = this.cards[i]!;
         if (i < n) {
           card.bind(tickets[i]!);
           card.dom.style.transform = 'none';
           card.dom.style.left = `${(i % SHEET_COLS) * CARD_WIDTH}px`;
           card.dom.style.top = `${Math.floor(i / SHEET_COLS) * CARD_HEIGHT}px`;
-        } else {
+          if (card.dom.parentNode !== this.sheet) this.sheet.appendChild(card.dom);
+        } else if (card.dom.parentNode) {
           card.hide();
+          card.dom.remove();
         }
       }
 
@@ -99,6 +101,19 @@ export class DomCaptureStage {
       const { bitmaps } = await captureSheetToBitmaps(this.sheet, n, cols, dpr);
       return bitmaps;
     });
+  }
+
+  private ensureCards(n: number): void {
+    while (this.cards.length < n) {
+      const i = this.cards.length;
+      const card = attachTicketCard(new TicketCard());
+      card.dom.style.left = `${(i % SHEET_COLS) * CARD_WIDTH}px`;
+      card.dom.style.top = `${Math.floor(i / SHEET_COLS) * CARD_HEIGHT}px`;
+      card.dom.style.transform = 'none';
+      card.dom.style.filter = 'none';
+      card.hide();
+      this.cards.push(card);
+    }
   }
 
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {

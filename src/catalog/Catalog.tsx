@@ -4,7 +4,11 @@ import { bakeTicketsInBackground } from './bakeQueue';
 import { computeCatalogBands } from './bands';
 import { bitmapCacheSize, clearTicketBitmaps, hasTicketBitmap } from './bitmapCache';
 import { CanvasPool } from './CanvasPool';
-import { DomCaptureStage } from './DomCaptureStage';
+import {
+  DEFAULT_SHEET_CAPACITY,
+  DomCaptureStage,
+  SHEET_SIZE_OPTIONS,
+} from './DomCaptureStage';
 import { DomPool } from './DomPool';
 import {
   CANVAS_BAND_CAPACITY,
@@ -41,6 +45,7 @@ export function Catalog() {
   const [bakeTotal, setBakeTotal] = useState(0);
   const [cacheCount, setCacheCount] = useState(0);
   const [bandStats, setBandStats] = useState({ dom: 0, above: 0, below: 0, canvas: 0 });
+  const [sheetSize, setSheetSize] = useState(DEFAULT_SHEET_CAPACITY);
 
   const slots = useMemo(
     () => buildSlots(tickets, COLUMNS, CARD_WIDTH, CARD_HEIGHT, COLUMN_GAP, ROW_GAP),
@@ -118,6 +123,10 @@ export function Catalog() {
     };
   }, [syncBands]);
 
+  useEffect(() => {
+    captureStageRef.current?.setSheetCapacity(sheetSize);
+  }, [sheetSize]);
+
   // Add → grow height → scroll to newest DOM rows.
   useLayoutEffect(() => {
     if (tickets.length === 0) {
@@ -192,7 +201,9 @@ export function Catalog() {
         <h1>Canvas bitmap cache POC</h1>
         <p className="toolbar__hint">
           Click → DOM + scroll now. SnapDOM sheets on main; crops in a worker. Viewport{' '}
-          {CATALOG_VIEWPORT_HEIGHT}px · 1 canvas layer (≤{CANVAS_BAND_CAPACITY} draws).
+          {CATALOG_VIEWPORT_HEIGHT}px · 1 canvas layer (≤{CANVAS_BAND_CAPACITY} draws). Change{' '}
+          <strong>tickets / SnapDOM</strong> to trade hitch length vs bake speed (1 = shortest
+          freeze, 25 = fewest SnapDOM calls).
         </p>
         <div className="toolbar__row">
           <button type="button" onClick={addHundred}>
@@ -201,6 +212,23 @@ export function Catalog() {
           <button type="button" className="btn-ghost" onClick={reset}>
             Reset
           </button>
+          <label className="stat toolbar__sheet">
+            tickets / SnapDOM{' '}
+            <select
+              value={sheetSize}
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                setSheetSize(n);
+                captureStageRef.current?.setSheetCapacity(n);
+              }}
+            >
+              {SHEET_SIZE_OPTIONS.map((n) => (
+                <option key={n} value={n}>
+                  {n}
+                </option>
+              ))}
+            </select>
+          </label>
           <span className="stat">
             tickets <strong>{tickets.length}</strong>
           </span>

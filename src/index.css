@@ -89,6 +89,16 @@ button:disabled {
   color: #e8c547;
 }
 
+.toolbar__sheet select {
+  margin-left: 4px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid #2a5550;
+  background: #071c1a;
+  color: #e8f2f0;
+  font: inherit;
+}
+
 .catalog {
   flex: 0 0 auto;
   overflow: auto;
