@@ -1,0 +1,227 @@
+:root {
+  color: #2a1f1f;
+  background: #1a1412;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  line-height: 1.4;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 16px 20px 24px;
+  gap: 12px;
+  color: #e8f2f0;
+}
+
+.toolbar h1 {
+  margin: 0;
+  font-size: 1.25rem;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+.toolbar__hint {
+  margin: 4px 0 10px;
+  color: #8fb3ad;
+  font-size: 0.85rem;
+}
+
+.toolbar__hint code {
+  color: #c8e6e0;
+  font-size: 0.8em;
+}
+
+.toolbar__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+button {
+  appearance: none;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 14px;
+  background: #1fa897;
+  color: #041210;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn-ghost {
+  background: transparent;
+  color: #9ec4bf;
+  border: 1px solid #2a5550;
+}
+
+.stat {
+  font-size: 0.85rem;
+  color: #9ec4bf;
+}
+
+.stat strong {
+  color: #e8f2f0;
+}
+
+.stat.bake {
+  color: #e8c547;
+}
+
+.catalog {
+  flex: 0 0 auto;
+  overflow: auto;
+  border-radius: 12px;
+  border: 1px solid #1a3d38;
+  background: #0a2421;
+  scrollbar-width: thin;
+}
+
+.toolbar__error {
+  margin: 8px 0 0;
+  color: #f0a0a0;
+  font-size: 0.8rem;
+  max-width: 90ch;
+  word-break: break-word;
+}
+
+.catalog__content {
+  position: relative;
+  margin: 12px auto;
+  /* Explicit height from JS grows as tickets are added */
+}
+
+.catalog__dom,
+.catalog__canvas {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.catalog__canvas {
+  z-index: 1;
+  /* Always visible — paints overscan corridors under the DOM viewport. */
+  opacity: 1;
+}
+
+.catalog__dom {
+  z-index: 2;
+  opacity: 1;
+}
+
+/* Single underlay canvas — drop-shadow on the layer (not 400 nodes). */
+.ticketCanvasLayer {
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.42));
+}
+
+/* —— moneyball-style desktopMedium ticket (slim div tree) —— */
+.ticketCard {
+  position: absolute;
+  display: block;
+  top: 0;
+  left: 0;
+  height: 43px;
+  width: 197px;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  box-sizing: border-box;
+  overflow: visible;
+  background: transparent;
+  -webkit-font-smoothing: antialiased;
+  contain: layout style;
+  transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  pointer-events: none;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.42));
+}
+
+.ticketCard__scaler {
+  position: absolute;
+  display: flex;
+  inset: 0;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 5px;
+  background: #ffffff;
+}
+
+.ticketCard__header {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: flex-end;
+  height: 17px;
+  padding: 0 4px;
+  background: #f8eadb;
+}
+
+.ticketCard__id {
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 0;
+  color: #b19797;
+}
+
+.ticketCard__body {
+  display: flex;
+  flex-flow: row;
+  flex-shrink: 0;
+  align-items: center;
+  box-sizing: border-box;
+  height: 26px;
+  padding: 1.5px 0;
+  background: linear-gradient(180deg, #ffffff 0%, #f3eae0 100%);
+}
+
+.ticketCard__cell {
+  position: relative;
+  display: flex;
+  height: 23px;
+  margin-top: 1px;
+  min-width: 0;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+  color: #704f4f;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Separator without a DOM node (was 5 spans × every pooled card). */
+.ticketCard__cell + .ticketCard__cell::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  width: 1px;
+  height: 12px;
+  transform: translateY(-50%);
+  background: rgba(177, 151, 151, 0.5);
+  pointer-events: none;
+}
+
+.ticketCard__cell_hit {
+  color: #1a1a1a;
+  background: radial-gradient(circle 11px at 50% 50%, #e8c547 0%, #e8c547 99%, transparent 100%);
+}
