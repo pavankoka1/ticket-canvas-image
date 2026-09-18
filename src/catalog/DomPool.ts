@@ -1,8 +1,9 @@
+import { getActiveLayout } from './catalogLayout';
 import { DOM_POOL_SIZE } from './layout';
 import { attachTicketCard, TicketCard } from './ticketCardElement';
 import type { Ticket, TicketSlot } from './tickets';
 
-/** Fixed viewport DOM pool — moneyball-style slim cards, never grows with catalog size. */
+/** Fixed viewport DOM pool — never grows with catalog size. */
 export class DomPool {
   private cards: TicketCard[] = [];
   private byId = new Map<string, number>();
@@ -52,6 +53,11 @@ export class DomPool {
       }
       this.cards[idx]!.bind(ticket, slot.x, slot.y);
     }
+  }
+
+  refreshLayout(): void {
+    const w = getActiveLayout().cardWidth;
+    for (const card of this.cards) card.applyCardWidth(w, true);
   }
 
   setVisible(visible: boolean): void {

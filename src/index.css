@@ -108,18 +108,11 @@ button:disabled {
   scrollbar-width: thin;
 }
 
-.toolbar__error {
-  margin: 8px 0 0;
-  color: #f0a0a0;
-  font-size: 0.8rem;
-  max-width: 90ch;
-  word-break: break-word;
-}
-
 .catalog__content {
   position: relative;
   margin: 12px auto;
-  /* Explicit height from JS grows as tickets are added */
+  /* Allow the canvas band to sit in content coords; catalog scrolls over it. */
+  overflow: visible;
 }
 
 .catalog__dom,
@@ -127,12 +120,13 @@ button:disabled {
   position: absolute;
   inset: 0;
   pointer-events: none;
+  overflow: visible;
 }
 
 .catalog__canvas {
   z-index: 1;
-  /* Always visible — paints overscan corridors under the DOM viewport. */
   opacity: 1;
+  visibility: visible;
 }
 
 .catalog__dom {
@@ -140,98 +134,138 @@ button:disabled {
   opacity: 1;
 }
 
-/* Single underlay canvas — drop-shadow on the layer (not 400 nodes). */
+/* Pre-scroll underlay strip — positioned at band minY via transform. */
 .ticketCanvasLayer {
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.42));
+  display: block;
+  opacity: 1;
+  visibility: visible;
 }
 
-/* —— moneyball-style desktopMedium ticket (slim div tree) —— */
+/* —— Fortunamania Ticket.module.css (CSS vars from ticketPresets) —— */
 .ticketCard {
+  --multiplier-font-size: calc(13 * var(--ticket-dab-size, 24px) / 24);
+
   position: absolute;
-  display: block;
+  display: flex;
   top: 0;
   left: 0;
-  height: 43px;
-  width: 197px;
-  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  height: var(--ticket-card-height, 43px);
+  font-family: MB-Onest, Onest, system-ui, sans-serif;
+  border-radius: var(--ticket-radius, 5px);
+  background: #f8eadb;
+  box-shadow: var(--ticket-card-shadow, none);
   box-sizing: border-box;
+  flex-direction: column;
+  flex-shrink: 0;
   overflow: visible;
-  background: transparent;
+  transform-origin: center center;
   -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
   contain: layout style;
   transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
   pointer-events: none;
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.42));
-}
-
-.ticketCard__scaler {
-  position: absolute;
-  display: flex;
-  inset: 0;
-  flex-direction: column;
-  overflow: hidden;
-  border-radius: 5px;
-  background: #ffffff;
 }
 
 .ticketCard__header {
+  position: relative;
   display: flex;
   flex-shrink: 0;
-  align-items: center;
-  justify-content: flex-end;
-  height: 17px;
-  padding: 0 4px;
+  align-items: stretch;
+  justify-content: space-between;
+  height: var(--ticket-header-height, 17px);
+  padding: 0 var(--ticket-header-pad-x, 4px);
+  overflow: hidden;
+  border-radius: var(--ticket-radius, 5px) var(--ticket-radius, 5px) 0 0;
   background: #f8eadb;
 }
 
-.ticketCard__id {
-  font-size: 12px;
+.ticketCard__win {
+  display: flex;
+  height: 100%;
+  min-width: 0;
+  font-size: var(--ticket-meta-font-size, 12px);
   font-weight: 700;
-  line-height: 0;
+  line-height: normal;
+  text-align: left;
+  color: #704f4f;
+  flex: 1 0 0;
+  flex-direction: column;
+  justify-content: flex-end;
+  align-items: flex-start;
+}
+
+.ticketCard__id {
+  display: flex;
+  height: 100%;
+  margin-left: auto;
+  min-width: 0;
+  font-size: var(--ticket-meta-font-size, 12px);
+  font-weight: 700;
+  line-height: normal;
+  text-align: right;
   color: #b19797;
+  flex: 1 0 0;
+  flex-direction: column;
+  justify-content: flex-end;
 }
 
 .ticketCard__body {
+  position: relative;
   display: flex;
   flex-flow: row;
   flex-shrink: 0;
-  align-items: center;
+  align-items: flex-start;
+  justify-content: flex-start;
   box-sizing: border-box;
-  height: 26px;
-  padding: 1.5px 0;
+  height: var(--ticket-body-height, 26px);
+  padding: var(--ticket-body-padding-y, 2.5px) 0;
+  overflow: visible;
+  border-radius: 0 0 var(--ticket-radius, 5px) var(--ticket-radius, 5px);
   background: linear-gradient(180deg, #ffffff 0%, #f3eae0 100%);
 }
 
 .ticketCard__cell {
   position: relative;
   display: flex;
-  height: 23px;
-  margin-top: 1px;
+  width: auto;
+  height: var(--ticket-cell-height, 21px);
+  margin-top: 0;
   min-width: 0;
-  font-size: 18px;
+  font-size: var(--ticket-number-font-size, 18px);
   font-weight: 700;
-  line-height: 1;
+  line-height: var(--ticket-number-line-height, 21px);
   color: #704f4f;
   flex: 1 1 0;
+  overflow: visible;
   align-items: center;
   justify-content: center;
+  white-space: nowrap;
+  background: transparent;
 }
 
-/* Separator without a DOM node (was 5 spans × every pooled card). */
-.ticketCard__cell + .ticketCard__cell::before {
+.ticketCard__cell:not(:first-child) {
+  margin-left: var(--ticket-separator-width, 1px);
+}
+
+.ticketCard__cell:not(:first-child)::before {
   content: '';
   position: absolute;
-  left: 0;
-  top: 50%;
-  width: 1px;
-  height: 12px;
-  transform: translateY(-50%);
-  background: rgba(177, 151, 151, 0.5);
+  top: var(--ticket-separator-margin-top, 4.5px);
+  left: calc(-1 * var(--ticket-separator-width, 1px));
+  width: var(--ticket-separator-width, 1px);
+  height: var(--ticket-separator-height, 12px);
+  border-radius: 1px;
+  background: rgb(177 151 151 / 50%);
   pointer-events: none;
 }
 
 .ticketCard__cell_hit {
-  color: #1a1a1a;
-  background: radial-gradient(circle 11px at 50% 50%, #e8c547 0%, #e8c547 99%, transparent 100%);
+  /* Hit is semantic; dab disc covers numbers in product — circle approx for POC. */
+  background: radial-gradient(
+    circle calc(var(--ticket-dab-size, 24px) / 2) at 50% 50%,
+    #e8c547 0%,
+    #e8c547 99%,
+    transparent 100%
+  );
 }

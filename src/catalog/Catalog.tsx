@@ -1,99 +1,166 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
-import { bakeTicketsInBackground } from './bakeQueue';
-import { computeCatalogBands } from './bands';
-import { bitmapCacheSize, clearTicketBitmaps, hasTicketBitmap } from './bitmapCache';
+import { computeDomBand } from './bands';
 import { CanvasPool } from './CanvasPool';
 import {
-  DEFAULT_SHEET_CAPACITY,
-  DomCaptureStage,
-  SHEET_SIZE_OPTIONS,
-} from './DomCaptureStage';
-import { DomPool } from './DomPool';
-import {
-  CANVAS_BAND_CAPACITY,
-  CARD_HEIGHT,
-  CARD_WIDTH,
-  CATALOG_VIEWPORT_HEIGHT,
-  COLUMNS,
-  COLUMN_GAP,
   contentHeight,
   contentWidth,
+  getActiveLayout,
+  resolveCatalogLayout,
+  setActiveLayout,
+} from './catalogLayout';
+import { cellAtlasSize, clearCellAtlas, warmCellAtlas, type AtlasSource } from './cellAtlas';
+import { DomPool } from './DomPool';
+import {
+  CANVAS_TILE_TICKETS,
+  CATALOG_VIEWPORT_HEIGHT,
+  DOM_POOL_SIZE,
+  DOM_SCROLL_THROTTLE_MS,
   ROW_BUFFER,
-  ROW_GAP,
 } from './layout';
 import { buildSlots, createTickets, type Ticket, type TicketSlot } from './tickets';
+import {
+  applyTicketCssVars,
+  getPreset,
+  resolvePresetFromViewport,
+  TICKET_PRESETS,
+  type TicketPresetId,
+} from './ticketPresets';
+
+type PresetMode = 'auto' | TicketPresetId;
+
+function layoutCacheKey(layout: ReturnType<typeof getActiveLayout>): string {
+  return `${layout.metrics.id}|${layout.cardWidth}|${layout.columns}|${layout.cardHeight}`;
+}
 
 export function Catalog() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
   const domHostRef = useRef<HTMLDivElement>(null);
   const canvasHostRef = useRef<HTMLDivElement>(null);
-  const captureHostRef = useRef<HTMLDivElement>(null);
+  const atlasHostRef = useRef<HTMLDivElement>(null);
+  const cssHostRef = useRef<HTMLDivElement>(null);
   const domPoolRef = useRef<DomPool | null>(null);
   const canvasPoolRef = useRef<CanvasPool | null>(null);
-  const captureStageRef = useRef<DomCaptureStage | null>(null);
   const slotsRef = useRef<TicketSlot[]>([]);
   const ticketsByIdRef = useRef<Map<string, Ticket>>(new Map());
-  const bandStatsRef = useRef({ dom: 0, above: 0, below: 0, canvas: 0 });
-  /** Bumps on reset so in-flight bakers stop updating UI. */
-  const bakeGenRef = useRef(0);
-  const bakePendingRef = useRef(0);
+  const atlasGenRef = useRef(0);
+  const prevLayoutKeyRef = useRef('');
+  const domThrottleRef = useRef(0);
+  const domPendingRef = useRef(false);
 
   const [tickets, setTickets] = useState<Ticket[]>([]);
-  const [bakeDone, setBakeDone] = useState(0);
-  const [bakeTotal, setBakeTotal] = useState(0);
-  const [cacheCount, setCacheCount] = useState(0);
-  const [bandStats, setBandStats] = useState({ dom: 0, above: 0, below: 0, canvas: 0 });
-  const [sheetSize, setSheetSize] = useState(DEFAULT_SHEET_CAPACITY);
+  const [atlasReady, setAtlasReady] = useState(0);
+  const [atlasSource, setAtlasSource] = useState<AtlasSource>('empty');
+  const [domCount, setDomCount] = useState(0);
+  const [tileCount, setTileCount] = useState(0);
+  const [presetMode, setPresetMode] = useState<PresetMode>('auto');
+  const [availWidth, setAvailWidth] = useState(1000);
+  const [viewport, setViewport] = useState(() => ({
+    w: typeof window !== 'undefined' ? window.innerWidth : 1366,
+    h: typeof window !== 'undefined' ? window.innerHeight : 768,
+  }));
+
+  const metrics =
+    presetMode === 'auto'
+      ? resolvePresetFromViewport(viewport.w, viewport.h)
+      : getPreset(presetMode);
+  const isMobile = metrics.id.startsWith('mobile');
+  const isLandscape = viewport.w > viewport.h;
+  const layout = useMemo(
+    () => resolveCatalogLayout(isMobile, isLandscape, availWidth, metrics),
+    [isMobile, isLandscape, availWidth, metrics]
+  );
+
+  useLayoutEffect(() => {
+    setActiveLayout(layout);
+    const host = cssHostRef.current;
+    if (host) applyTicketCssVars(host, layout.metrics);
+    if (atlasHostRef.current) applyTicketCssVars(atlasHostRef.current, layout.metrics);
+  }, [layout]);
 
   const slots = useMemo(
-    () => buildSlots(tickets, COLUMNS, CARD_WIDTH, CARD_HEIGHT, COLUMN_GAP, ROW_GAP),
-    [tickets]
+    () =>
+      buildSlots(
+        tickets,
+        layout.columns,
+        layout.cardWidth,
+        layout.cardHeight,
+        layout.gap,
+        layout.gap
+      ),
+    [tickets, layout]
   );
   const ticketsById = useMemo(() => new Map(tickets.map((t) => [t.id, t])), [tickets]);
-  const height = contentHeight(tickets.length);
-  const width = contentWidth();
-  const cacheReady = tickets.length > 0 && tickets.every((t) => hasTicketBitmap(t.id));
-  const isBaking = bakeTotal > 0 && bakeDone < bakeTotal;
+  const height = contentHeight(tickets.length, layout);
+  const width = contentWidth(layout);
 
   slotsRef.current = slots;
   ticketsByIdRef.current = ticketsById;
 
-  const syncBands = useCallback((forceCanvasPaint = false) => {
+  const syncDom = useCallback(() => {
     const container = scrollRef.current;
     const dom = domPoolRef.current;
-    const canvas = canvasPoolRef.current;
-    if (!container || !dom?.isReady || !canvas) return;
+    if (!container || !dom?.isReady) return;
 
-    const bands = computeCatalogBands(
+    const { dom: domSlots } = computeDomBand(
       slotsRef.current,
       container.scrollTop,
       container.clientHeight,
       ROW_BUFFER
     );
-
-    // Viewport DOM immediately; canvas underlay paints whatever is already cached.
-    dom.rebind(bands.dom, ticketsByIdRef.current);
-    canvas.rebind(bands.canvas, forceCanvasPaint);
-
-    const next = {
-      dom: bands.dom.length,
-      above: bands.above,
-      below: bands.below,
-      canvas: bands.canvas.length,
-    };
-    const prev = bandStatsRef.current;
-    if (
-      prev.dom !== next.dom ||
-      prev.above !== next.above ||
-      prev.below !== next.below ||
-      prev.canvas !== next.canvas
-    ) {
-      bandStatsRef.current = next;
-      setBandStats(next);
-    }
+    dom.rebind(domSlots, ticketsByIdRef.current);
+    setDomCount(domSlots.length);
   }, []);
+
+  const scheduleDomSync = useCallback(() => {
+    if (domThrottleRef.current) {
+      domPendingRef.current = true;
+      return;
+    }
+    syncDom();
+    domThrottleRef.current = window.setTimeout(() => {
+      domThrottleRef.current = 0;
+      if (domPendingRef.current) {
+        domPendingRef.current = false;
+        syncDom();
+      }
+    }, DOM_SCROLL_THROTTLE_MS);
+  }, [syncDom]);
+
+  /** Paint / extend full-catalog canvas tiles. Not tied to scroll. */
+  const syncCanvas = useCallback(() => {
+    const canvas = canvasPoolRef.current;
+    if (!canvas?.isReady) return;
+    canvas.setCatalog(slotsRef.current, ticketsByIdRef.current);
+    setTileCount(canvas.tileCount);
+  }, []);
+
+  const startAtlasWarm = useCallback(() => {
+    const host = atlasHostRef.current;
+    if (!host) return;
+    applyTicketCssVars(host, getActiveLayout().metrics);
+    const gen = ++atlasGenRef.current;
+    let lastUi = 0;
+    void warmCellAtlas(host, (ready, source) => {
+      if (gen !== atlasGenRef.current) return;
+      const now = performance.now();
+      if (now - lastUi > 40 || ready >= 60) {
+        lastUi = now;
+        setAtlasReady(ready);
+        setAtlasSource(source);
+        canvasPoolRef.current?.refresh();
+      }
+    }).then((source) => {
+      if (gen !== atlasGenRef.current) return;
+      if (source === 'empty') return;
+      setAtlasReady(cellAtlasSize());
+      setAtlasSource(source);
+      canvasPoolRef.current?.refresh();
+      syncCanvas();
+      syncDom();
+    });
+  }, [syncCanvas, syncDom]);
 
   const scrollToBottom = useCallback(() => {
     const container = scrollRef.current;
@@ -104,106 +171,108 @@ export function Catalog() {
   useEffect(() => {
     const domHost = domHostRef.current;
     const canvasHost = canvasHostRef.current;
-    const captureHost = captureHostRef.current;
-    if (!domHost || !canvasHost || !captureHost) return;
+    if (!domHost || !canvasHost) return;
     const dom = new DomPool(domHost);
     const canvas = new CanvasPool(canvasHost);
-    const capture = new DomCaptureStage(captureHost);
     dom.mount();
     canvas.mount();
-    capture.mount();
     domPoolRef.current = dom;
     canvasPoolRef.current = canvas;
-    captureStageRef.current = capture;
-    syncBands();
+    syncCanvas();
+    syncDom();
     return () => {
+      canvas.clear();
       domPoolRef.current = null;
       canvasPoolRef.current = null;
-      captureStageRef.current = null;
+      if (domThrottleRef.current) window.clearTimeout(domThrottleRef.current);
     };
-  }, [syncBands]);
+  }, [syncCanvas, syncDom]);
 
   useEffect(() => {
-    captureStageRef.current?.setSheetCapacity(sheetSize);
-  }, [sheetSize]);
+    const el = scrollRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? el.clientWidth;
+      setAvailWidth(Math.max(0, Math.floor(w - 24)));
+    });
+    ro.observe(el);
+    setAvailWidth(Math.max(0, Math.floor(el.clientWidth - 24)));
+    return () => ro.disconnect();
+  }, []);
 
-  // Add → grow height → scroll to newest DOM rows.
+  useEffect(() => {
+    const onResize = () => setViewport({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  useEffect(() => {
+    const key = layoutCacheKey(layout);
+    if (key === prevLayoutKeyRef.current) {
+      domPoolRef.current?.refreshLayout();
+      syncCanvas();
+      syncDom();
+      return;
+    }
+    prevLayoutKeyRef.current = key;
+    domPoolRef.current?.refreshLayout();
+    const t = window.setTimeout(() => {
+      startAtlasWarm();
+      syncCanvas();
+      syncDom();
+    }, 120);
+    return () => window.clearTimeout(t);
+  }, [layout, startAtlasWarm, syncCanvas, syncDom]);
+
   useLayoutEffect(() => {
     if (tickets.length === 0) {
-      syncBands();
+      canvasPoolRef.current?.clear();
+      setTileCount(0);
+      syncDom();
       return;
     }
     scrollToBottom();
-    syncBands(true);
-  }, [tickets, height, syncBands, scrollToBottom]);
+    syncCanvas();
+    syncDom();
+  }, [tickets, height, syncCanvas, syncDom, scrollToBottom]);
 
+  // Scroll: canvas tiles already cover the catalog — only throttle DOM translates.
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
-    const onScroll = () => syncBands();
+    const onScroll = () => scheduleDomSync();
     container.addEventListener('scroll', onScroll, { passive: true });
     return () => container.removeEventListener('scroll', onScroll);
-  }, [syncBands]);
+  }, [scheduleDomSync]);
 
   const addHundred = () => {
-    const stage = captureStageRef.current;
-    if (!stage?.isReady) return;
-
-    const batch = createTickets(100);
-    const gen = bakeGenRef.current;
-
-    // 1) DOM first — button stays free; layout effect scrolls to bottom.
-    setTickets((prev) => [...prev, ...batch]);
-    bakePendingRef.current += batch.length;
-    setBakeTotal(bakePendingRef.current);
-
-    // 2) Background sheet bake — many tickets per SnapDOM; never blocks the button.
-    let lastUi = 0;
-    void bakeTicketsInBackground(stage, batch, (p) => {
-      if (gen !== bakeGenRef.current) return;
-      const cached = bitmapCacheSize();
-      if (p.lastIds?.length) {
-        canvasPoolRef.current?.refreshFromCache(p.lastIds);
-      }
-      const now = performance.now();
-      if (now - lastUi > 50 || p.done === p.total) {
-        lastUi = now;
-        setCacheCount(cached);
-        setBakeDone(cached);
-        syncBands(true);
-      }
-    }).then(() => {
-      if (gen !== bakeGenRef.current) return;
-      const cached = bitmapCacheSize();
-      setCacheCount(cached);
-      setBakeDone(cached);
-      canvasPoolRef.current?.refreshFromCache(batch.map((t) => t.id));
-      syncBands(true);
-    });
+    setTickets((prev) => [...prev, ...createTickets(100)]);
   };
 
   const reset = () => {
-    bakeGenRef.current += 1;
-    bakePendingRef.current = 0;
-    clearTicketBitmaps();
     setTickets([]);
-    setBakeDone(0);
-    setBakeTotal(0);
-    setCacheCount(0);
-    setBandStats({ dom: 0, above: 0, below: 0, canvas: 0 });
-    bandStatsRef.current = { dom: 0, above: 0, below: 0, canvas: 0 };
-    syncBands();
+    setDomCount(0);
+    setTileCount(0);
+    canvasPoolRef.current?.clear();
+    syncDom();
+  };
+
+  const rebuildAtlas = () => {
+    clearCellAtlas();
+    prevLayoutKeyRef.current = '';
+    setAtlasSource('empty');
+    setAtlasReady(0);
+    startAtlasWarm();
   };
 
   return (
-    <div className="app">
+    <div className="app" ref={cssHostRef}>
       <header className="toolbar">
-        <h1>Canvas bitmap cache POC</h1>
+        <h1>Cell atlas canvas POC</h1>
         <p className="toolbar__hint">
-          Click → DOM + scroll now. SnapDOM sheets on main; crops in a worker. Viewport{' '}
-          {CATALOG_VIEWPORT_HEIGHT}px · 1 canvas layer (≤{CANVAS_BAND_CAPACITY} draws). Change{' '}
-          <strong>tickets / SnapDOM</strong> to trade hitch length vs bake speed (1 = shortest
-          freeze, 25 = fewest SnapDOM calls).
+          Full catalog on canvas tiles (~{CANVAS_TILE_TICKETS}/tile). DOM pool {DOM_POOL_SIZE},
+          rebind throttled {DOM_SCROLL_THROTTLE_MS}ms. Scroll never blanks — tiles are pre-painted.
+          Viewport {CATALOG_VIEWPORT_HEIGHT}px.
         </p>
         <div className="toolbar__row">
           <button type="button" onClick={addHundred}>
@@ -212,59 +281,77 @@ export function Catalog() {
           <button type="button" className="btn-ghost" onClick={reset}>
             Reset
           </button>
+          <button type="button" className="btn-ghost" onClick={rebuildAtlas}>
+            Rebuild atlas
+          </button>
           <label className="stat toolbar__sheet">
-            tickets / SnapDOM{' '}
+            size{' '}
             <select
-              value={sheetSize}
-              onChange={(e) => {
-                const n = Number(e.target.value);
-                setSheetSize(n);
-                captureStageRef.current?.setSheetCapacity(n);
-              }}
+              value={presetMode}
+              onChange={(e) => setPresetMode(e.target.value as PresetMode)}
             >
-              {SHEET_SIZE_OPTIONS.map((n) => (
-                <option key={n} value={n}>
-                  {n}
+              <option value="auto">Auto (viewport)</option>
+              {TICKET_PRESETS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
                 </option>
               ))}
             </select>
           </label>
           <span className="stat">
+            layout{' '}
+            <strong>
+              {layout.metrics.id} · {layout.columns}col · {layout.cardWidth}×{layout.cardHeight}
+            </strong>
+          </span>
+          <span className="stat">
             tickets <strong>{tickets.length}</strong>
           </span>
           <span className="stat">
-            cache <strong>{cacheCount}</strong>
-            {cacheReady ? ' ✓' : ''}
+            tiles <strong>{tileCount}</strong>
           </span>
           <span className="stat">
-            dom <strong>{bandStats.dom}</strong>
+            atlas <strong>{atlasReady}</strong>/60
+            {atlasReady >= 60 ? ' ✓' : '…'}{' '}
+            <strong>
+              {atlasSource === 'ram'
+                ? 'RAM'
+                : atlasSource === 'idb'
+                  ? 'IDB'
+                  : atlasSource === 'snap'
+                    ? 'SnapDOM'
+                    : '—'}
+            </strong>
           </span>
           <span className="stat">
-            canvas <strong>{bandStats.canvas}</strong> (↑{bandStats.above} ↓{bandStats.below})
+            dom <strong>{domCount}</strong>/{DOM_POOL_SIZE}
           </span>
-          {isBaking && (
-            <span className="stat bake">
-              baking {Math.min(bakeDone, bakeTotal)}/{bakeTotal}
-            </span>
-          )}
         </div>
       </header>
 
       <div
         ref={scrollRef}
         className="catalog"
-        style={{ height: CATALOG_VIEWPORT_HEIGHT, flex: '0 0 auto', minHeight: CATALOG_VIEWPORT_HEIGHT }}
+        style={{
+          height: CATALOG_VIEWPORT_HEIGHT,
+          flex: '0 0 auto',
+          minHeight: CATALOG_VIEWPORT_HEIGHT,
+        }}
       >
         <div
           ref={contentRef}
           className="catalog__content"
-          style={{ width: `${width}px`, height: `${height}px`, minHeight: height > 0 ? undefined : 80 }}
+          style={{
+            width: `${width}px`,
+            height: `${height}px`,
+            minHeight: height > 0 ? undefined : 80,
+          }}
         >
           <div ref={canvasHostRef} className="catalog__canvas" aria-hidden />
           <div ref={domHostRef} className="catalog__dom" />
         </div>
       </div>
-      <div ref={captureHostRef} className="catalog__captureHost" />
+      <div ref={atlasHostRef} className="catalog__captureHost" />
     </div>
   );
 }
