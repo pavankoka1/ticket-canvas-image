@@ -1,33 +1,54 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
-import { computeDomBand } from './bands';
-import { CanvasPool } from './CanvasPool';
+import { computeDomBand } from "./bands";
+import { CanvasPool } from "./CanvasPool";
+import {
+  applyCellBoxCssVars,
+  resolveCellBoxModel,
+  setLiveCellBoxModel,
+} from "./cellBoxModel";
 import {
   contentHeight,
   contentWidth,
   getActiveLayout,
   resolveCatalogLayout,
   setActiveLayout,
-} from './catalogLayout';
-import { cellAtlasSize, clearCellAtlas, warmCellAtlas, type AtlasSource } from './cellAtlas';
-import { DomPool } from './DomPool';
+} from "./catalogLayout";
 import {
-  CANVAS_TILE_TICKETS,
+  cellAtlasSize,
+  clearCellAtlas,
+  warmCellAtlas,
+  type AtlasSource,
+} from "./cellAtlas";
+import { DomPool } from "./DomPool";
+import {
   CATALOG_VIEWPORT_HEIGHT,
   DOM_POOL_SIZE,
   DOM_SCROLL_THROTTLE_MS,
   ROW_BUFFER,
-} from './layout';
-import { buildSlots, createTickets, type Ticket, type TicketSlot } from './tickets';
+} from "./layout";
+import {
+  buildSlots,
+  createTickets,
+  type Ticket,
+  type TicketSlot,
+} from "./tickets";
 import {
   applyTicketCssVars,
   getPreset,
   resolvePresetFromViewport,
   TICKET_PRESETS,
   type TicketPresetId,
-} from './ticketPresets';
+} from "./ticketPresets";
 
-type PresetMode = 'auto' | TicketPresetId;
+type PresetMode = "auto" | TicketPresetId;
 
 function layoutCacheKey(layout: ReturnType<typeof getActiveLayout>): string {
   return `${layout.metrics.id}|${layout.cardWidth}|${layout.columns}|${layout.cardHeight}`;
@@ -45,38 +66,46 @@ export function Catalog() {
   const slotsRef = useRef<TicketSlot[]>([]);
   const ticketsByIdRef = useRef<Map<string, Ticket>>(new Map());
   const atlasGenRef = useRef(0);
-  const prevLayoutKeyRef = useRef('');
+  const prevLayoutKeyRef = useRef("");
   const domThrottleRef = useRef(0);
   const domPendingRef = useRef(false);
 
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [atlasReady, setAtlasReady] = useState(0);
-  const [atlasSource, setAtlasSource] = useState<AtlasSource>('empty');
+  const [atlasSource, setAtlasSource] = useState<AtlasSource>("empty");
   const [domCount, setDomCount] = useState(0);
   const [tileCount, setTileCount] = useState(0);
-  const [presetMode, setPresetMode] = useState<PresetMode>('auto');
+  const [presetMode, setPresetMode] = useState<PresetMode>("auto");
   const [availWidth, setAvailWidth] = useState(1000);
   const [viewport, setViewport] = useState(() => ({
-    w: typeof window !== 'undefined' ? window.innerWidth : 1366,
-    h: typeof window !== 'undefined' ? window.innerHeight : 768,
+    w: typeof window !== "undefined" ? window.innerWidth : 1366,
+    h: typeof window !== "undefined" ? window.innerHeight : 768,
   }));
 
   const metrics =
-    presetMode === 'auto'
+    presetMode === "auto"
       ? resolvePresetFromViewport(viewport.w, viewport.h)
       : getPreset(presetMode);
-  const isMobile = metrics.id.startsWith('mobile');
+  const isMobile = metrics.id.startsWith("mobile");
   const isLandscape = viewport.w > viewport.h;
   const layout = useMemo(
     () => resolveCatalogLayout(isMobile, isLandscape, availWidth, metrics),
-    [isMobile, isLandscape, availWidth, metrics]
+    [isMobile, isLandscape, availWidth, metrics],
   );
 
   useLayoutEffect(() => {
     setActiveLayout(layout);
+    const model = resolveCellBoxModel(layout);
+    setLiveCellBoxModel(model);
     const host = cssHostRef.current;
-    if (host) applyTicketCssVars(host, layout.metrics);
-    if (atlasHostRef.current) applyTicketCssVars(atlasHostRef.current, layout.metrics);
+    if (host) {
+      applyTicketCssVars(host, layout.metrics);
+      applyCellBoxCssVars(host, model, layout.metrics);
+    }
+    if (atlasHostRef.current) {
+      applyTicketCssVars(atlasHostRef.current, layout.metrics);
+      applyCellBoxCssVars(atlasHostRef.current, model, layout.metrics);
+    }
   }, [layout]);
 
   const slots = useMemo(
@@ -87,11 +116,14 @@ export function Catalog() {
         layout.cardWidth,
         layout.cardHeight,
         layout.gap,
-        layout.gap
+        layout.gap,
       ),
-    [tickets, layout]
+    [tickets, layout],
   );
-  const ticketsById = useMemo(() => new Map(tickets.map((t) => [t.id, t])), [tickets]);
+  const ticketsById = useMemo(
+    () => new Map(tickets.map((t) => [t.id, t])),
+    [tickets],
+  );
   const height = contentHeight(tickets.length, layout);
   const width = contentWidth(layout);
 
@@ -107,7 +139,7 @@ export function Catalog() {
       slotsRef.current,
       container.scrollTop,
       container.clientHeight,
-      ROW_BUFFER
+      ROW_BUFFER,
     );
     dom.rebind(domSlots, ticketsByIdRef.current);
     setDomCount(domSlots.length);
@@ -153,7 +185,7 @@ export function Catalog() {
       }
     }).then((source) => {
       if (gen !== atlasGenRef.current) return;
-      if (source === 'empty') return;
+      if (source === "empty") return;
       setAtlasReady(cellAtlasSize());
       setAtlasSource(source);
       canvasPoolRef.current?.refresh();
@@ -165,7 +197,10 @@ export function Catalog() {
   const scrollToBottom = useCallback(() => {
     const container = scrollRef.current;
     if (!container) return;
-    container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+    container.scrollTop = Math.max(
+      0,
+      container.scrollHeight - container.clientHeight,
+    );
   }, []);
 
   useEffect(() => {
@@ -201,9 +236,10 @@ export function Catalog() {
   }, []);
 
   useEffect(() => {
-    const onResize = () => setViewport({ w: window.innerWidth, h: window.innerHeight });
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+    const onResize = () =>
+      setViewport({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
   }, []);
 
   useEffect(() => {
@@ -241,8 +277,8 @@ export function Catalog() {
     const container = scrollRef.current;
     if (!container) return;
     const onScroll = () => scheduleDomSync();
-    container.addEventListener('scroll', onScroll, { passive: true });
-    return () => container.removeEventListener('scroll', onScroll);
+    container.addEventListener("scroll", onScroll, { passive: true });
+    return () => container.removeEventListener("scroll", onScroll);
   }, [scheduleDomSync]);
 
   const addHundred = () => {
@@ -259,8 +295,8 @@ export function Catalog() {
 
   const rebuildAtlas = () => {
     clearCellAtlas();
-    prevLayoutKeyRef.current = '';
-    setAtlasSource('empty');
+    prevLayoutKeyRef.current = "";
+    setAtlasSource("empty");
     setAtlasReady(0);
     startAtlasWarm();
   };
@@ -270,9 +306,9 @@ export function Catalog() {
       <header className="toolbar">
         <h1>Cell atlas canvas POC</h1>
         <p className="toolbar__hint">
-          Full catalog on canvas tiles (~{CANVAS_TILE_TICKETS}/tile). DOM pool {DOM_POOL_SIZE},
-          rebind throttled {DOM_SCROLL_THROTTLE_MS}ms. Scroll never blanks — tiles are pre-painted.
-          Viewport {CATALOG_VIEWPORT_HEIGHT}px.
+          Real ticket HTML → SnapDOM first cell for 1–60. cellW =
+          (ticketWidth−6)/6. Canvas = cell sprites + separators (no canvas
+          text). Rebuild atlas after this change.
         </p>
         <div className="toolbar__row">
           <button type="button" onClick={addHundred}>
@@ -285,7 +321,7 @@ export function Catalog() {
             Rebuild atlas
           </button>
           <label className="stat toolbar__sheet">
-            size{' '}
+            size{" "}
             <select
               value={presetMode}
               onChange={(e) => setPresetMode(e.target.value as PresetMode)}
@@ -299,9 +335,10 @@ export function Catalog() {
             </select>
           </label>
           <span className="stat">
-            layout{' '}
+            layout{" "}
             <strong>
-              {layout.metrics.id} · {layout.columns}col · {layout.cardWidth}×{layout.cardHeight}
+              {layout.metrics.id} · {layout.columns}col · {layout.cardWidth}×
+              {layout.cardHeight}
             </strong>
           </span>
           <span className="stat">
@@ -312,15 +349,15 @@ export function Catalog() {
           </span>
           <span className="stat">
             atlas <strong>{atlasReady}</strong>/60
-            {atlasReady >= 60 ? ' ✓' : '…'}{' '}
+            {atlasReady >= 60 ? " ✓" : "…"}{" "}
             <strong>
-              {atlasSource === 'ram'
-                ? 'RAM'
-                : atlasSource === 'idb'
-                  ? 'IDB'
-                  : atlasSource === 'snap'
-                    ? 'SnapDOM'
-                    : '—'}
+              {atlasSource === "ram"
+                ? "RAM"
+                : atlasSource === "idb"
+                  ? "IDB"
+                  : atlasSource === "snap"
+                    ? "SnapDOM"
+                    : "—"}
             </strong>
           </span>
           <span className="stat">
@@ -334,7 +371,7 @@ export function Catalog() {
         className="catalog"
         style={{
           height: CATALOG_VIEWPORT_HEIGHT,
-          flex: '0 0 auto',
+          flex: "0 0 auto",
           minHeight: CATALOG_VIEWPORT_HEIGHT,
         }}
       >

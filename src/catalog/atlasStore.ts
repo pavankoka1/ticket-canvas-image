@@ -3,13 +3,15 @@
  * One record per stable cache key (preset + cardWidth + dpr + …).
  */
 
-const DB_NAME = 'bingo-cell-atlas';
+const DB_NAME = "bingo-cell-atlas";
 const DB_VERSION = 2;
-const STORE = 'atlases';
+const STORE = "atlases";
 
 export type StoredGeometry = {
   dpr: number;
   cardWidth: number;
+  cellW: number;
+  cellH: number;
   cells: { x: number; y: number; w: number; h: number }[];
 };
 
@@ -26,11 +28,11 @@ function openDb(): Promise<IDBDatabase> {
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) {
-        db.createObjectStore(STORE, { keyPath: 'key' });
+        db.createObjectStore(STORE, { keyPath: "key" });
       }
     };
     req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error ?? new Error('idb open failed'));
+    req.onerror = () => reject(req.error ?? new Error("idb open failed"));
   });
 }
 
@@ -39,7 +41,7 @@ export async function loadAtlas(key: string): Promise<StoredAtlas | null> {
     const db = await openDb();
     try {
       return await new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, 'readonly');
+        const tx = db.transaction(STORE, "readonly");
         const req = tx.objectStore(STORE).get(key);
         req.onsuccess = () => {
           const row = req.result as StoredAtlas | undefined;
@@ -64,11 +66,11 @@ export async function saveAtlas(atlas: StoredAtlas): Promise<boolean> {
     const db = await openDb();
     try {
       await new Promise<void>((resolve, reject) => {
-        const tx = db.transaction(STORE, 'readwrite');
+        const tx = db.transaction(STORE, "readwrite");
         tx.objectStore(STORE).put(atlas);
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
-        tx.onabort = () => reject(tx.error ?? new Error('idb abort'));
+        tx.onabort = () => reject(tx.error ?? new Error("idb abort"));
       });
       return true;
     } finally {
@@ -84,7 +86,7 @@ export async function deleteAtlas(key: string): Promise<void> {
     const db = await openDb();
     try {
       await new Promise<void>((resolve, reject) => {
-        const tx = db.transaction(STORE, 'readwrite');
+        const tx = db.transaction(STORE, "readwrite");
         tx.objectStore(STORE).delete(key);
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
@@ -102,9 +104,10 @@ export async function listAtlasKeys(): Promise<string[]> {
     const db = await openDb();
     try {
       return await new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE, 'readonly');
+        const tx = db.transaction(STORE, "readonly");
         const req = tx.objectStore(STORE).getAllKeys();
-        req.onsuccess = () => resolve((req.result as IDBValidKey[]).map(String));
+        req.onsuccess = () =>
+          resolve((req.result as IDBValidKey[]).map(String));
         req.onerror = () => reject(req.error);
       });
     } finally {
@@ -116,17 +119,17 @@ export async function listAtlasKeys(): Promise<string[]> {
 }
 
 export async function bitmapToPngBlob(bmp: ImageBitmap): Promise<Blob> {
-  const canvas = document.createElement('canvas');
+  const canvas = document.createElement("canvas");
   canvas.width = bmp.width;
   canvas.height = bmp.height;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('2d context unavailable');
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("2d context unavailable");
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(bmp, 0, 0);
   const blob = await new Promise<Blob | null>((resolve) =>
-    canvas.toBlob(resolve, 'image/png')
+    canvas.toBlob(resolve, "image/png"),
   );
-  if (!blob) throw new Error('toBlob failed');
+  if (!blob) throw new Error("toBlob failed");
   return blob;
 }
 

@@ -4,11 +4,7 @@
  */
 
 export type TicketPresetId =
-  | 'desktopMedium'
-  | 'desktopSmall'
-  | 'mobile'
-  | 'mobileLarge'
-  | 'mobileCompact';
+  "desktopMedium" | "desktopSmall" | "mobile" | "mobileLarge" | "mobileCompact";
 
 export type TicketMetrics = {
   id: TicketPresetId;
@@ -33,8 +29,8 @@ export type TicketMetrics = {
 
 /** ≥1366×500 — default catalog tokens. */
 export const DESKTOP_MEDIUM: TicketMetrics = {
-  id: 'desktopMedium',
-  label: 'Desktop medium (≥1366)',
+  id: "desktopMedium",
+  label: "Desktop medium (≥1366)",
   cardHeight: 43,
   headerHeight: 17,
   bodyHeight: 26,
@@ -49,13 +45,13 @@ export const DESKTOP_MEDIUM: TicketMetrics = {
   separatorHeight: 12,
   radius: 5,
   dabSize: 24,
-  cardShadow: '',
+  cardShadow: "",
 };
 
 /** 1024–1365 — desktopSmall. */
 export const DESKTOP_SMALL: TicketMetrics = {
-  id: 'desktopSmall',
-  label: 'Desktop small (1024–1365)',
+  id: "desktopSmall",
+  label: "Desktop small (1024–1365)",
   cardHeight: 39,
   headerHeight: 15,
   bodyHeight: 24,
@@ -70,13 +66,13 @@ export const DESKTOP_SMALL: TicketMetrics = {
   separatorHeight: 11,
   radius: 5,
   dabSize: 22,
-  cardShadow: '',
+  cardShadow: "",
 };
 
 /** <1024 — base mobile. */
 export const MOBILE: TicketMetrics = {
-  id: 'mobile',
-  label: 'Mobile (<1024)',
+  id: "mobile",
+  label: "Mobile (<1024)",
   cardHeight: 37,
   headerHeight: 15,
   bodyHeight: 22,
@@ -91,13 +87,13 @@ export const MOBILE: TicketMetrics = {
   separatorHeight: 10,
   radius: 3,
   dabSize: 20.65116310119629,
-  cardShadow: '0 1.721px 0.86px rgb(0 0 0 / 42%)',
+  cardShadow: "0 1.721px 0.86px rgb(0 0 0 / 42%)",
 };
 
 /** Portrait mobile ≥620 — large portrait band. */
 export const MOBILE_LARGE: TicketMetrics = {
-  id: 'mobileLarge',
-  label: 'Mobile large (portrait ≥620)',
+  id: "mobileLarge",
+  label: "Mobile large (portrait ≥620)",
   cardHeight: 43,
   headerHeight: 17,
   bodyHeight: 26,
@@ -112,13 +108,13 @@ export const MOBILE_LARGE: TicketMetrics = {
   separatorHeight: 12,
   radius: 5,
   dabSize: 24,
-  cardShadow: '0 1.721px 0.86px rgb(0 0 0 / 42%)',
+  cardShadow: "0 1.721px 0.86px rgb(0 0 0 / 42%)",
 };
 
 /** ≤499 or compressed landscape. */
 export const MOBILE_COMPACT: TicketMetrics = {
-  id: 'mobileCompact',
-  label: 'Mobile compact (≤499)',
+  id: "mobileCompact",
+  label: "Mobile compact (≤499)",
   cardHeight: 32,
   headerHeight: 13,
   bodyHeight: 19,
@@ -133,7 +129,7 @@ export const MOBILE_COMPACT: TicketMetrics = {
   separatorHeight: 9,
   radius: 3,
   dabSize: 17,
-  cardShadow: '0 1.488px 0.744px rgb(0 0 0 / 42%)',
+  cardShadow: "0 1.488px 0.744px rgb(0 0 0 / 42%)",
 };
 
 export const TICKET_PRESETS: readonly TicketMetrics[] = [
@@ -154,7 +150,7 @@ export function getPreset(id: TicketPresetId): TicketMetrics {
  */
 export function resolvePresetFromViewport(
   width = window.innerWidth,
-  height = window.innerHeight
+  height = window.innerHeight,
 ): TicketMetrics {
   const isWide = width >= 1024 && height >= 500;
   const isMediumWide = width >= 1366 && height >= 500;
@@ -163,7 +159,7 @@ export function resolvePresetFromViewport(
   const isCompressed = height < 320 || width < 360;
 
   if (!isWide) {
-    if ((width <= 499) || (isLandscape && isCompressed)) return MOBILE_COMPACT;
+    if (width <= 499 || (isLandscape && isCompressed)) return MOBILE_COMPACT;
     if (isPortrait && width >= 620) return MOBILE_LARGE;
     return MOBILE;
   }
@@ -174,20 +170,20 @@ export function resolvePresetFromViewport(
 /** Apply fortunamania CSS custom properties onto a host. */
 export function applyTicketCssVars(el: HTMLElement, m: TicketMetrics): void {
   const s = el.style;
-  s.setProperty('--ticket-card-height', `${m.cardHeight}px`);
-  s.setProperty('--ticket-header-height', `${m.headerHeight}px`);
-  s.setProperty('--ticket-body-height', `${m.bodyHeight}px`);
-  s.setProperty('--ticket-body-padding-y', `${m.bodyPaddingY}px`);
-  s.setProperty('--ticket-header-pad-x', `${m.headerPadX}px`);
-  s.setProperty('--ticket-cell-height', `${m.cellHeight}px`);
-  s.setProperty('--ticket-number-line-height', `${m.numberLineHeight}px`);
-  s.setProperty('--ticket-number-font-size', `${m.numberFontSize}px`);
-  s.setProperty('--ticket-meta-font-size', `${m.metaFontSize}px`);
-  s.setProperty('--ticket-separator-margin-top', `${m.separatorMarginTop}px`);
-  s.setProperty('--ticket-separator-width', `${m.separatorWidth}px`);
-  s.setProperty('--ticket-separator-height', `${m.separatorHeight}px`);
-  s.setProperty('--ticket-radius', `${m.radius}px`);
-  s.setProperty('--ticket-dab-size', `${m.dabSize}px`);
-  s.setProperty('--ticket-card-shadow', m.cardShadow || 'none');
-  s.setProperty('--catalog-gap', '4px');
+  s.setProperty("--ticket-card-height", `${m.cardHeight}px`);
+  s.setProperty("--ticket-header-height", `${m.headerHeight}px`);
+  s.setProperty("--ticket-body-height", `${m.bodyHeight}px`);
+  s.setProperty("--ticket-body-padding-y", `${m.bodyPaddingY}px`);
+  s.setProperty("--ticket-header-pad-x", `${m.headerPadX}px`);
+  // Cell w/h come from applyCellBoxCssVars (fixed-px model) — do not set here.
+  s.setProperty("--ticket-number-line-height", `${m.numberLineHeight}px`);
+  s.setProperty("--ticket-number-font-size", `${m.numberFontSize}px`);
+  s.setProperty("--ticket-meta-font-size", `${m.metaFontSize}px`);
+  s.setProperty("--ticket-separator-margin-top", `${m.separatorMarginTop}px`);
+  s.setProperty("--ticket-separator-width", `${m.separatorWidth}px`);
+  s.setProperty("--ticket-separator-height", `${m.separatorHeight}px`);
+  s.setProperty("--ticket-radius", `${m.radius}px`);
+  s.setProperty("--ticket-dab-size", `${m.dabSize}px`);
+  s.setProperty("--ticket-card-shadow", m.cardShadow || "none");
+  s.setProperty("--catalog-gap", "4px");
 }

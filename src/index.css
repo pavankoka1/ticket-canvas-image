@@ -1,7 +1,11 @@
 :root {
   color: #2a1f1f;
   background: #1a1412;
-  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-family:
+    system-ui,
+    -apple-system,
+    "Segoe UI",
+    sans-serif;
   line-height: 1.4;
 }
 
@@ -219,24 +223,27 @@ button:disabled {
   justify-content: flex-start;
   box-sizing: border-box;
   height: var(--ticket-body-height, 26px);
-  padding: var(--ticket-body-padding-y, 2.5px) 0;
+  padding: var(--ticket-body-padding-y, 2.5px) var(--ticket-body-pad-x, 0);
   overflow: visible;
   border-radius: 0 0 var(--ticket-radius, 5px) var(--ticket-radius, 5px);
   background: linear-gradient(180deg, #ffffff 0%, #f3eae0 100%);
 }
 
+/* Fixed-px: width = (ticketWidth − 6px) / 6 — same as atlas + canvas. */
 .ticketCard__cell {
   position: relative;
   display: flex;
-  width: auto;
+  box-sizing: border-box;
+  width: var(--ticket-cell-width, 32px);
   height: var(--ticket-cell-height, 21px);
   margin-top: 0;
   min-width: 0;
+  flex: 0 0 var(--ticket-cell-width, 32px);
   font-size: var(--ticket-number-font-size, 18px);
   font-weight: 700;
   line-height: var(--ticket-number-line-height, 21px);
   color: #704f4f;
-  flex: 1 1 0;
+  /* visible — ::before separator sits at left:-sep outside the box (fortunamania). */
   overflow: visible;
   align-items: center;
   justify-content: center;
@@ -249,7 +256,7 @@ button:disabled {
 }
 
 .ticketCard__cell:not(:first-child)::before {
-  content: '';
+  content: "";
   position: absolute;
   top: var(--ticket-separator-margin-top, 4.5px);
   left: calc(-1 * var(--ticket-separator-width, 1px));

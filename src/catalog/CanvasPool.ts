@@ -1,7 +1,8 @@
-import { approxCellWidth, contentWidth, getActiveLayout } from './catalogLayout';
-import { getCellBitmap, getTicketGeometry } from './cellAtlas';
-import { BALLS_PER_TICKET, CANVAS_TILE_TICKETS } from './layout';
-import type { Ticket, TicketSlot } from './tickets';
+import { contentWidth, getActiveLayout } from "./catalogLayout";
+import { getCellBitmap, getTicketGeometry } from "./cellAtlas";
+import { getLiveCellBoxModel, resolveCellBoxModel } from "./cellBoxModel";
+import { BALLS_PER_TICKET, CANVAS_TILE_TICKETS } from "./layout";
+import type { Ticket, TicketSlot } from "./tickets";
 
 type Tile = {
   canvas: HTMLCanvasElement;
@@ -29,8 +30,8 @@ export class CanvasPool {
 
   constructor(host: HTMLElement) {
     this.host = host;
-    this.host.style.opacity = '1';
-    this.host.style.visibility = 'visible';
+    this.host.style.opacity = "1";
+    this.host.style.visibility = "visible";
   }
 
   mount(): void {
@@ -53,7 +54,10 @@ export class CanvasPool {
    * Ensure tiles cover every slot and paint dirty ones.
    * Call when the ticket list / layout changes — not on every scroll.
    */
-  setCatalog(slots: readonly TicketSlot[], ticketsById: Map<string, Ticket>): void {
+  setCatalog(
+    slots: readonly TicketSlot[],
+    ticketsById: Map<string, Ticket>,
+  ): void {
     if (!this.ready) return;
     this.slots = slots.slice();
     this.ticketsById = ticketsById;
@@ -105,14 +109,14 @@ export class CanvasPool {
 
       let tile = this.tiles[i];
       if (!tile) {
-        const canvas = document.createElement('canvas');
-        canvas.className = 'ticketCanvasLayer';
-        canvas.style.position = 'absolute';
-        canvas.style.left = '0';
-        canvas.style.pointerEvents = 'none';
-        canvas.style.opacity = '1';
-        canvas.style.visibility = 'visible';
-        const ctx = canvas.getContext('2d');
+        const canvas = document.createElement("canvas");
+        canvas.className = "ticketCanvasLayer";
+        canvas.style.position = "absolute";
+        canvas.style.left = "0";
+        canvas.style.pointerEvents = "none";
+        canvas.style.opacity = "1";
+        canvas.style.visibility = "visible";
+        const ctx = canvas.getContext("2d");
         if (!ctx) continue;
         this.host.appendChild(canvas);
         tile = { canvas, ctx, start, end, minY, cssH, dirty: true };
@@ -158,61 +162,61 @@ export class CanvasPool {
       c.width = bw;
       c.height = bh;
     }
+    // Snap tile origin to device pixels.
+    const minY = Math.round(tile.minY * dpr) / dpr;
     c.style.width = `${cssW}px`;
     c.style.height = `${cssH}px`;
-    c.style.transform = `translate3d(0, ${tile.minY}px, 0)`;
+    c.style.transform = `translate3d(0, ${minY}px, 0)`;
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cssW, cssH);
     ctx.imageSmoothingEnabled = false;
 
     const geo = getTicketGeometry();
-    const fallbackCells = defaultCellBoxes();
-    const boxes = geo && geo.cardWidth === cardWidth ? geo.cells : fallbackCells;
-    const useSprites = Boolean(geo && geo.cardWidth === cardWidth);
+    const live = getLiveCellBoxModel() ?? resolveCellBoxModel(layout, dpr);
+    const boxes =
+      geo && geo.cardWidth === cardWidth && geo.cellW === live.cellW
+        ? geo.cells
+        : live.cells;
+    const useSprites = Boolean(
+      geo &&
+      geo.cardWidth === cardWidth &&
+      geo.cellW === live.cellW &&
+      geo.cellH === live.cellH,
+    );
 
     for (let i = tile.start; i < tile.end; i++) {
       const slot = this.slots[i]!;
       const ticket = this.ticketsById.get(slot.id);
       if (!ticket) continue;
 
-      const x = slot.x;
-      const y = slot.y - tile.minY;
+      const x = Math.round(slot.x * dpr) / dpr;
+      const y = Math.round((slot.y - tile.minY) * dpr) / dpr;
 
       paintChrome(ctx, x, y, ticket.no, cardWidth, metrics);
-      paintSeparators(ctx, x, y, boxes, metrics);
 
       for (let k = 0; k < BALLS_PER_TICKET; k++) {
         const n = ticket.balls[k];
         if (n == null) continue;
-        const box = boxes[k] ?? fallbackCells[k]!;
+        const box = boxes[k]!;
+        const bx = Math.round((x + box.x) * dpr) / dpr;
+        const by = Math.round((y + box.y) * dpr) / dpr;
         if (ticket.hits.includes(k)) {
-          paintHit(ctx, x + box.x, y + box.y, box.w, box.h, metrics.dabSize);
+          paintHit(ctx, bx, by, box.w, box.h, metrics.dabSize);
         }
+        // Numbers only from HTML SnapDOM sprites — never canvas fillText.
         const bmp = useSprites ? getCellBitmap(n) : undefined;
         if (bmp) {
-          ctx.drawImage(bmp, x + box.x, y + box.y, box.w, box.h);
-        } else {
-          paintNumberFallback(ctx, x + box.x, y + box.y, box.w, box.h, n, metrics);
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.drawImage(bmp, Math.round(bx * dpr), Math.round(by * dpr));
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         }
       }
+
+      // Separators between cells (not inside sprites).
+      paintSeparators(ctx, x, y, boxes, metrics);
     }
   }
-}
-
-function defaultCellBoxes(): { x: number; y: number; w: number; h: number }[] {
-  const layout = getActiveLayout();
-  const m = layout.metrics;
-  const cellW = approxCellWidth(layout);
-  const bodyTop = m.headerHeight + m.bodyPaddingY;
-  const out = [];
-  let x = 0;
-  for (let i = 0; i < BALLS_PER_TICKET; i++) {
-    if (i > 0) x += m.separatorWidth;
-    out.push({ x, y: bodyTop, w: cellW, h: m.cellHeight });
-    x += cellW;
-  }
-  return out;
 }
 
 function paintChrome(
@@ -221,7 +225,7 @@ function paintChrome(
   y: number,
   ticketNo: string,
   cardWidth: number,
-  m: ReturnType<typeof getActiveLayout>['metrics']
+  m: ReturnType<typeof getActiveLayout>["metrics"],
 ): void {
   const r = m.radius;
   const cardHeight = m.cardHeight;
@@ -229,41 +233,30 @@ function paintChrome(
   roundRectPath(ctx, x, y, cardWidth, cardHeight, r);
   ctx.clip();
 
-  ctx.fillStyle = '#F8EADB';
+  ctx.fillStyle = "#F8EADB";
   ctx.fillRect(x, y, cardWidth, cardHeight);
 
-  const bodyGrad = ctx.createLinearGradient(x, y + m.headerHeight, x, y + cardHeight);
-  bodyGrad.addColorStop(0, '#FFFFFF');
-  bodyGrad.addColorStop(1, '#F3EAE0');
+  const bodyGrad = ctx.createLinearGradient(
+    x,
+    y + m.headerHeight,
+    x,
+    y + cardHeight,
+  );
+  bodyGrad.addColorStop(0, "#FFFFFF");
+  bodyGrad.addColorStop(1, "#F3EAE0");
   ctx.fillStyle = bodyGrad;
   ctx.fillRect(x, y + m.headerHeight, cardWidth, m.bodyHeight);
 
-  ctx.fillStyle = '#F8EADB';
+  ctx.fillStyle = "#F8EADB";
   ctx.fillRect(x, y, cardWidth, m.headerHeight);
 
-  ctx.fillStyle = '#B19797';
+  ctx.fillStyle = "#B19797";
   ctx.font = `700 ${m.metaFontSize}px MB-Onest, Onest, system-ui, sans-serif`;
-  ctx.textAlign = 'right';
-  ctx.textBaseline = 'bottom';
+  ctx.textAlign = "right";
+  ctx.textBaseline = "bottom";
   ctx.fillText(ticketNo, x + cardWidth - m.headerPadX, y + m.headerHeight - 1);
 
   ctx.restore();
-}
-
-function paintNumberFallback(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  n: number,
-  m: ReturnType<typeof getActiveLayout>['metrics']
-): void {
-  ctx.fillStyle = '#704F4F';
-  ctx.font = `700 ${m.numberFontSize}px MB-Onest, Onest, system-ui, sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(String(n), x + w / 2, y + h / 2);
 }
 
 function paintSeparators(
@@ -271,14 +264,18 @@ function paintSeparators(
   x: number,
   y: number,
   boxes: { x: number; y: number; w: number; h: number }[],
-  m: ReturnType<typeof getActiveLayout>['metrics']
+  m: ReturnType<typeof getActiveLayout>["metrics"],
 ): void {
-  ctx.fillStyle = 'rgb(177 151 151 / 50%)';
+  const sep = m.separatorWidth;
+  if (sep <= 0 || boxes.length < 2) return;
+  const dpr = ctx.getTransform().a || 1;
+  ctx.fillStyle = "rgb(177 151 151 / 50%)";
   for (let i = 1; i < boxes.length; i++) {
     const box = boxes[i]!;
-    const sx = Math.round(x + box.x - m.separatorWidth);
-    const sy = y + box.y + m.separatorMarginTop;
-    ctx.fillRect(sx, sy, m.separatorWidth, m.separatorHeight);
+    // Match DOM ::before: in the margin gap immediately left of cell i.
+    const sx = Math.round((x + box.x - sep) * dpr) / dpr;
+    const sy = Math.round((y + box.y + m.separatorMarginTop) * dpr) / dpr;
+    ctx.fillRect(sx, sy, sep, m.separatorHeight);
   }
 }
 
@@ -288,10 +285,10 @@ function paintHit(
   y: number,
   w: number,
   h: number,
-  dabSize: number
+  dabSize: number,
 ): void {
   ctx.save();
-  ctx.fillStyle = '#e8c547';
+  ctx.fillStyle = "#e8c547";
   ctx.beginPath();
   ctx.arc(x + w / 2, y + h / 2, dabSize / 2, 0, Math.PI * 2);
   ctx.fill();
@@ -304,7 +301,7 @@ function roundRectPath(
   y: number,
   w: number,
   h: number,
-  radius: number
+  radius: number,
 ): void {
   const r = Math.min(radius, w / 2, h / 2);
   ctx.beginPath();
