@@ -13,6 +13,8 @@ export type StoredGeometry = {
   cellW: number;
   cellH: number;
   cells: { x: number; y: number; w: number; h: number }[];
+  /** Vertical device-px shift baked into sprites (mechanism-B fix); debug-only. */
+  inkShift?: number;
 };
 
 export type StoredAtlas = {

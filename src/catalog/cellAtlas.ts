@@ -28,6 +28,13 @@ export type TicketGeometry = {
   cardWidth: number;
   cellW: number;
   cellH: number;
+  /**
+   * Vertical device-px correction BAKED into every sprite so the glyph ink
+   * lands where native DOM text sits. Fixes mechanism B: SnapDOM's
+   * foreignObject raster draws the digit ~0.8 CSS px higher than native.
+   * Informational once baked (sprites already corrected); persisted for debug.
+   */
+  inkShift?: number;
 };
 
 export type AtlasSource = "ram" | "idb" | "snap" | "empty";
@@ -38,8 +45,8 @@ type AtlasEntry = {
   geometry: TicketGeometry;
 };
 
-/** Snapshot from real ticket DOM; cellW = (cw − 6) / 6. */
-const ATLAS_VERSION = "v10-measured-y";
+/** Snapshot from real ticket DOM; cellW = (cw − 6) / 6. Sprites ink-shifted to native. */
+const ATLAS_VERSION = "v11-ink-shift";
 
 const ramCache = new Map<string, AtlasEntry>();
 
@@ -328,12 +335,44 @@ async function buildAtlas(
     };
   });
 
+  // —— Fix mechanism B: bake a vertical shift so the digit ink lands where
+  // native DOM text sits. Pre-capture "8", compare its ink centre to the
+  // measured native ink centre; the delta is baked into every sprite below.
+  let inkShift = 0;
+  {
+    const nativeCentre = nativeInkCentreDevice(host, m, captureH, dpr);
+    ticket.cellTexts[0]!.data = "8";
+    void captureCell.offsetWidth;
+    const raw8 = await snapdom.toCanvas(captureCell, {
+      ...SNAP_OPTS,
+      dpr,
+      invalidate: true,
+    });
+    const ink8 = scanInkBBox(raw8);
+    if (ink8 && nativeCentre != null) {
+      inkShift = Math.round(nativeCentre - ink8.center);
+    }
+    console.log("[INK-FIX]", {
+      preset: m.id,
+      dpr,
+      trueDpr: window.devicePixelRatio,
+      nativeInkCentre: nativeCentre == null ? "n/a" : +nativeCentre.toFixed(2),
+      spriteInkCentre: ink8 ? +ink8.center.toFixed(2) : "n/a",
+      inkShift, // device px baked into every sprite (>0 = push digit down)
+      residualAfterFix:
+        ink8 && nativeCentre != null
+          ? +(ink8.center + inkShift - nativeCentre).toFixed(2)
+          : "n/a",
+    });
+  }
+
   const geometry: TicketGeometry = {
     dpr,
     cardWidth: layout.cardWidth,
     cellW: captureW,
     cellH: captureH,
     cells: measuredCells,
+    inkShift,
   };
 
   const bitmaps = new Map<number, ImageBitmap>();
@@ -365,10 +404,10 @@ async function buildAtlas(
     }
 
     // —— Ink-drift diagnostic (mechanism B): where SnapDOM actually put the
-    // glyph inside the sprite vs where native text sits. Run on Mac + Linux.
-    if (n === 8) logInkDiagnostic(raw, m, captureH, dpr);
+    // glyph inside the raw sprite vs where native text sits.
+    if (n === 8) logInkDiagnostic(host, raw, m, captureH, dpr);
 
-    bitmaps.set(n, await normalizeBitmap(raw, wantW, wantH));
+    bitmaps.set(n, await normalizeBitmap(raw, wantW, wantH, inkShift));
     onProgress?.(bitmaps.size, "snap");
     await yieldToMain();
   }
@@ -437,32 +476,77 @@ function scanInkBBox(
 }
 
 /**
- * Where NATIVE text (not foreignObject) would place the digit's ink centre,
- * in device px from the cell top. Uses canvas measureText, which goes through
- * the platform's normal text pipeline — the same one live DOM cells use.
- * In these presets line-height === cellHeight, so the line box fills the cell.
+ * Real text baseline, in CSS px from the cell top, MEASURED (not analytic).
+ * A zero-height inline-block strut with vertical-align:baseline sits its box on
+ * the baseline; a block probe with the cell's font + line-height gives the
+ * baseline within the line box, and align-items:center centres that line box in
+ * the cell. Same native text pipeline the live DOM cell uses.
  */
-function nativeInkCenterDevice(
+function measureBaselineFromCellTop(
+  host: HTMLElement,
+  m: TicketMetrics,
+  cellHcss: number,
+): number | null {
+  const probe = document.createElement("div");
+  probe.style.cssText = [
+    "position:absolute",
+    "left:-9999px",
+    "top:0",
+    "visibility:hidden",
+    "margin:0",
+    "padding:0",
+    "white-space:nowrap",
+    "font-family:MB-Onest, Onest, system-ui, sans-serif",
+    "font-weight:700",
+    `font-size:${m.numberFontSize}px`,
+    `line-height:${m.numberLineHeight}px`,
+    "-webkit-font-smoothing:antialiased",
+    "text-rendering:geometricPrecision",
+  ].join(";");
+  probe.textContent = "8";
+  const strut = document.createElement("span");
+  strut.style.cssText =
+    "display:inline-block;width:0;height:0;vertical-align:baseline";
+  probe.appendChild(strut);
+  host.appendChild(probe);
+  const pr = probe.getBoundingClientRect();
+  const sr = strut.getBoundingClientRect();
+  probe.remove();
+  if (pr.height <= 0) return null;
+  const baselineWithinLineBox = sr.top - pr.top;
+  const lineBoxTopInCell = Math.max(0, (cellHcss - m.numberLineHeight) / 2);
+  return lineBoxTopInCell + baselineWithinLineBox;
+}
+
+/** Ink centre offset from baseline (CSS px, negative = above), via measureText. */
+function inkOffsetFromBaseline(fontSizePx: number): number | null {
+  const c = document.createElement("canvas");
+  const ctx = c.getContext("2d");
+  if (!ctx) return null;
+  ctx.font = `700 ${fontSizePx}px MB-Onest, Onest, system-ui, sans-serif`;
+  ctx.textBaseline = "alphabetic";
+  const tm = ctx.measureText("8");
+  const iAsc = tm.actualBoundingBoxAscent;
+  const iDesc = tm.actualBoundingBoxDescent;
+  if (typeof iAsc !== "number" || typeof iDesc !== "number") return null;
+  return (iDesc - iAsc) / 2;
+}
+
+/**
+ * Native digit-ink centre in device px from cell top: measured baseline + the
+ * font's ink offset. Baseline is pixel-true; only the ink offset uses
+ * measureText (which is exactly what actualBoundingBox is reliable for).
+ */
+function nativeInkCentreDevice(
+  host: HTMLElement,
   m: TicketMetrics,
   cellHcss: number,
   dpr: number,
 ): number | null {
-  const c = document.createElement("canvas");
-  const ctx = c.getContext("2d");
-  if (!ctx) return null;
-  ctx.font = `700 ${m.numberFontSize}px MB-Onest, Onest, system-ui, sans-serif`;
-  ctx.textBaseline = "alphabetic";
-  const tm = ctx.measureText("8");
-  const fAsc = tm.fontBoundingBoxAscent;
-  const fDesc = tm.fontBoundingBoxDescent;
-  const iAsc = tm.actualBoundingBoxAscent;
-  const iDesc = tm.actualBoundingBoxDescent;
-  if ([fAsc, fDesc, iAsc, iDesc].some((v) => typeof v !== "number")) return null;
-  const L = m.numberLineHeight; // CSS px; == cellH in current presets
-  const baselineFromTop = (L - (fAsc + fDesc)) / 2 + fAsc;
-  const inkCentreFromBaseline = (iDesc - iAsc) / 2;
-  const cellExtra = (cellHcss - L) / 2; // 0 when cellH === line-height
-  return (cellExtra + baselineFromTop + inkCentreFromBaseline) * dpr;
+  const baselineCss = measureBaselineFromCellTop(host, m, cellHcss);
+  const inkOffsetCss = inkOffsetFromBaseline(m.numberFontSize);
+  if (baselineCss == null || inkOffsetCss == null) return null;
+  return (baselineCss + inkOffsetCss) * dpr;
 }
 
 /**
@@ -472,6 +556,7 @@ function nativeInkCenterDevice(
  * platform-invariant, so any delta swing is the foreignObject raster (B).
  */
 function logInkDiagnostic(
+  host: HTMLElement,
   raw: HTMLCanvasElement,
   m: TicketMetrics,
   captureHcss: number,
@@ -482,8 +567,8 @@ function logInkDiagnostic(
     console.warn("[INK] scan failed (blank or tainted canvas)");
     return;
   }
-  const nativeCentre = nativeInkCenterDevice(m, captureHcss, dpr);
-  console.log("[INK] digit 8", {
+  const nativeCentre = nativeInkCentreDevice(host, m, captureHcss, dpr);
+  console.log("[INK] digit 8 (raw sprite, pre-shift)", {
     preset: m.id,
     dprCapped: dpr,
     trueDpr: window.devicePixelRatio,
@@ -498,13 +583,14 @@ function logInkDiagnostic(
   });
 }
 
-/** Pad/crop only — never stretch. */
+/** Pad/crop + optional vertical shift (device px). Never stretch. */
 async function normalizeBitmap(
   src: HTMLCanvasElement,
   wantW: number,
   wantH: number,
+  shiftY = 0,
 ): Promise<ImageBitmap> {
-  if (src.width === wantW && src.height === wantH) {
+  if (shiftY === 0 && src.width === wantW && src.height === wantH) {
     return createImageBitmap(src);
   }
   const out = document.createElement("canvas");
@@ -517,7 +603,8 @@ async function normalizeBitmap(
   ctx.fillRect(0, 0, wantW, wantH);
   const sw = Math.min(src.width, wantW);
   const sh = Math.min(src.height, wantH);
-  ctx.drawImage(src, 0, 0, sw, sh, 0, 0, sw, sh);
+  // shiftY > 0 pushes the glyph down; empty margins above/below absorb it.
+  ctx.drawImage(src, 0, 0, sw, sh, 0, shiftY, sw, sh);
   return createImageBitmap(out);
 }
 
