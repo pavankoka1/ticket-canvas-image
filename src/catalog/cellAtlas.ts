@@ -46,7 +46,7 @@ type AtlasEntry = {
 };
 
 /** Snapshot from real ticket DOM; cellW = (cw − 6) / 6. Sprites ink-shifted to native. */
-const ATLAS_VERSION = "v12-ink-shift-warm";
+const ATLAS_VERSION = "v13-transparent";
 
 const ramCache = new Map<string, AtlasEntry>();
 
@@ -149,7 +149,10 @@ const SNAP_OPTS = {
   embedFonts: true,
   outerTransforms: true,
   outerShadows: false,
-  backgroundColor: "#FFFFFF" as const,
+  // Transparent capture — the sprite is composited over the canvas body
+  // gradient, same as the live DOM cell (background: transparent). An opaque
+  // fill would paint a white box over the gradient (and over hit dabs).
+  backgroundColor: "transparent" as const,
   fast: true,
   cache: "disabled" as const,
   compress: false,
@@ -301,8 +304,8 @@ async function buildAtlas(
 
   // Snapshot the first cell only (no ::before separator) — pure number styles.
   const captureCell = ticket.cellEls[0]!;
-  // Opaque face for AA; live cells are transparent over the body gradient.
-  captureCell.style.background = "#FFFFFF";
+  // Transparent, like the live cell — glyph composites over the canvas gradient.
+  captureCell.style.background = "transparent";
 
   const rect = captureCell.getBoundingClientRect();
   const measuredW = snapCss(rect.width, dpr);
@@ -446,7 +449,7 @@ async function buildAtlas(
 
 /**
  * Vertical ink bounding box of a captured sprite, in device px from its top.
- * Sprite is #704F4F digits on #FFFFFF, so "not near-white" = ink.
+ * Sprite is #704F4F digits on a transparent background, so alpha = ink.
  */
 function scanInkBBox(
   canvas: HTMLCanvasElement,
@@ -467,7 +470,8 @@ function scanInkBBox(
     let ink = false;
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4;
-      if (data[i]! < 200 || data[i + 1]! < 200 || data[i + 2]! < 200) {
+      // Transparent capture: ink = pixels with coverage (alpha), not "dark".
+      if (data[i + 3]! > 40) {
         ink = true;
         break;
       }
@@ -605,8 +609,7 @@ async function normalizeBitmap(
   const ctx = out.getContext("2d");
   if (!ctx) return createImageBitmap(src);
   ctx.imageSmoothingEnabled = false;
-  ctx.fillStyle = "#FFFFFF";
-  ctx.fillRect(0, 0, wantW, wantH);
+  // Keep transparent — no white fill — so the sprite composites over the gradient.
   const sw = Math.min(src.width, wantW);
   const sh = Math.min(src.height, wantH);
   // shiftY > 0 pushes the glyph down; empty margins above/below absorb it.
