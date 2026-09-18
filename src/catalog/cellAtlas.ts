@@ -46,7 +46,7 @@ type AtlasEntry = {
 };
 
 /** Snapshot from real ticket DOM; cellW = (cw − 6) / 6. Sprites ink-shifted to native. */
-const ATLAS_VERSION = "v13-transparent";
+const ATLAS_VERSION = "v14-transparent-ink";
 
 const ramCache = new Map<string, AtlasEntry>();
 
@@ -449,7 +449,10 @@ async function buildAtlas(
 
 /**
  * Vertical ink bounding box of a captured sprite, in device px from its top.
- * Sprite is #704F4F digits on a transparent background, so alpha = ink.
+ * Sprites are now transparent (straight alpha), so we composite each pixel over
+ * white and apply the ORIGINAL "any channel < 200" test — this reproduces the
+ * exact ink boundary (and thus inkShift) of the earlier opaque-white capture
+ * that aligned perfectly, independent of an alpha threshold.
  */
 function scanInkBBox(
   canvas: HTMLCanvasElement,
@@ -470,8 +473,13 @@ function scanInkBBox(
     let ink = false;
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4;
-      // Transparent capture: ink = pixels with coverage (alpha), not "dark".
-      if (data[i + 3]! > 40) {
+      const a = data[i + 3]! / 255;
+      if (a === 0) continue;
+      // Straight-alpha pixel composited over white == the old opaque capture.
+      const r = data[i]! * a + 255 * (1 - a);
+      const g = data[i + 1]! * a + 255 * (1 - a);
+      const b = data[i + 2]! * a + 255 * (1 - a);
+      if (r < 200 || g < 200 || b < 200) {
         ink = true;
         break;
       }
