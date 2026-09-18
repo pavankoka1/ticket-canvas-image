@@ -46,7 +46,7 @@ type AtlasEntry = {
 };
 
 /** Snapshot from real ticket DOM; cellW = (cw − 6) / 6. Sprites ink-shifted to native. */
-const ATLAS_VERSION = "v14-transparent-ink";
+const ATLAS_VERSION = "v15-unmatte";
 
 const ramCache = new Map<string, AtlasEntry>();
 
@@ -149,10 +149,11 @@ const SNAP_OPTS = {
   embedFonts: true,
   outerTransforms: true,
   outerShadows: false,
-  // Transparent capture — the sprite is composited over the canvas body
-  // gradient, same as the live DOM cell (background: transparent). An opaque
-  // fill would paint a white box over the gradient (and over hit dabs).
-  backgroundColor: "transparent" as const,
+  // Capture over WHITE — on Linux/FreeType the glyph rasterises at a different
+  // sub-pixel baseline over transparent vs opaque, which shifted alignment.
+  // We keep the proven opaque raster and un-matte the white to transparent in
+  // normalizeBitmap so the sprite still composites over the canvas gradient.
+  backgroundColor: "#FFFFFF" as const,
   fast: true,
   cache: "disabled" as const,
   compress: false,
@@ -182,10 +183,20 @@ function activate(entry: AtlasEntry): void {
   });
 }
 
-export function warmCellAtlas(
+export async function warmCellAtlas(
   host: HTMLElement,
   onProgress?: (ready: number, source: AtlasSource) => void,
 ): Promise<AtlasSource> {
+  // Wait for the webfont BEFORE computing the cache key. atlasCacheKey embeds
+  // fontIdentity() (document.fonts.check), so a cold load would key on
+  // "fallback-system" and the next (font cached) load on "MB-Onest" — a
+  // guaranteed IndexedDB miss that forces a needless SnapDOM rebuild every time.
+  try {
+    await document.fonts.ready;
+  } catch {
+    // fonts API unavailable — key falls back deterministically, still fine.
+  }
+
   const layout = getActiveLayout();
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const model = resolveCellBoxModel(layout, dpr);
@@ -198,7 +209,7 @@ export function warmCellAtlas(
   if (hit && hit.bitmaps.size === 60) {
     activate(hit);
     onProgress?.(60, "ram");
-    return Promise.resolve("ram");
+    return "ram";
   }
 
   if (warmPromise && warmPromiseKey === key) return warmPromise;
@@ -304,8 +315,14 @@ async function buildAtlas(
 
   // Snapshot the first cell only (no ::before separator) — pure number styles.
   const captureCell = ticket.cellEls[0]!;
-  // Transparent, like the live cell — glyph composites over the canvas gradient.
-  captureCell.style.background = "transparent";
+  // Opaque white face for a stable cross-platform raster; un-matted later.
+  captureCell.style.background = "#FFFFFF";
+  // Glyph colour for un-matte (read from the real CSS, not hard-coded).
+  const glyph = parseRgb(getComputedStyle(captureCell).color) ?? {
+    r: 112,
+    g: 79,
+    b: 79,
+  };
 
   const rect = captureCell.getBoundingClientRect();
   const measuredW = snapCss(rect.width, dpr);
@@ -416,7 +433,7 @@ async function buildAtlas(
     // glyph inside the raw sprite vs where native text sits.
     if (n === 8) logInkDiagnostic(host, raw, m, captureH, dpr);
 
-    bitmaps.set(n, await normalizeBitmap(raw, wantW, wantH, inkShift));
+    bitmaps.set(n, await normalizeBitmap(raw, wantW, wantH, inkShift, glyph));
     onProgress?.(bitmaps.size, "snap");
     await yieldToMain();
   }
@@ -449,10 +466,9 @@ async function buildAtlas(
 
 /**
  * Vertical ink bounding box of a captured sprite, in device px from its top.
- * Sprites are now transparent (straight alpha), so we composite each pixel over
- * white and apply the ORIGINAL "any channel < 200" test — this reproduces the
- * exact ink boundary (and thus inkShift) of the earlier opaque-white capture
- * that aligned perfectly, independent of an alpha threshold.
+ * The raw capture is opaque white (alpha 255), so compositing over white is a
+ * no-op and this is just the original "any channel < 200" ink test; the general
+ * form also handles straight-alpha input if the capture ever changes.
  */
 function scanInkBBox(
   canvas: HTMLCanvasElement,
@@ -601,27 +617,68 @@ function logInkDiagnostic(
   });
 }
 
-/** Pad/crop + optional vertical shift (device px). Never stretch. */
+type Rgb = { r: number; g: number; b: number };
+
+/** Parse "rgb(112, 79, 79)" / "rgba(...)". */
+function parseRgb(s: string): Rgb | null {
+  const m = s.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+  if (!m) return null;
+  return { r: +m[1]!, g: +m[2]!, b: +m[3]! };
+}
+
+/**
+ * Convert a white-matted glyph to straight-alpha transparent, in place.
+ * For a pixel C = glyph·cov + white·(1−cov), coverage per channel is
+ * (255 − C) / (255 − glyph); we take the strongest channel, then rewrite the
+ * pixel as the glyph colour at that alpha. Grayscale AA (font-smoothing:
+ * antialiased) makes this exact; the result composites over the gradient like
+ * the live DOM cell — without changing the glyph's raster position.
+ */
+function unmatteFromWhite(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number,
+  F: Rgb,
+): void {
+  const dr = 255 - F.r;
+  const dg = 255 - F.g;
+  const db = 255 - F.b;
+  const img = ctx.getImageData(0, 0, w, h);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] === 0) continue; // untouched margin — already transparent
+    const cr = dr > 0 ? (255 - d[i]!) / dr : 0;
+    const cg = dg > 0 ? (255 - d[i + 1]!) / dg : 0;
+    const cb = db > 0 ? (255 - d[i + 2]!) / db : 0;
+    let cov = Math.max(cr, cg, cb);
+    cov = cov < 0 ? 0 : cov > 1 ? 1 : cov;
+    d[i] = F.r;
+    d[i + 1] = F.g;
+    d[i + 2] = F.b;
+    d[i + 3] = Math.round(cov * 255);
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+/** Pad/crop + vertical shift (device px) + un-matte white → transparent. */
 async function normalizeBitmap(
   src: HTMLCanvasElement,
   wantW: number,
   wantH: number,
-  shiftY = 0,
+  shiftY: number,
+  glyph: Rgb,
 ): Promise<ImageBitmap> {
-  if (shiftY === 0 && src.width === wantW && src.height === wantH) {
-    return createImageBitmap(src);
-  }
   const out = document.createElement("canvas");
   out.width = wantW;
   out.height = wantH;
-  const ctx = out.getContext("2d");
+  const ctx = out.getContext("2d", { willReadFrequently: true });
   if (!ctx) return createImageBitmap(src);
   ctx.imageSmoothingEnabled = false;
-  // Keep transparent — no white fill — so the sprite composites over the gradient.
   const sw = Math.min(src.width, wantW);
   const sh = Math.min(src.height, wantH);
   // shiftY > 0 pushes the glyph down; empty margins above/below absorb it.
   ctx.drawImage(src, 0, 0, sw, sh, 0, shiftY, sw, sh);
+  unmatteFromWhite(ctx, wantW, wantH, glyph);
   return createImageBitmap(out);
 }
 
