@@ -17,7 +17,7 @@ import {
   type CellBox,
   type CellBoxModel,
 } from "./cellBoxModel";
-import { applyTicketCssVars } from "./ticketPresets";
+import { applyTicketCssVars, type TicketMetrics } from "./ticketPresets";
 import { applyTicketCellLayout, createTicketDom } from "./ticketCardElement";
 
 export type { CellBox };
@@ -364,6 +364,10 @@ async function buildAtlas(
       });
     }
 
+    // —— Ink-drift diagnostic (mechanism B): where SnapDOM actually put the
+    // glyph inside the sprite vs where native text sits. Run on Mac + Linux.
+    if (n === 8) logInkDiagnostic(raw, m, captureH, dpr);
+
     bitmaps.set(n, await normalizeBitmap(raw, wantW, wantH));
     onProgress?.(bitmaps.size, "snap");
     await yieldToMain();
@@ -393,6 +397,105 @@ async function buildAtlas(
   }
 
   return "snap";
+}
+
+/**
+ * Vertical ink bounding box of a captured sprite, in device px from its top.
+ * Sprite is #704F4F digits on #FFFFFF, so "not near-white" = ink.
+ */
+function scanInkBBox(
+  canvas: HTMLCanvasElement,
+): { top: number; bottom: number; height: number; center: number } | null {
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return null;
+  let data: Uint8ClampedArray;
+  try {
+    data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  } catch {
+    return null; // tainted canvas — can't read pixels
+  }
+  const w = canvas.width;
+  const h = canvas.height;
+  let top = -1;
+  let bottom = -1;
+  for (let y = 0; y < h; y++) {
+    let ink = false;
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      if (data[i]! < 200 || data[i + 1]! < 200 || data[i + 2]! < 200) {
+        ink = true;
+        break;
+      }
+    }
+    if (ink) {
+      if (top < 0) top = y;
+      bottom = y;
+    }
+  }
+  if (top < 0) return null;
+  return { top, bottom, height: bottom - top + 1, center: (top + bottom + 1) / 2 };
+}
+
+/**
+ * Where NATIVE text (not foreignObject) would place the digit's ink centre,
+ * in device px from the cell top. Uses canvas measureText, which goes through
+ * the platform's normal text pipeline — the same one live DOM cells use.
+ * In these presets line-height === cellHeight, so the line box fills the cell.
+ */
+function nativeInkCenterDevice(
+  m: TicketMetrics,
+  cellHcss: number,
+  dpr: number,
+): number | null {
+  const c = document.createElement("canvas");
+  const ctx = c.getContext("2d");
+  if (!ctx) return null;
+  ctx.font = `700 ${m.numberFontSize}px MB-Onest, Onest, system-ui, sans-serif`;
+  ctx.textBaseline = "alphabetic";
+  const tm = ctx.measureText("8");
+  const fAsc = tm.fontBoundingBoxAscent;
+  const fDesc = tm.fontBoundingBoxDescent;
+  const iAsc = tm.actualBoundingBoxAscent;
+  const iDesc = tm.actualBoundingBoxDescent;
+  if ([fAsc, fDesc, iAsc, iDesc].some((v) => typeof v !== "number")) return null;
+  const L = m.numberLineHeight; // CSS px; == cellH in current presets
+  const baselineFromTop = (L - (fAsc + fDesc)) / 2 + fAsc;
+  const inkCentreFromBaseline = (iDesc - iAsc) / 2;
+  const cellExtra = (cellHcss - L) / 2; // 0 when cellH === line-height
+  return (cellExtra + baselineFromTop + inkCentreFromBaseline) * dpr;
+}
+
+/**
+ * Logs δ = (SnapDOM sprite ink centre) − (native ink centre), device px.
+ * deltaDevice < 0 → SnapDOM drew the glyph HIGHER than native (canvas-up bug).
+ * Compare across Mac / Windows / Linux — native centre is font-determined and
+ * platform-invariant, so any delta swing is the foreignObject raster (B).
+ */
+function logInkDiagnostic(
+  raw: HTMLCanvasElement,
+  m: TicketMetrics,
+  captureHcss: number,
+  dpr: number,
+): void {
+  const ink = scanInkBBox(raw);
+  if (!ink) {
+    console.warn("[INK] scan failed (blank or tainted canvas)");
+    return;
+  }
+  const nativeCentre = nativeInkCenterDevice(m, captureHcss, dpr);
+  console.log("[INK] digit 8", {
+    preset: m.id,
+    dprCapped: dpr,
+    trueDpr: window.devicePixelRatio,
+    rawSize: `${raw.width}x${raw.height}`,
+    spriteInkTop: ink.top,
+    spriteInkBottom: ink.bottom,
+    spriteInkCentre: +ink.center.toFixed(2),
+    spriteInkCentreFrac: +(ink.center / raw.height).toFixed(4),
+    nativeInkCentre: nativeCentre == null ? "n/a" : +nativeCentre.toFixed(2),
+    deltaDevice:
+      nativeCentre == null ? "n/a" : +(ink.center - nativeCentre).toFixed(2),
+  });
 }
 
 /** Pad/crop only — never stretch. */
