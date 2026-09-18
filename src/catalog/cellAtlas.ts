@@ -46,7 +46,7 @@ type AtlasEntry = {
 };
 
 /** Snapshot from real ticket DOM; cellW = (cw − 6) / 6. Sprites ink-shifted to native. */
-const ATLAS_VERSION = "v11-ink-shift";
+const ATLAS_VERSION = "v12-ink-shift-warm";
 
 const ramCache = new Map<string, AtlasEntry>();
 
@@ -343,6 +343,11 @@ async function buildAtlas(
     const nativeCentre = nativeInkCentreDevice(host, m, captureH, dpr);
     ticket.cellTexts[0]!.data = "8";
     void captureCell.offsetWidth;
+    // Warm-up: SnapDOM's very first toCanvas rasterises the cell differently
+    // (cold style/font inlining), so measuring off it gives a shift that
+    // doesn't match the warm sprites captured in the loop. Discard one capture
+    // so the measured "8" matches what actually gets stored.
+    await snapdom.toCanvas(captureCell, { ...SNAP_OPTS, dpr, invalidate: true });
     const raw8 = await snapdom.toCanvas(captureCell, {
       ...SNAP_OPTS,
       dpr,
@@ -356,6 +361,7 @@ async function buildAtlas(
       preset: m.id,
       dpr,
       trueDpr: window.devicePixelRatio,
+      rawSize: `${raw8.width}x${raw8.height}`,
       nativeInkCentre: nativeCentre == null ? "n/a" : +nativeCentre.toFixed(2),
       spriteInkCentre: ink8 ? +ink8.center.toFixed(2) : "n/a",
       inkShift, // device px baked into every sprite (>0 = push digit down)
