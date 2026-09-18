@@ -195,26 +195,39 @@ export class CanvasPool {
 
       paintChrome(ctx, x, y, ticket.no, cardWidth, metrics);
 
+      // Absolute device-pixel origins once — do NOT snap slot and box.y separately
+      // (that double-rounds fractional bodyTop=19.5 on dpr 1.25/1.5 → Y crawl).
+      const slotXDev = Math.round(slot.x * dpr);
+      const slotYDev = Math.round(slot.y * dpr);
+      const tileYDev = Math.round(tile.minY * dpr);
+
       for (let k = 0; k < BALLS_PER_TICKET; k++) {
         const n = ticket.balls[k];
         if (n == null) continue;
         const box = boxes[k]!;
-        const bx = Math.round((x + box.x) * dpr) / dpr;
-        const by = Math.round((y + box.y) * dpr) / dpr;
+        const bxDev = Math.round((slot.x + box.x) * dpr);
+        const byDev = Math.round((slot.y + box.y) * dpr);
+        const bx = bxDev / dpr;
+        const by = (byDev - tileYDev) / dpr;
         if (ticket.hits.includes(k)) {
           paintHit(ctx, bx, by, box.w, box.h, metrics.dabSize);
         }
-        // Numbers only from HTML SnapDOM sprites — never canvas fillText.
         const bmp = useSprites ? getCellBitmap(n) : undefined;
         if (bmp) {
           ctx.setTransform(1, 0, 0, 1, 0, 0);
-          ctx.drawImage(bmp, Math.round(bx * dpr), Math.round(by * dpr));
+          ctx.drawImage(bmp, bxDev, byDev - tileYDev);
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         }
       }
 
       // Separators between cells (not inside sprites).
-      paintSeparators(ctx, x, y, boxes, metrics);
+      paintSeparators(
+        ctx,
+        slotXDev / dpr,
+        (slotYDev - tileYDev) / dpr,
+        boxes,
+        metrics,
+      );
     }
   }
 }
@@ -272,7 +285,7 @@ function paintSeparators(
   ctx.fillStyle = "rgb(177 151 151 / 50%)";
   for (let i = 1; i < boxes.length; i++) {
     const box = boxes[i]!;
-    // Match DOM ::before: in the margin gap immediately left of cell i.
+    // Absolute snap once (same rule as cell blit).
     const sx = Math.round((x + box.x - sep) * dpr) / dpr;
     const sy = Math.round((y + box.y + m.separatorMarginTop) * dpr) / dpr;
     ctx.fillRect(sx, sy, sep, m.separatorHeight);

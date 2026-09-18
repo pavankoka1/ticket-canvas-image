@@ -24,6 +24,8 @@ import {
 import {
   cellAtlasSize,
   clearCellAtlas,
+  getCellSpriteDataUrl,
+  getTicketGeometry,
   warmCellAtlas,
   type AtlasSource,
 } from "./cellAtlas";
@@ -76,6 +78,8 @@ export function Catalog() {
   const [domCount, setDomCount] = useState(0);
   const [tileCount, setTileCount] = useState(0);
   const [presetMode, setPresetMode] = useState<PresetMode>("auto");
+  const [spriteOverlay, setSpriteOverlay] = useState(false);
+  const [overlayInfo, setOverlayInfo] = useState<string>("");
   const [availWidth, setAvailWidth] = useState(1000);
   const [viewport, setViewport] = useState(() => ({
     w: typeof window !== "undefined" ? window.innerWidth : 1366,
@@ -301,14 +305,74 @@ export function Catalog() {
     startAtlasWarm();
   };
 
+  // A-vs-B test: raw sprite <img> over a live DOM cell (no canvas).
+  // Aligns → placement (A). Still high → SnapDOM foreignObject raster (B).
+  useLayoutEffect(() => {
+    const host = domHostRef.current;
+    if (!host) return;
+    let img = host.querySelector(
+      "img.catalog__spriteOverlay",
+    ) as HTMLImageElement | null;
+
+    if (!spriteOverlay || atlasReady < 60) {
+      img?.remove();
+      setOverlayInfo("");
+      return;
+    }
+
+    const cell = host.querySelector(".ticketCard__cell") as HTMLElement | null;
+    if (!cell) {
+      setOverlayInfo("no live cell yet — scroll/add tickets");
+      return;
+    }
+
+    const n = Number.parseInt(cell.textContent?.trim() || "", 10);
+    if (!Number.isFinite(n) || n < 1 || n > 60) {
+      setOverlayInfo("cell text not a number");
+      return;
+    }
+
+    const url = getCellSpriteDataUrl(n);
+    const geo = getTicketGeometry();
+    if (!url || !geo) {
+      setOverlayInfo("sprite missing");
+      return;
+    }
+
+    if (!img) {
+      img = document.createElement("img");
+      img.className = "catalog__spriteOverlay";
+      img.alt = "";
+      host.appendChild(img);
+    }
+
+    const cellR = cell.getBoundingClientRect();
+    const hostR = host.getBoundingClientRect();
+    img.src = url;
+    img.style.position = "absolute";
+    img.style.left = `${cellR.left - hostR.left + host.scrollLeft}px`;
+    img.style.top = `${cellR.top - hostR.top + host.scrollTop}px`;
+    img.style.width = `${geo.cellW}px`;
+    img.style.height = `${geo.cellH}px`;
+    img.style.imageRendering = "pixelated";
+    img.style.opacity = "0.55";
+    img.style.pointerEvents = "none";
+    img.style.zIndex = "20";
+    img.style.outline = "1px solid #e11";
+    img.style.boxSizing = "border-box";
+
+    setOverlayInfo(
+      `overlay #${n} on live cell — if glyph still ↑ = SnapDOM (B); if aligned = placement (A)`,
+    );
+  }, [spriteOverlay, atlasReady, domCount, tickets.length, layout]);
+
   return (
     <div className="app" ref={cssHostRef}>
       <header className="toolbar">
         <h1>Cell atlas canvas POC</h1>
         <p className="toolbar__hint">
-          Real ticket HTML → SnapDOM first cell for 1–60. cellW =
-          (ticketWidth−6)/6. Canvas = cell sprites + separators (no canvas
-          text). Rebuild atlas after this change.
+          cellW=(ticketWidth−6)/6. Atlas stores measured cell tops. Rebuild
+          atlas, check console [YDRIFT], then toggle sprite-over-DOM on Linux.
         </p>
         <div className="toolbar__row">
           <button type="button" onClick={addHundred}>
@@ -320,6 +384,15 @@ export function Catalog() {
           <button type="button" className="btn-ghost" onClick={rebuildAtlas}>
             Rebuild atlas
           </button>
+          <label className="stat">
+            <input
+              type="checkbox"
+              checked={spriteOverlay}
+              onChange={(e) => setSpriteOverlay(e.target.checked)}
+            />{" "}
+            sprite-over-DOM
+          </label>
+          {overlayInfo ? <span className="stat">{overlayInfo}</span> : null}
           <label className="stat toolbar__sheet">
             size{" "}
             <select

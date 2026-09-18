@@ -39,7 +39,7 @@ type AtlasEntry = {
 };
 
 /** Snapshot from real ticket DOM; cellW = (cw − 6) / 6. */
-const ATLAS_VERSION = "v9-ticket-html";
+const ATLAS_VERSION = "v10-measured-y";
 
 const ramCache = new Map<string, AtlasEntry>();
 
@@ -50,6 +50,20 @@ let buildGen = 0;
 
 export function getCellBitmap(n: number): ImageBitmap | undefined {
   return active?.bitmaps.get(n);
+}
+
+/** PNG data-URL of a cached sprite — for DOM overlay A-vs-B test. */
+export function getCellSpriteDataUrl(n: number): string | null {
+  const bmp = active?.bitmaps.get(n);
+  if (!bmp) return null;
+  const c = document.createElement("canvas");
+  c.width = bmp.width;
+  c.height = bmp.height;
+  const ctx = c.getContext("2d");
+  if (!ctx) return null;
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(bmp, 0, 0);
+  return c.toDataURL("image/png");
 }
 
 export function cellAtlasSize(): number {
@@ -263,6 +277,21 @@ async function buildAtlas(
   host.appendChild(ticket.root);
   void ticket.root.offsetWidth;
 
+  // —— Y-drift diagnostic (run on Linux fractional DPR) ——
+  const cardR = ticket.root.getBoundingClientRect();
+  const cell0R = ticket.cellEls[0]!.getBoundingClientRect();
+  const actualTop = cell0R.top - cardR.top;
+  const trueDpr = window.devicePixelRatio || 1;
+  console.log("[YDRIFT]", {
+    dpr: trueDpr,
+    dprCapped: dpr,
+    modelBodyTop: model.bodyTop,
+    actualCellTop: actualTop,
+    modelDeviceTop: Math.round(model.bodyTop * trueDpr),
+    actualDeviceTop: actualTop * trueDpr,
+    metricBodyTop: m.headerHeight + m.bodyPaddingY,
+  });
+
   // Snapshot the first cell only (no ::before separator) — pure number styles.
   const captureCell = ticket.cellEls[0]!;
   // Opaque face for AA; live cells are transparent over the body gradient.
@@ -287,12 +316,24 @@ async function buildAtlas(
   const wantW = Math.round(captureW * dpr);
   const wantH = Math.round(captureH * dpr);
 
+  // Geometry from Chrome's real layout — not metric-derived bodyTop snaps.
+  // Fixes mechanism A: independent snap(19.5) vs absolute pixel-snap diverge on fractional DPR.
+  const measuredCells = ticket.cellEls.map((el) => {
+    const r = el.getBoundingClientRect();
+    return {
+      x: r.left - cardR.left,
+      y: r.top - cardR.top,
+      w: captureW,
+      h: captureH,
+    };
+  });
+
   const geometry: TicketGeometry = {
     dpr,
     cardWidth: layout.cardWidth,
     cellW: captureW,
     cellH: captureH,
-    cells: model.cells.map((c) => ({ ...c, w: captureW, h: captureH })),
+    cells: measuredCells,
   };
 
   const bitmaps = new Map<number, ImageBitmap>();
