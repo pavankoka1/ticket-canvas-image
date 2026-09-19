@@ -120,6 +120,64 @@ export async function listAtlasKeys(): Promise<string[]> {
   }
 }
 
+// —— Generic keyed sprite-set store (cells, multiplier labels, ID digits) ——
+// Reuses the same object store; a record is { key, meta, blobs } where `meta`
+// is caller-defined (geometry / advances / values) validated by the caller.
+export type StoredSprites = {
+  key: string;
+  meta: unknown;
+  blobs: Blob[];
+};
+
+export async function loadSprites(key: string): Promise<StoredSprites | null> {
+  try {
+    const db = await openDb();
+    try {
+      return await new Promise((resolve, reject) => {
+        const tx = db.transaction(STORE, "readonly");
+        const req = tx.objectStore(STORE).get(key);
+        req.onsuccess = () => {
+          const row = req.result as StoredSprites | undefined;
+          if (!row?.blobs || row.blobs.length === 0) {
+            resolve(null);
+            return;
+          }
+          resolve(row);
+        };
+        req.onerror = () => reject(req.error);
+      });
+    } finally {
+      db.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+export async function saveSprites(rec: StoredSprites): Promise<boolean> {
+  try {
+    const db = await openDb();
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction(STORE, "readwrite");
+        tx.objectStore(STORE).put(rec);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error ?? new Error("idb abort"));
+      });
+      return true;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
+export async function deleteSprites(key: string): Promise<void> {
+  return deleteAtlas(key);
+}
+
 export async function bitmapToPngBlob(bmp: ImageBitmap): Promise<Blob> {
   const canvas = document.createElement("canvas");
   canvas.width = bmp.width;

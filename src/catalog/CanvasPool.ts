@@ -1,8 +1,9 @@
+import { getDabImage, getDiscImage, getMultiplierLabel } from "./badgeAtlas";
 import { contentWidth, getActiveLayout } from "./catalogLayout";
 import { getCellBitmap, getTicketGeometry } from "./cellAtlas";
 import { getLiveCellBoxModel, resolveCellBoxModel } from "./cellBoxModel";
 import { BALLS_PER_TICKET, CANVAS_TILE_TICKETS } from "./layout";
-import type { Ticket, TicketSlot } from "./tickets";
+import { isWinTicket, type Ticket, type TicketSlot } from "./tickets";
 
 type Tile = {
   canvas: HTMLCanvasElement;
@@ -27,6 +28,7 @@ export class CanvasPool {
   private ticketsById: Map<string, Ticket> = new Map();
   private readonly host: HTMLElement;
   private paintGen = 0;
+  private paused = false;
 
   constructor(host: HTMLElement) {
     this.host = host;
@@ -36,6 +38,23 @@ export class CanvasPool {
 
   mount(): void {
     this.ready = true;
+  }
+
+  /**
+   * Suspend tile painting during scroll. The tiles are a static underlay that
+   * already covers the whole catalog, so they need no repaint while scrolling —
+   * and a repaint triggered mid-scroll (atlas warm, badge load, data change)
+   * would interleave heavy paints with scroll and halt it. Dirty tiles stay
+   * dirty and flush on resume().
+   */
+  pause(): void {
+    this.paused = true;
+  }
+
+  resume(): void {
+    if (!this.paused) return;
+    this.paused = false;
+    void this.paintDirtyTiles();
   }
 
   get isReady(): boolean {
@@ -136,9 +155,11 @@ export class CanvasPool {
   }
 
   private async paintDirtyTiles(): Promise<void> {
+    if (this.paused) return; // scrolling — dirty tiles flush on resume()
     const gen = ++this.paintGen;
     for (const tile of this.tiles) {
       if (gen !== this.paintGen) return;
+      if (this.paused) return; // a scroll started mid-paint — stop, flush on resume
       if (!tile.dirty) continue;
       this.paintTile(tile);
       tile.dirty = false;
@@ -190,15 +211,16 @@ export class CanvasPool {
       const ticket = this.ticketsById.get(slot.id);
       if (!ticket) continue;
 
+      const gold = isWinTicket(ticket);
       const x = Math.round(slot.x * dpr) / dpr;
       const y = Math.round((slot.y - tile.minY) * dpr) / dpr;
 
-      paintChrome(ctx, x, y, ticket.no, cardWidth, metrics);
+      paintChrome(ctx, x, y, ticket.no, cardWidth, metrics, gold);
 
       // Absolute device-pixel origins once — do NOT snap slot and box.y separately
       // (that double-rounds fractional bodyTop=19.5 on dpr 1.25/1.5 → Y crawl).
-      const slotXDev = Math.round(slot.x * dpr);
       const slotYDev = Math.round(slot.y * dpr);
+      const slotXDev = Math.round(slot.x * dpr);
       const tileYDev = Math.round(tile.minY * dpr);
 
       for (let k = 0; k < BALLS_PER_TICKET; k++) {
@@ -207,16 +229,20 @@ export class CanvasPool {
         const box = boxes[k]!;
         const bxDev = Math.round((slot.x + box.x) * dpr);
         const byDev = Math.round((slot.y + box.y) * dpr);
-        const bx = bxDev / dpr;
-        const by = (byDev - tileYDev) / dpr;
-        if (ticket.hits.includes(k)) {
-          paintHit(ctx, bx, by, box.w, box.h, metrics.dabSize);
-        }
+
+        // Number sprite first…
         const bmp = useSprites ? getCellBitmap(n) : undefined;
         if (bmp) {
           ctx.setTransform(1, 0, 0, 1, 0, 0);
           ctx.drawImage(bmp, bxDev, byDev - tileYDev);
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+
+        // …then the dab / multiplier disc ON TOP (covers the digit, like the DOM).
+        if (ticket.hits.includes(k)) {
+          const cx = slot.x + box.x + box.w / 2;
+          const cy = slot.y - tile.minY + box.y + box.h / 2;
+          paintBadge(ctx, cx, cy, metrics.dabSize, ticket.multipliers[k] ?? 0, dpr);
         }
       }
 
@@ -227,9 +253,57 @@ export class CanvasPool {
         (slotYDev - tileYDev) / dpr,
         boxes,
         metrics,
+        gold,
       );
     }
   }
+}
+
+/**
+ * Draw an image centred at (cx,cy) using `background-size: contain` semantics —
+ * scale to fit within a dabSize box preserving aspect (the discs aren't square).
+ */
+function drawContain(
+  ctx: CanvasRenderingContext2D,
+  img: HTMLImageElement,
+  cx: number,
+  cy: number,
+  dabSize: number,
+): void {
+  const iw = img.naturalWidth;
+  const ih = img.naturalHeight;
+  if (iw <= 0 || ih <= 0) return;
+  const scale = Math.min(dabSize / iw, dabSize / ih);
+  const w = iw * scale;
+  const h = ih * scale;
+  ctx.drawImage(img, cx - w / 2, cy - h / 2, w, h);
+}
+
+/** Dab / multiplier disc + label, centred on the cell (art, so smoothing on). */
+function paintBadge(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  dabSize: number,
+  multiplier: number,
+  dpr: number,
+): void {
+  const prevSmoothing = ctx.imageSmoothingEnabled;
+  ctx.imageSmoothingEnabled = true;
+  if (multiplier > 0) {
+    const disc = getDiscImage();
+    if (disc) drawContain(ctx, disc, cx, cy, dabSize);
+    const label = getMultiplierLabel(multiplier);
+    if (label) {
+      const lw = label.width / dpr;
+      const lh = label.height / dpr;
+      ctx.drawImage(label, cx - lw / 2, cy - lh / 2, lw, lh);
+    }
+  } else {
+    const dab = getDabImage();
+    if (dab) drawContain(ctx, dab, cx, cy, dabSize);
+  }
+  ctx.imageSmoothingEnabled = prevSmoothing;
 }
 
 function paintChrome(
@@ -239,6 +313,7 @@ function paintChrome(
   ticketNo: string,
   cardWidth: number,
   m: ReturnType<typeof getActiveLayout>["metrics"],
+  gold: boolean,
 ): void {
   const r = m.radius;
   const cardHeight = m.cardHeight;
@@ -246,24 +321,41 @@ function paintChrome(
   roundRectPath(ctx, x, y, cardWidth, cardHeight, r);
   ctx.clip();
 
-  ctx.fillStyle = "#F8EADB";
+  // Card face
+  ctx.fillStyle = gold ? "#FFD65C" : "#F8EADB";
   ctx.fillRect(x, y, cardWidth, cardHeight);
 
+  // Body gradient
   const bodyGrad = ctx.createLinearGradient(
     x,
     y + m.headerHeight,
     x,
     y + cardHeight,
   );
-  bodyGrad.addColorStop(0, "#FFFFFF");
-  bodyGrad.addColorStop(1, "#F3EAE0");
+  if (gold) {
+    bodyGrad.addColorStop(0, "#FFE96E");
+    bodyGrad.addColorStop(0.5, "#FFD054");
+    bodyGrad.addColorStop(1, "#F98900");
+  } else {
+    bodyGrad.addColorStop(0, "#FFFFFF");
+    bodyGrad.addColorStop(1, "#F3EAE0");
+  }
   ctx.fillStyle = bodyGrad;
   ctx.fillRect(x, y + m.headerHeight, cardWidth, m.bodyHeight);
 
-  ctx.fillStyle = "#F8EADB";
+  // Header
+  if (gold) {
+    const headGrad = ctx.createLinearGradient(x, y, x, y + m.headerHeight);
+    headGrad.addColorStop(0, "#FFEFA5");
+    headGrad.addColorStop(1, "#FFD65C");
+    ctx.fillStyle = headGrad;
+  } else {
+    ctx.fillStyle = "#F8EADB";
+  }
   ctx.fillRect(x, y, cardWidth, m.headerHeight);
 
-  ctx.fillStyle = "#B19797";
+  // Ticket id (still fillText for now — sprite ID atlas is the next step).
+  ctx.fillStyle = gold ? "#9F8080" : "#B19797";
   ctx.font = `700 ${m.metaFontSize}px MB-Onest, Onest, system-ui, sans-serif`;
   ctx.textAlign = "right";
   ctx.textBaseline = "bottom";
@@ -278,11 +370,12 @@ function paintSeparators(
   y: number,
   boxes: { x: number; y: number; w: number; h: number }[],
   m: ReturnType<typeof getActiveLayout>["metrics"],
+  gold: boolean,
 ): void {
   const sep = m.separatorWidth;
   if (sep <= 0 || boxes.length < 2) return;
   const dpr = ctx.getTransform().a || 1;
-  ctx.fillStyle = "rgb(177 151 151 / 50%)";
+  ctx.fillStyle = gold ? "#CB9330" : "rgb(177 151 151 / 50%)";
   for (let i = 1; i < boxes.length; i++) {
     const box = boxes[i]!;
     // Absolute snap once (same rule as cell blit).
@@ -290,22 +383,6 @@ function paintSeparators(
     const sy = Math.round((y + box.y + m.separatorMarginTop) * dpr) / dpr;
     ctx.fillRect(sx, sy, sep, m.separatorHeight);
   }
-}
-
-function paintHit(
-  ctx: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  dabSize: number,
-): void {
-  ctx.save();
-  ctx.fillStyle = "#e8c547";
-  ctx.beginPath();
-  ctx.arc(x + w / 2, y + h / 2, dabSize / 2, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
 }
 
 function roundRectPath(

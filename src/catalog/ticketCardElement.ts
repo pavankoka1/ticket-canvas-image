@@ -7,7 +7,8 @@ import {
 } from "./cellBoxModel";
 import { getActiveLayout } from "./catalogLayout";
 import { BALLS_PER_TICKET } from "./layout";
-import type { Ticket } from "./tickets";
+import { MultiplierLabelNode } from "./multiplierLabel";
+import { isWinTicket, type Ticket } from "./tickets";
 
 export type TicketDomParts = {
   root: HTMLElement;
@@ -76,16 +77,24 @@ export function applyTicketCellLayout(
   }
 }
 
+/** Per-cell dab/multiplier badge, built lazily like fortunamania. */
+type CellBadge = {
+  host: HTMLElement;
+  label: MultiplierLabelNode | null;
+};
+
 /**
  * Fortunamania-aligned pooled ticket.
- * DOM + CSS identical to atlas snapshot source.
+ * DOM + CSS identical to atlas snapshot source, including dab/multiplier/win.
  */
 export class TicketCard {
   readonly dom: HTMLElement;
   private readonly idText: Text;
   private readonly cellTexts: Text[] = [];
   private readonly cellEls: HTMLElement[] = [];
+  private readonly badges: (CellBadge | null)[] = [];
   private layoutKey: string | null = null;
+  private winClass = false;
 
   constructor() {
     const parts = createTicketDom();
@@ -97,6 +106,7 @@ export class TicketCard {
     this.idText = parts.idText;
     this.cellEls = parts.cellEls;
     this.cellTexts = parts.cellTexts;
+    this.badges = parts.cellEls.map(() => null);
 
     this.applyCardWidth(getActiveLayout().cardWidth);
   }
@@ -117,17 +127,59 @@ export class TicketCard {
     applyTicketCellLayout(this.dom, this.cellEls, model);
   }
 
+  private ensureBadge(i: number): CellBadge {
+    let badge = this.badges[i];
+    if (badge) return badge;
+    const host = document.createElement("span");
+    host.className = "ticketCard__badgeHost";
+    this.cellEls[i]!.appendChild(host);
+    badge = { host, label: null };
+    this.badges[i] = badge;
+    return badge;
+  }
+
+  private applyCellBadge(i: number, hit: boolean, multiplier: number): void {
+    const existing = this.badges[i];
+    if (!hit) {
+      if (existing) existing.host.style.display = "none";
+      this.cellEls[i]!.classList.remove("ticketCard__cell_hit");
+      return;
+    }
+    this.cellEls[i]!.classList.add("ticketCard__cell_hit");
+    const badge = this.ensureBadge(i);
+    badge.host.style.display = "flex";
+    const isMult = multiplier > 0;
+    badge.host.classList.toggle("ticketCard__badgeHost_multiplier", isMult);
+    badge.host.classList.toggle("ticketCard__badgeHost_dab", !isMult);
+    if (isMult) {
+      if (!badge.label) {
+        badge.label = new MultiplierLabelNode();
+        badge.host.appendChild(badge.label.dom);
+      }
+      badge.label.update(multiplier);
+      badge.label.dom.style.display = "flex";
+    } else if (badge.label) {
+      badge.label.dom.style.display = "none";
+    }
+  }
+
   bind(ticket: Ticket, x?: number, y?: number): void {
     this.applyCardWidth(getActiveLayout().cardWidth);
     if (this.idText.data !== ticket.no) this.idText.data = ticket.no;
+
     for (let i = 0; i < BALLS_PER_TICKET; i++) {
       const next = String(ticket.balls[i] ?? "");
       if (this.cellTexts[i]!.data !== next) this.cellTexts[i]!.data = next;
-      this.cellEls[i]!.classList.toggle(
-        "ticketCard__cell_hit",
-        ticket.hits.includes(i),
-      );
+      const hit = ticket.hits.includes(i);
+      this.applyCellBadge(i, hit, ticket.multipliers[i] ?? 0);
     }
+
+    const win = isWinTicket(ticket);
+    if (win !== this.winClass) {
+      this.winClass = win;
+      this.dom.classList.toggle("ticketCard_win", win);
+    }
+
     if (x !== undefined && y !== undefined) {
       const dpr = Math.min(window.devicePixelRatio || 1, 2);
       const sx = Math.round(x * dpr) / dpr;

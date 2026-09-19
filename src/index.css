@@ -267,12 +267,142 @@ button:disabled {
   pointer-events: none;
 }
 
+/* Hit state is semantic only — the dab disc covers the number once it lands. */
 .ticketCard__cell_hit {
-  /* Hit is semantic; dab disc covers numbers in product — circle approx for POC. */
-  background: radial-gradient(
-    circle calc(var(--ticket-dab-size, 24px) / 2) at 50% 50%,
-    #e8c547 0%,
-    #e8c547 99%,
-    transparent 100%
+  /* no visual; disc is a separate badge host */
+}
+
+/* —— Dab / multiplier badge (ported from fortunamania Ticket.module.css) —— */
+.ticketCard__badgeHost {
+  z-index: 1;
+  position: absolute;
+  display: flex;
+  top: 50%;
+  left: 50%;
+  width: var(--ticket-dab-size, 24px);
+  height: var(--ticket-dab-size, 24px);
+  background-position: center;
+  background-repeat: no-repeat;
+  overflow: visible;
+  pointer-events: none;
+  background-size: contain;
+  align-items: center;
+  justify-content: center;
+  transform: translate(-50%, -50%);
+  transform-origin: center center;
+}
+
+.ticketCard__badgeHost_dab {
+  background-image: url("/dab-full.png");
+}
+
+.ticketCard__badgeHost_multiplier {
+  background-image: url("/badge-circle.png");
+}
+
+.ticketCard__badgeLabel {
+  position: absolute;
+  display: flex;
+  overflow: visible;
+  inset: 0;
+  align-items: center;
+  justify-content: center;
+  transform-origin: center center;
+}
+
+.ticketCard__multiplier {
+  --ticket-multiplier-suffix-scale: 0.769;
+  --ticket-multiplier-stroke-gradient: linear-gradient(
+    rgb(128, 26, 28),
+    rgb(63, 9, 10)
   );
+  --ticket-multiplier-shadow-color: #210304;
+  --ticket-multiplier-shadow-offset-y: 0.0556em;
+  --ticket-multiplier-stroke-width: 0.13em;
+
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  font-family: "MB-Onest", Onest, sans-serif;
+  font-size: var(--multiplier-font-size, 13px);
+  font-weight: 700;
+  line-height: 1.0041em;
+  letter-spacing: -0.01em;
+}
+
+.ticketCard__multiplierFill,
+.ticketCard__multiplierStroke,
+.ticketCard__multiplierShadow {
+  display: block;
+  white-space: nowrap;
+}
+
+.ticketCard__multiplierFill {
+  -webkit-background-clip: text;
+  background-clip: text;
+  background-image: linear-gradient(
+    174.942deg,
+    #ffe27b 0.495%,
+    #ffffff 26.893%,
+    #ffda6c 63.411%,
+    #ffb200 78.509%
+  );
+  -webkit-text-fill-color: transparent;
+}
+
+.ticketCard__multiplierX {
+  margin-left: 0.06em;
+  font-size: calc(var(--ticket-multiplier-suffix-scale) * 1em);
+}
+
+.ticketCard__multiplierStroke,
+.ticketCard__multiplierShadow {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  -webkit-text-stroke: var(--ticket-multiplier-stroke-width)
+    var(--layer-stroke-color);
+  paint-order: stroke fill;
+}
+
+.ticketCard__multiplierStroke {
+  --layer-stroke-color: transparent;
+
+  z-index: -1;
+  left: calc(-1 * var(--ticket-multiplier-stroke-width));
+  padding: 0 var(--ticket-multiplier-stroke-width);
+  -webkit-background-clip: text;
+  background-clip: text;
+  background-image: var(--ticket-multiplier-stroke-gradient);
+  -webkit-text-fill-color: transparent;
+}
+
+.ticketCard__multiplierShadow {
+  --layer-stroke-color: var(--ticket-multiplier-shadow-color);
+
+  z-index: -2;
+  -webkit-text-fill-color: var(--ticket-multiplier-shadow-color);
+  transform: translateY(var(--ticket-multiplier-shadow-offset-y));
+}
+
+/* —— Gold / win state (matchCount ≥ 2) —— */
+.ticketCard_win {
+  background: #ffd65c;
+}
+
+.ticketCard_win .ticketCard__header {
+  background: linear-gradient(180deg, #ffefa5 0%, #ffd65c 100%);
+}
+
+.ticketCard_win .ticketCard__body {
+  background: linear-gradient(180deg, #ffe96e 0%, #ffd054 50%, #f98900 100%);
+}
+
+.ticketCard_win .ticketCard__id {
+  color: #9f8080;
+}
+
+.ticketCard_win .ticketCard__cell:not(:first-child)::before {
+  background: #cb9330;
 }

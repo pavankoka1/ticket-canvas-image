@@ -46,7 +46,7 @@ type AtlasEntry = {
 };
 
 /** Snapshot from real ticket DOM; cellW = (cw − 6) / 6. Sprites ink-shifted to native. */
-const ATLAS_VERSION = "v15-unmatte";
+const ATLAS_VERSION = "v16-sheet";
 
 const ramCache = new Map<string, AtlasEntry>();
 
@@ -89,7 +89,7 @@ export function ramAtlasCount(): number {
   return ramCache.size;
 }
 
-function fontIdentity(sizePx: number): string {
+export function fontIdentity(sizePx: number): string {
   const spec = `700 ${sizePx}px "MB-Onest"`;
   const specOnest = `700 ${sizePx}px Onest`;
   const check = document.fonts?.check?.bind(document.fonts);
@@ -243,6 +243,7 @@ async function buildAtlas(
 
   const stored = await loadAtlas(key);
   if (gen !== buildGen) return "empty";
+  console.info("[atlas] cache", { hit: !!stored, key });
   if (stored) {
     try {
       if (
@@ -250,14 +251,26 @@ async function buildAtlas(
         stored.geometry.cellW !== model.cellW ||
         stored.geometry.cellH !== model.cellH
       ) {
+        console.warn("[atlas] STALE geometry — rebuilding", {
+          storedCw: stored.geometry.cardWidth,
+          cw: layout.cardWidth,
+          storedCell: `${stored.geometry.cellW}x${stored.geometry.cellH}`,
+          cell: `${model.cellW}x${model.cellH}`,
+        });
         await deleteAtlas(key);
       } else {
-        const bitmaps = new Map<number, ImageBitmap>();
-        for (let i = 0; i < 60; i++) {
-          if (gen !== buildGen) return "empty";
-          bitmaps.set(i + 1, await blobToBitmap(stored.blobs[i]!));
-          onProgress?.(bitmaps.size, "idb");
+        // Decode all 60 PNGs in parallel — sequential awaits made the IDB load
+        // take seconds under CPU throttle. createImageBitmap decodes off-thread.
+        const bmps = await Promise.all(
+          stored.blobs.map((b) => blobToBitmap(b)),
+        );
+        if (gen !== buildGen) {
+          for (const b of bmps) b.close();
+          return "empty";
         }
+        const bitmaps = new Map<number, ImageBitmap>();
+        bmps.forEach((b, i) => bitmaps.set(i + 1, b));
+        onProgress?.(60, "idb");
         activate({ key, bitmaps, geometry: stored.geometry as TicketGeometry });
         return "idb";
       }
@@ -313,11 +326,8 @@ async function buildAtlas(
     metricBodyTop: m.headerHeight + m.bodyPaddingY,
   });
 
-  // Snapshot the first cell only (no ::before separator) — pure number styles.
+  // Measure the real cell for geometry + glyph colour, then discard the ticket.
   const captureCell = ticket.cellEls[0]!;
-  // Opaque white face for a stable cross-platform raster; un-matted later.
-  captureCell.style.background = "#FFFFFF";
-  // Glyph colour for un-matte (read from the real CSS, not hard-coded).
   const glyph = parseRgb(getComputedStyle(captureCell).color) ?? {
     r: 112,
     g: 79,
@@ -355,25 +365,45 @@ async function buildAtlas(
     };
   });
 
-  // —— Fix mechanism B: bake a vertical shift so the digit ink lands where
-  // native DOM text sits. Pre-capture "8", compare its ink centre to the
-  // measured native ink centre; the delta is baked into every sprite below.
+  // Native ink centre (for the mechanism-B shift), measured from the real cell.
+  const nativeCentre = nativeInkCentreDevice(host, m, captureH, dpr);
+  ticket.root.remove();
+  if (gen !== buildGen) return "empty";
+
+  // —— ONE SnapDOM sheet for all 60 numbers, then crop (was 62 separate
+  // captures — ~8s on Safari/low-end; the per-call overhead dominated). ——
+  const SHEET_COLS = 10;
+  const SHEET_ROWS = 6;
+  const sheet = buildNumberSheet(captureW, captureH, m, glyph, SHEET_COLS, SHEET_ROWS);
+  host.appendChild(sheet);
+  void sheet.offsetWidth;
+
+  const sheetCssW = SHEET_COLS * captureW;
+  const sheetCssH = SHEET_ROWS * captureH;
+  // Natural size × dpr — never pass width/height (SnapDOM would rescale); crop
+  // against the actual raster below.
+  const sheetCanvas = await snapdom.toCanvas(sheet, {
+    ...SNAP_OPTS,
+    dpr,
+    invalidate: true,
+  });
+  sheet.remove();
+  if (gen !== buildGen) return "empty";
+
+  // Crop against the *actual* raster size (SnapDOM may round vs our math).
+  const scaleX = sheetCanvas.width / sheetCssW;
+  const scaleY = sheetCanvas.height / sheetCssH;
+  const cellOrigin = (i: number) => ({
+    sx: Math.round((i % SHEET_COLS) * captureW * scaleX),
+    sy: Math.round(Math.floor(i / SHEET_COLS) * captureH * scaleY),
+  });
+
+  // Mechanism-B shift: crop "8" (index 7), scan its ink, compare to native.
   let inkShift = 0;
   {
-    const nativeCentre = nativeInkCentreDevice(host, m, captureH, dpr);
-    ticket.cellTexts[0]!.data = "8";
-    void captureCell.offsetWidth;
-    // Warm-up: SnapDOM's very first toCanvas rasterises the cell differently
-    // (cold style/font inlining), so measuring off it gives a shift that
-    // doesn't match the warm sprites captured in the loop. Discard one capture
-    // so the measured "8" matches what actually gets stored.
-    await snapdom.toCanvas(captureCell, { ...SNAP_OPTS, dpr, invalidate: true });
-    const raw8 = await snapdom.toCanvas(captureCell, {
-      ...SNAP_OPTS,
-      dpr,
-      invalidate: true,
-    });
-    const ink8 = scanInkBBox(raw8);
+    const { sx, sy } = cellOrigin(7);
+    const eight = cropRegionCanvas(sheetCanvas, sx, sy, wantW, wantH);
+    const ink8 = eight ? scanInkBBox(eight) : null;
     if (ink8 && nativeCentre != null) {
       inkShift = Math.round(nativeCentre - ink8.center);
     }
@@ -381,10 +411,10 @@ async function buildAtlas(
       preset: m.id,
       dpr,
       trueDpr: window.devicePixelRatio,
-      rawSize: `${raw8.width}x${raw8.height}`,
+      sheet: `${sheetCanvas.width}x${sheetCanvas.height}`,
       nativeInkCentre: nativeCentre == null ? "n/a" : +nativeCentre.toFixed(2),
       spriteInkCentre: ink8 ? +ink8.center.toFixed(2) : "n/a",
-      inkShift, // device px baked into every sprite (>0 = push digit down)
+      inkShift,
       residualAfterFix:
         ink8 && nativeCentre != null
           ? +(ink8.center + inkShift - nativeCentre).toFixed(2)
@@ -401,66 +431,54 @@ async function buildAtlas(
     inkShift,
   };
 
+  // Crop + un-matte + shift each cell — parallel, no SnapDOM in this loop.
   const bitmaps = new Map<number, ImageBitmap>();
-
-  for (let n = 1; n <= 60; n++) {
-    if (gen !== buildGen) {
-      for (const b of bitmaps.values()) b.close();
-      return "empty";
-    }
-
-    ticket.cellTexts[0]!.data = String(n);
-    void captureCell.offsetWidth;
-
-    // Natural size × dpr — never pass width/height (SnapDOM would rescale).
-    const raw = await snapdom.toCanvas(captureCell, {
-      ...SNAP_OPTS,
-      dpr,
-      invalidate: true,
-    });
-
-    if (n === 1) {
-      console.info("[atlas] ticket-html snap", {
-        raw: `${raw.width}x${raw.height}`,
-        want: `${wantW}x${wantH}`,
-        css: `${captureW}x${captureH}`,
-        formula: `(${layout.cardWidth}-6)/6=${cellW}`,
-        dpr,
-      });
-    }
-
-    // —— Ink-drift diagnostic (mechanism B): where SnapDOM actually put the
-    // glyph inside the raw sprite vs where native text sits.
-    if (n === 8) logInkDiagnostic(host, raw, m, captureH, dpr);
-
-    bitmaps.set(n, await normalizeBitmap(raw, wantW, wantH, inkShift, glyph));
-    onProgress?.(bitmaps.size, "snap");
-    await yieldToMain();
-  }
-
-  ticket.root.remove();
-
+  const built = await Promise.all(
+    Array.from({ length: 60 }, (_, i) => {
+      const { sx, sy } = cellOrigin(i);
+      return sheetCellBitmap(sheetCanvas, sx, sy, wantW, wantH, inkShift, glyph);
+    }),
+  );
   if (gen !== buildGen) {
-    for (const b of bitmaps.values()) b.close();
+    for (const b of built) b?.close();
     return "empty";
   }
-
-  activate({ key, bitmaps, geometry });
+  built.forEach((b, i) => {
+    if (b) bitmaps.set(i + 1, b);
+  });
   onProgress?.(60, "snap");
+  console.info("[atlas] sheet snap", {
+    sheet: `${sheetCanvas.width}x${sheetCanvas.height}`,
+    want: `${wantW}x${wantH}`,
+    css: `${captureW}x${captureH}`,
+    dpr,
+  });
 
+  // Persist FIRST, always, under the exact key we built for — even if a newer
+  // warm superseded this one. The key encodes the layout, so a stale-layout
+  // build is still a valid cache entry for that layout. Skipping the save here
+  // (the old behaviour) meant a re-warm mid-build → atlas thrown away → rebuild
+  // on every refresh. Converting bitmaps to blobs does not consume them.
+  const superseded = gen !== buildGen;
   try {
     const blobs: Blob[] = [];
     for (let n = 1; n <= 60; n++) {
       blobs.push(await bitmapToPngBlob(bitmaps.get(n)!));
       if (n % 10 === 0) await yieldToMain();
     }
-    if (gen !== buildGen) return "snap";
     const ok = await saveAtlas({ key, geometry, blobs });
-    if (!ok) console.warn("[atlas] IndexedDB save failed for", key);
+    console.info("[atlas] saved", { key, ok, superseded });
   } catch (err) {
     console.warn("[atlas] persist failed", err);
   }
 
+  if (superseded) {
+    for (const b of bitmaps.values()) b.close();
+    return "empty";
+  }
+
+  activate({ key, bitmaps, geometry });
+  onProgress?.(60, "snap");
   return "snap";
 }
 
@@ -583,40 +601,6 @@ function nativeInkCentreDevice(
   return (baselineCss + inkOffsetCss) * dpr;
 }
 
-/**
- * Logs δ = (SnapDOM sprite ink centre) − (native ink centre), device px.
- * deltaDevice < 0 → SnapDOM drew the glyph HIGHER than native (canvas-up bug).
- * Compare across Mac / Windows / Linux — native centre is font-determined and
- * platform-invariant, so any delta swing is the foreignObject raster (B).
- */
-function logInkDiagnostic(
-  host: HTMLElement,
-  raw: HTMLCanvasElement,
-  m: TicketMetrics,
-  captureHcss: number,
-  dpr: number,
-): void {
-  const ink = scanInkBBox(raw);
-  if (!ink) {
-    console.warn("[INK] scan failed (blank or tainted canvas)");
-    return;
-  }
-  const nativeCentre = nativeInkCentreDevice(host, m, captureHcss, dpr);
-  console.log("[INK] digit 8 (raw sprite, pre-shift)", {
-    preset: m.id,
-    dprCapped: dpr,
-    trueDpr: window.devicePixelRatio,
-    rawSize: `${raw.width}x${raw.height}`,
-    spriteInkTop: ink.top,
-    spriteInkBottom: ink.bottom,
-    spriteInkCentre: +ink.center.toFixed(2),
-    spriteInkCentreFrac: +(ink.center / raw.height).toFixed(4),
-    nativeInkCentre: nativeCentre == null ? "n/a" : +nativeCentre.toFixed(2),
-    deltaDevice:
-      nativeCentre == null ? "n/a" : +(ink.center - nativeCentre).toFixed(2),
-  });
-}
-
 type Rgb = { r: number; g: number; b: number };
 
 /** Parse "rgb(112, 79, 79)" / "rgba(...)". */
@@ -660,24 +644,100 @@ function unmatteFromWhite(
   ctx.putImageData(img, 0, 0);
 }
 
-/** Pad/crop + vertical shift (device px) + un-matte white → transparent. */
-async function normalizeBitmap(
-  src: HTMLCanvasElement,
+/** Grid of 60 cells styled EXACTLY like a live cell — one SnapDOM source. */
+function buildNumberSheet(
+  cellW: number,
+  cellH: number,
+  m: TicketMetrics,
+  glyph: Rgb,
+  cols: number,
+  rows: number,
+): HTMLElement {
+  const sheet = document.createElement("div");
+  sheet.style.cssText = [
+    "position:absolute",
+    "left:0",
+    "top:0",
+    "display:grid",
+    `grid-template-columns:repeat(${cols}, ${cellW}px)`,
+    `grid-template-rows:repeat(${rows}, ${cellH}px)`,
+    "gap:0",
+    "margin:0",
+    "padding:0",
+    "background:#FFFFFF",
+    "box-sizing:border-box",
+  ].join(";");
+  const color = `rgb(${glyph.r}, ${glyph.g}, ${glyph.b})`;
+  const cellCss = [
+    "box-sizing:border-box",
+    `width:${cellW}px`,
+    `height:${cellH}px`,
+    "margin:0",
+    "background:#FFFFFF",
+    "font-family:MB-Onest, Onest, system-ui, sans-serif",
+    `font-size:${m.numberFontSize}px`,
+    "font-weight:700",
+    `line-height:${m.numberLineHeight}px`,
+    `color:${color}`,
+    "display:flex",
+    "align-items:center",
+    "justify-content:center",
+    "white-space:nowrap",
+    "overflow:hidden",
+    "-webkit-font-smoothing:antialiased",
+    "text-rendering:geometricPrecision",
+  ].join(";");
+  for (let n = 1; n <= cols * rows; n++) {
+    const cell = document.createElement("div");
+    cell.style.cssText = cellCss;
+    cell.textContent = String(n);
+    sheet.appendChild(cell);
+  }
+  return sheet;
+}
+
+/** Copy a cell region of the sheet into an opaque canvas (for ink scanning). */
+function cropRegionCanvas(
+  sheet: HTMLCanvasElement,
+  sx: number,
+  sy: number,
+  w: number,
+  h: number,
+): HTMLCanvasElement | null {
+  const out = document.createElement("canvas");
+  out.width = w;
+  out.height = h;
+  const ctx = out.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return null;
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillRect(0, 0, w, h);
+  const srcW = Math.min(w, sheet.width - sx);
+  const srcH = Math.min(h, sheet.height - sy);
+  ctx.drawImage(sheet, sx, sy, srcW, srcH, 0, 0, srcW, srcH);
+  return out;
+}
+
+/** Crop a cell region + vertical shift + un-matte white → transparent sprite. */
+async function sheetCellBitmap(
+  sheet: HTMLCanvasElement,
+  sx: number,
+  sy: number,
   wantW: number,
   wantH: number,
   shiftY: number,
   glyph: Rgb,
-): Promise<ImageBitmap> {
+): Promise<ImageBitmap | null> {
   const out = document.createElement("canvas");
   out.width = wantW;
   out.height = wantH;
   const ctx = out.getContext("2d", { willReadFrequently: true });
-  if (!ctx) return createImageBitmap(src);
+  if (!ctx) return null;
   ctx.imageSmoothingEnabled = false;
-  const sw = Math.min(src.width, wantW);
-  const sh = Math.min(src.height, wantH);
+  const srcW = Math.min(wantW, sheet.width - sx);
+  const srcH = Math.min(wantH, sheet.height - sy);
   // shiftY > 0 pushes the glyph down; empty margins above/below absorb it.
-  ctx.drawImage(src, 0, 0, sw, sh, 0, shiftY, sw, sh);
+  ctx.drawImage(sheet, sx, sy, srcW, srcH, 0, shiftY, srcW, srcH);
   unmatteFromWhite(ctx, wantW, wantH, glyph);
   return createImageBitmap(out);
 }

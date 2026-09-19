@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 
+import { onBadgeImagesReady, warmMultiplierLabels } from "./badgeAtlas";
 import { computeDomBand } from "./bands";
 import { CanvasPool } from "./CanvasPool";
 import {
@@ -39,6 +40,7 @@ import {
 import {
   buildSlots,
   createTickets,
+  MULTIPLIER_VALUES,
   type Ticket,
   type TicketSlot,
 } from "./tickets";
@@ -62,6 +64,7 @@ export function Catalog() {
   const domHostRef = useRef<HTMLDivElement>(null);
   const canvasHostRef = useRef<HTMLDivElement>(null);
   const atlasHostRef = useRef<HTMLDivElement>(null);
+  const badgeHostRef = useRef<HTMLDivElement>(null);
   const cssHostRef = useRef<HTMLDivElement>(null);
   const domPoolRef = useRef<DomPool | null>(null);
   const canvasPoolRef = useRef<CanvasPool | null>(null);
@@ -180,12 +183,14 @@ export function Catalog() {
     let lastUi = 0;
     void warmCellAtlas(host, (ready, source) => {
       if (gen !== atlasGenRef.current) return;
+      // Progress counter only — the atlas isn't active until warm resolves, so
+      // repainting the canvas on every tick is pure waste (it repaints every
+      // tile). The single repaint on completion (below) is all that's needed.
       const now = performance.now();
-      if (now - lastUi > 40 || ready >= 60) {
+      if (now - lastUi > 120 || ready >= 60) {
         lastUi = now;
         setAtlasReady(ready);
         setAtlasSource(source);
-        canvasPoolRef.current?.refresh();
       }
     }).then((source) => {
       if (gen !== atlasGenRef.current) return;
@@ -226,6 +231,26 @@ export function Catalog() {
       if (domThrottleRef.current) window.clearTimeout(domThrottleRef.current);
     };
   }, [syncCanvas, syncDom]);
+
+  // Badge art (dab/disc PNGs) loads async → repaint once available.
+  useEffect(() => {
+    onBadgeImagesReady(() => canvasPoolRef.current?.refresh());
+  }, []);
+
+  // Warm multiplier label sprites per layout (dab size changes with preset).
+  useEffect(() => {
+    const host = badgeHostRef.current;
+    if (!host) return;
+    let cancelled = false;
+    void warmMultiplierLabels(host, MULTIPLIER_VALUES).then(() => {
+      if (cancelled) return;
+      canvasPoolRef.current?.refresh();
+      syncDom();
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [layout, syncDom]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -276,13 +301,27 @@ export function Catalog() {
     syncDom();
   }, [tickets, height, syncCanvas, syncDom, scrollToBottom]);
 
-  // Scroll: canvas tiles already cover the catalog — only throttle DOM translates.
+  // Scroll: canvas tiles already cover the catalog — only throttle DOM translates,
+  // and PAUSE canvas painting so a repaint (atlas/badge/data) can't halt scroll.
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
-    const onScroll = () => scheduleDomSync();
+    let idle = 0;
+    const onScroll = () => {
+      canvasPoolRef.current?.pause();
+      if (idle) window.clearTimeout(idle);
+      idle = window.setTimeout(() => {
+        idle = 0;
+        canvasPoolRef.current?.resume();
+      }, 120);
+      scheduleDomSync();
+    };
     container.addEventListener("scroll", onScroll, { passive: true });
-    return () => container.removeEventListener("scroll", onScroll);
+    return () => {
+      container.removeEventListener("scroll", onScroll);
+      if (idle) window.clearTimeout(idle);
+      canvasPoolRef.current?.resume();
+    };
   }, [scheduleDomSync]);
 
   const addHundred = () => {
@@ -303,6 +342,46 @@ export function Catalog() {
     setAtlasSource("empty");
     setAtlasReady(0);
     startAtlasWarm();
+  };
+
+  // —— Dab / multiplier / gold demo controls (mutate tickets in place) ——
+  const refreshStates = useCallback(() => {
+    canvasPoolRef.current?.refresh();
+    syncDom();
+  }, [syncDom]);
+
+  const addDab = () => {
+    for (const t of tickets) {
+      const unhit = [0, 1, 2, 3, 4, 5].filter((c) => !t.hits.includes(c));
+      if (!unhit.length) continue;
+      t.hits.push(unhit[Math.floor(Math.random() * unhit.length)]!);
+    }
+    refreshStates();
+  };
+
+  const addMultiplier = () => {
+    for (const t of tickets) {
+      let cell = t.hits.find((c) => !(c in t.multipliers));
+      if (cell === undefined) {
+        const unhit = [0, 1, 2, 3, 4, 5].filter((c) => !t.hits.includes(c));
+        if (!unhit.length) continue;
+        cell = unhit[Math.floor(Math.random() * unhit.length)]!;
+        t.hits.push(cell);
+      }
+      t.multipliers[cell] =
+        MULTIPLIER_VALUES[
+          Math.floor(Math.random() * MULTIPLIER_VALUES.length)
+        ]!;
+    }
+    refreshStates();
+  };
+
+  const clearStates = () => {
+    for (const t of tickets) {
+      t.hits = [];
+      t.multipliers = {};
+    }
+    refreshStates();
   };
 
   // A-vs-B test: raw sprite <img> over a live DOM cell (no canvas).
@@ -384,6 +463,15 @@ export function Catalog() {
           <button type="button" className="btn-ghost" onClick={rebuildAtlas}>
             Rebuild atlas
           </button>
+          <button type="button" className="btn-ghost" onClick={addDab}>
+            + Dab
+          </button>
+          <button type="button" className="btn-ghost" onClick={addMultiplier}>
+            + Multiplier
+          </button>
+          <button type="button" className="btn-ghost" onClick={clearStates}>
+            Clear states
+          </button>
           <label className="stat">
             <input
               type="checkbox"
@@ -462,6 +550,7 @@ export function Catalog() {
         </div>
       </div>
       <div ref={atlasHostRef} className="catalog__captureHost" />
+      <div ref={badgeHostRef} className="catalog__captureHost" />
     </div>
   );
 }
