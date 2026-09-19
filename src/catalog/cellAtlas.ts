@@ -46,7 +46,7 @@ type AtlasEntry = {
 };
 
 /** Snapshot from real ticket DOM; cellW = (cw − 6) / 6. Sprites ink-shifted to native. */
-const ATLAS_VERSION = "v16-sheet";
+const ATLAS_VERSION = "v17-font700";
 
 const ramCache = new Map<string, AtlasEntry>();
 
@@ -285,8 +285,26 @@ async function buildAtlas(
   applyTicketCssVars(host, m);
   applyCellBoxCssVars(host, model, m);
 
+  // Explicitly load the 700 weight BEFORE capture. document.fonts.ready alone
+  // can resolve before a specific weight is ready, so the sheet would rasterise
+  // a thinner fallback while the live DOM later shows real Onest 700 — the
+  // "thin numbers that re-adjust" seen on Linux.
+  try {
+    await Promise.all([
+      document.fonts.load(`700 ${m.numberFontSize}px "MB-Onest"`),
+      document.fonts.load(`700 ${m.numberFontSize}px Onest`),
+    ]);
+  } catch {
+    // ignore — fontIdentity below records what actually resolved
+  }
   await document.fonts.ready;
   const face = fontIdentity(m.numberFontSize);
+  console.info("[atlas] font", {
+    face,
+    mbOnest700: document.fonts.check(`700 ${m.numberFontSize}px "MB-Onest"`),
+    onest700: document.fonts.check(`700 ${m.numberFontSize}px Onest`),
+    onest400: document.fonts.check(`400 ${m.numberFontSize}px Onest`),
+  });
   if (face === "fallback-system") {
     console.warn(
       "[atlas] ticket font not loaded — capturing with fallback (key marks it)",
