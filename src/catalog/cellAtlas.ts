@@ -46,7 +46,7 @@ type AtlasEntry = {
 };
 
 /** Snapshot from real ticket DOM; cellW = (cw − 6) / 6. Sprites ink-shifted to native. */
-const ATLAS_VERSION = "v17-font700";
+const ATLAS_VERSION = "v19-realcells";
 
 const ramCache = new Map<string, AtlasEntry>();
 
@@ -388,33 +388,66 @@ async function buildAtlas(
   ticket.root.remove();
   if (gen !== buildGen) return "empty";
 
-  // —— ONE SnapDOM sheet for all 60 numbers, then crop (was 62 separate
-  // captures — ~8s on Safari/low-end; the per-call overhead dominated). ——
-  const SHEET_COLS = 10;
-  const SHEET_ROWS = 6;
-  const sheet = buildNumberSheet(captureW, captureH, m, glyph, SHEET_COLS, SHEET_ROWS);
-  host.appendChild(sheet);
-  void sheet.offsetWidth;
+  // —— ONE SnapDOM sheet built from REAL ticket cells (identical classes &
+  // inherited font to the live cell and the old per-cell capture), cropped by
+  // MEASURED positions. A plain-<div> grid rendered the glyph at a subtly
+  // different size in the foreignObject → "numbers shrink on settle". Still one
+  // capture (10 ticket-rows × 6 cells), so the Safari-speed win stays. ——
+  const SHEET_ROWS = 10; // 10 rows × 6 cells = 60 numbers
+  const container = document.createElement("div");
+  container.style.cssText = [
+    "position:absolute",
+    "left:0",
+    "top:0",
+    "margin:0",
+    "padding:0",
+    "background:#FFFFFF",
+    "display:flex",
+    "flex-direction:column",
+  ].join(";");
+  const orderedCells: HTMLElement[] = [];
+  for (let r = 0; r < SHEET_ROWS; r++) {
+    const t = createTicketDom();
+    t.root.style.position = "relative";
+    t.root.style.background = "#FFFFFF";
+    t.root.style.boxShadow = "none";
+    t.root.style.filter = "none";
+    applyTicketCellLayout(t.root, t.cellEls, model);
+    for (let c = 0; c < t.cellEls.length; c++) {
+      t.cellEls[c]!.style.background = "#FFFFFF"; // opaque for un-matte
+      const n = r * 6 + c + 1;
+      if (n <= 60) {
+        t.cellTexts[c]!.data = String(n);
+        orderedCells[n - 1] = t.cellEls[c]!;
+      } else {
+        t.cellTexts[c]!.data = "";
+      }
+    }
+    container.appendChild(t.root);
+  }
+  host.appendChild(container);
+  void container.offsetWidth;
 
-  const sheetCssW = SHEET_COLS * captureW;
-  const sheetCssH = SHEET_ROWS * captureH;
-  // Natural size × dpr — never pass width/height (SnapDOM would rescale); crop
-  // against the actual raster below.
-  const sheetCanvas = await snapdom.toCanvas(sheet, {
+  // Measure each cell's real device position (robust to flex/separator layout).
+  const containerRect = container.getBoundingClientRect();
+  const cellRects = orderedCells.map((el) => {
+    const r = el.getBoundingClientRect();
+    return {
+      sx: Math.round((r.left - containerRect.left) * dpr),
+      sy: Math.round((r.top - containerRect.top) * dpr),
+    };
+  });
+
+  // Natural size × dpr — never pass width/height (SnapDOM would rescale).
+  const sheetCanvas = await snapdom.toCanvas(container, {
     ...SNAP_OPTS,
     dpr,
     invalidate: true,
   });
-  sheet.remove();
+  container.remove();
   if (gen !== buildGen) return "empty";
 
-  // Crop against the *actual* raster size (SnapDOM may round vs our math).
-  const scaleX = sheetCanvas.width / sheetCssW;
-  const scaleY = sheetCanvas.height / sheetCssH;
-  const cellOrigin = (i: number) => ({
-    sx: Math.round((i % SHEET_COLS) * captureW * scaleX),
-    sy: Math.round(Math.floor(i / SHEET_COLS) * captureH * scaleY),
-  });
+  const cellOrigin = (i: number) => cellRects[i]!;
 
   // Mechanism-B shift: crop "8" (index 7), scan its ink, compare to native.
   let inkShift = 0;
@@ -662,57 +695,6 @@ function unmatteFromWhite(
   ctx.putImageData(img, 0, 0);
 }
 
-/** Grid of 60 cells styled EXACTLY like a live cell — one SnapDOM source. */
-function buildNumberSheet(
-  cellW: number,
-  cellH: number,
-  m: TicketMetrics,
-  glyph: Rgb,
-  cols: number,
-  rows: number,
-): HTMLElement {
-  const sheet = document.createElement("div");
-  sheet.style.cssText = [
-    "position:absolute",
-    "left:0",
-    "top:0",
-    "display:grid",
-    `grid-template-columns:repeat(${cols}, ${cellW}px)`,
-    `grid-template-rows:repeat(${rows}, ${cellH}px)`,
-    "gap:0",
-    "margin:0",
-    "padding:0",
-    "background:#FFFFFF",
-    "box-sizing:border-box",
-  ].join(";");
-  const color = `rgb(${glyph.r}, ${glyph.g}, ${glyph.b})`;
-  const cellCss = [
-    "box-sizing:border-box",
-    `width:${cellW}px`,
-    `height:${cellH}px`,
-    "margin:0",
-    "background:#FFFFFF",
-    "font-family:MB-Onest, Onest, system-ui, sans-serif",
-    `font-size:${m.numberFontSize}px`,
-    "font-weight:700",
-    `line-height:${m.numberLineHeight}px`,
-    `color:${color}`,
-    "display:flex",
-    "align-items:center",
-    "justify-content:center",
-    "white-space:nowrap",
-    "overflow:hidden",
-    "-webkit-font-smoothing:antialiased",
-    "text-rendering:geometricPrecision",
-  ].join(";");
-  for (let n = 1; n <= cols * rows; n++) {
-    const cell = document.createElement("div");
-    cell.style.cssText = cellCss;
-    cell.textContent = String(n);
-    sheet.appendChild(cell);
-  }
-  return sheet;
-}
 
 /** Copy a cell region of the sheet into an opaque canvas (for ink scanning). */
 function cropRegionCanvas(
