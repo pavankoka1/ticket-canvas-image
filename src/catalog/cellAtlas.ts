@@ -47,7 +47,7 @@ type AtlasEntry = {
 };
 
 /** Snapshot from real ticket DOM; cellW = (cw − 6) / 6. Sprites ink-shifted to native. */
-const ATLAS_VERSION = "v19-realcells";
+const ATLAS_VERSION = "v20-percell";
 
 const ramCache = new Map<string, AtlasEntry>();
 
@@ -386,76 +386,23 @@ async function buildAtlas(
 
   // Native ink centre (for the mechanism-B shift), measured from the real cell.
   const nativeCentre = nativeInkCentreDevice(host, m, captureH, dpr);
-  ticket.root.remove();
-  if (gen !== buildGen) return "empty";
 
-  // —— ONE SnapDOM sheet built from REAL ticket cells (identical classes &
-  // inherited font to the live cell and the old per-cell capture), cropped by
-  // MEASURED positions. A plain-<div> grid rendered the glyph at a subtly
-  // different size in the foreignObject → "numbers shrink on settle". Still one
-  // capture (10 ticket-rows × 6 cells), so the Safari-speed win stays. ——
-  const SHEET_ROWS = 10; // 10 rows × 6 cells = 60 numbers
-  const container = document.createElement("div");
-  container.style.cssText = [
-    "position:absolute",
-    "left:0",
-    "top:0",
-    "margin:0",
-    "padding:0",
-    "background:#FFFFFF",
-    "display:flex",
-    "flex-direction:column",
-  ].join(";");
-  const orderedCells: HTMLElement[] = [];
-  for (let r = 0; r < SHEET_ROWS; r++) {
-    const t = createTicketDom();
-    t.root.style.position = "relative";
-    t.root.style.background = "#FFFFFF";
-    t.root.style.boxShadow = "none";
-    t.root.style.filter = "none";
-    applyTicketCellLayout(t.root, t.cellEls, model);
-    for (let c = 0; c < t.cellEls.length; c++) {
-      t.cellEls[c]!.style.background = "#FFFFFF"; // opaque for un-matte
-      const n = r * 6 + c + 1;
-      if (n <= 60) {
-        t.cellTexts[c]!.data = String(n);
-        orderedCells[n - 1] = t.cellEls[c]!;
-      } else {
-        t.cellTexts[c]!.data = "";
-      }
-    }
-    container.appendChild(t.root);
-  }
-  host.appendChild(container);
-  void container.offsetWidth;
+  // Opaque white face for a stable cross-platform raster; un-matted per sprite.
+  captureCell.style.background = "#FFFFFF";
 
-  // Measure each cell's real device position (robust to flex/separator layout).
-  const containerRect = container.getBoundingClientRect();
-  const cellRects = orderedCells.map((el) => {
-    const r = el.getBoundingClientRect();
-    return {
-      sx: Math.round((r.left - containerRect.left) * dpr),
-      sy: Math.round((r.top - containerRect.top) * dpr),
-    };
-  });
-
-  // Natural size × dpr — never pass width/height (SnapDOM would rescale).
-  const sheetCanvas = await snapdom.toCanvas(container, {
-    ...SNAP_OPTS,
-    dpr,
-    invalidate: true,
-  });
-  container.remove();
-  if (gen !== buildGen) return "empty";
-
-  const cellOrigin = (i: number) => cellRects[i]!;
-
-  // Mechanism-B shift: crop "8" (index 7), scan its ink, compare to native.
+  // —— Mechanism-B shift: pre-capture "8" (warm-up discards SnapDOM's cold
+  // first capture, so the measured "8" matches the warm sprites below). ——
   let inkShift = 0;
   {
-    const { sx, sy } = cellOrigin(7);
-    const eight = cropRegionCanvas(sheetCanvas, sx, sy, wantW, wantH);
-    const ink8 = eight ? scanInkBBox(eight) : null;
+    ticket.cellTexts[0]!.data = "8";
+    void captureCell.offsetWidth;
+    await snapdom.toCanvas(captureCell, { ...SNAP_OPTS, dpr, invalidate: true });
+    const raw8 = await snapdom.toCanvas(captureCell, {
+      ...SNAP_OPTS,
+      dpr,
+      invalidate: true,
+    });
+    const ink8 = scanInkBBox(raw8);
     if (ink8 && nativeCentre != null) {
       inkShift = Math.round(nativeCentre - ink8.center);
     }
@@ -463,7 +410,7 @@ async function buildAtlas(
       preset: m.id,
       dpr,
       trueDpr: window.devicePixelRatio,
-      sheet: `${sheetCanvas.width}x${sheetCanvas.height}`,
+      rawSize: `${raw8.width}x${raw8.height}`,
       nativeInkCentre: nativeCentre == null ? "n/a" : +nativeCentre.toFixed(2),
       spriteInkCentre: ink8 ? +ink8.center.toFixed(2) : "n/a",
       inkShift,
@@ -483,28 +430,74 @@ async function buildAtlas(
     inkShift,
   };
 
-  // Crop + un-matte + shift each cell — parallel, no SnapDOM in this loop.
-  const bitmaps = new Map<number, ImageBitmap>();
-  const built = await Promise.all(
-    Array.from({ length: 60 }, (_, i) => {
-      const { sx, sy } = cellOrigin(i);
-      return sheetCellBitmap(sheetCanvas, sx, sy, wantW, wantH, inkShift, glyph);
-    }),
-  );
-  if (gen !== buildGen) {
-    for (const b of built) b?.close();
-    return "empty";
+  // —— Per-cell capture with LIMITED concurrency. Each sprite is still a faithful
+  // single-element capture of a real cell[0] (the fix), but a small pool lets the
+  // captures' async decode overlap. Full Promise.all(60) freezes the main thread
+  // (per NOTES); a small batch does not. Cell[0] only — it's :first-child so no
+  // ::before separator leaks into the sprite.
+  const POOL = 6;
+  const pool: { root: HTMLElement; cell: HTMLElement; text: Text }[] = [];
+  for (let i = 0; i < POOL; i++) {
+    const t = createTicketDom();
+    t.root.style.position = "relative";
+    t.root.style.background = "#FFFFFF";
+    t.root.style.boxShadow = "none";
+    t.root.style.filter = "none";
+    applyTicketCellLayout(t.root, t.cellEls, model);
+    for (let c = 0; c < t.cellTexts.length; c++) {
+      t.cellTexts[c]!.data = String(c + 1);
+    }
+    t.cellEls[0]!.style.background = "#FFFFFF";
+    host.appendChild(t.root);
+    pool.push({ root: t.root, cell: t.cellEls[0]!, text: t.cellTexts[0]! });
   }
-  built.forEach((b, i) => {
-    if (b) bitmaps.set(i + 1, b);
-  });
-  onProgress?.(60, "snap");
-  console.info("[atlas] sheet snap", {
-    sheet: `${sheetCanvas.width}x${sheetCanvas.height}`,
-    want: `${wantW}x${wantH}`,
-    css: `${captureW}x${captureH}`,
-    dpr,
-  });
+  ticket.root.remove(); // measure ticket no longer needed
+  void host.offsetWidth;
+
+  const cleanupPool = () => {
+    for (const p of pool) p.root.remove();
+  };
+
+  const bitmaps = new Map<number, ImageBitmap>();
+  let loggedFirst = false;
+  for (let base = 0; base < 60; base += POOL) {
+    if (gen !== buildGen) {
+      for (const b of bitmaps.values()) b.close();
+      cleanupPool();
+      return "empty";
+    }
+    const count = Math.min(POOL, 60 - base);
+    for (let k = 0; k < count; k++) {
+      pool[k]!.text.data = String(base + k + 1);
+      void pool[k]!.cell.offsetWidth;
+    }
+    const caps: Promise<{ n: number; raw: HTMLCanvasElement }>[] = [];
+    for (let k = 0; k < count; k++) {
+      const n = base + k + 1;
+      caps.push(
+        snapdom
+          .toCanvas(pool[k]!.cell, { ...SNAP_OPTS, dpr, invalidate: true })
+          .then((raw: HTMLCanvasElement) => ({ n, raw })),
+      );
+    }
+    const results = await Promise.all(caps);
+    for (const { n, raw } of results) {
+      if (!loggedFirst) {
+        loggedFirst = true;
+        console.info("[atlas] per-cell snap", {
+          raw: `${raw.width}x${raw.height}`,
+          want: `${wantW}x${wantH}`,
+          css: `${captureW}x${captureH}`,
+          pool: POOL,
+          dpr,
+        });
+      }
+      bitmaps.set(n, await normalizeBitmap(raw, wantW, wantH, inkShift, glyph));
+    }
+    onProgress?.(bitmaps.size, "snap");
+    await yieldToMain();
+  }
+  cleanupPool();
 
   // Persist FIRST, always, under the exact key we built for — even if a newer
   // warm superseded this one. The key encodes the layout, so a stale-layout
@@ -697,48 +690,24 @@ function unmatteFromWhite(
 }
 
 
-/** Copy a cell region of the sheet into an opaque canvas (for ink scanning). */
-function cropRegionCanvas(
-  sheet: HTMLCanvasElement,
-  sx: number,
-  sy: number,
-  w: number,
-  h: number,
-): HTMLCanvasElement | null {
-  const out = document.createElement("canvas");
-  out.width = w;
-  out.height = h;
-  const ctx = out.getContext("2d", { willReadFrequently: true });
-  if (!ctx) return null;
-  ctx.imageSmoothingEnabled = false;
-  ctx.fillStyle = "#FFFFFF";
-  ctx.fillRect(0, 0, w, h);
-  const srcW = Math.min(w, sheet.width - sx);
-  const srcH = Math.min(h, sheet.height - sy);
-  ctx.drawImage(sheet, sx, sy, srcW, srcH, 0, 0, srcW, srcH);
-  return out;
-}
-
-/** Crop a cell region + vertical shift + un-matte white → transparent sprite. */
-async function sheetCellBitmap(
-  sheet: HTMLCanvasElement,
-  sx: number,
-  sy: number,
+/** Pad/crop + vertical shift (device px) + un-matte white → transparent sprite. */
+async function normalizeBitmap(
+  src: HTMLCanvasElement,
   wantW: number,
   wantH: number,
   shiftY: number,
   glyph: Rgb,
-): Promise<ImageBitmap | null> {
+): Promise<ImageBitmap> {
   const out = document.createElement("canvas");
   out.width = wantW;
   out.height = wantH;
   const ctx = out.getContext("2d", { willReadFrequently: true });
-  if (!ctx) return null;
+  if (!ctx) return createImageBitmap(src);
   ctx.imageSmoothingEnabled = false;
-  const srcW = Math.min(wantW, sheet.width - sx);
-  const srcH = Math.min(wantH, sheet.height - sy);
+  const sw = Math.min(src.width, wantW);
+  const sh = Math.min(src.height, wantH);
   // shiftY > 0 pushes the glyph down; empty margins above/below absorb it.
-  ctx.drawImage(sheet, sx, sy, srcW, srcH, 0, shiftY, srcW, srcH);
+  ctx.drawImage(src, 0, 0, sw, sh, 0, shiftY, sw, sh);
   unmatteFromWhite(ctx, wantW, wantH, glyph);
   return createImageBitmap(out);
 }
