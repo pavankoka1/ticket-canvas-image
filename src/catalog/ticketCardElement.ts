@@ -1,4 +1,5 @@
 import {
+  activeDpr,
   applyCellBoxCssVars,
   getLiveCellBoxModel,
   resolveCellBoxModel,
@@ -181,7 +182,7 @@ export class TicketCard {
     }
 
     if (x !== undefined && y !== undefined) {
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const dpr = activeDpr();
       const sx = Math.round(x * dpr) / dpr;
       const sy = Math.round(y * dpr) / dpr;
       this.dom.style.transform = `translate3d(${sx}px, ${sy}px, 0)`;

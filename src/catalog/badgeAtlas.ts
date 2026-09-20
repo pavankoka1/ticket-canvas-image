@@ -8,6 +8,7 @@ import {
 } from "./atlasStore";
 import { getActiveLayout } from "./catalogLayout";
 import { fontIdentity } from "./cellAtlas";
+import { activeDpr } from "./cellBoxModel";
 import { MultiplierLabelNode } from "./multiplierLabel";
 import { applyTicketCssVars } from "./ticketPresets";
 
@@ -68,7 +69,7 @@ let labelWarmKey = "";
 let labelWarmPromise: Promise<void> | null = null;
 
 function currentDpr(): number {
-  return Math.min(window.devicePixelRatio || 1, 2);
+  return activeDpr();
 }
 
 /** Per-value RAM key (font is stable within a session, so not needed here). */

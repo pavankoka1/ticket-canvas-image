@@ -1,7 +1,11 @@
 import { getDabImage, getDiscImage, getMultiplierLabel } from "./badgeAtlas";
 import { contentWidth, getActiveLayout } from "./catalogLayout";
 import { getCellBitmap, getTicketGeometry } from "./cellAtlas";
-import { getLiveCellBoxModel, resolveCellBoxModel } from "./cellBoxModel";
+import {
+  activeDpr,
+  getLiveCellBoxModel,
+  resolveCellBoxModel,
+} from "./cellBoxModel";
 import { BALLS_PER_TICKET, CANVAS_TILE_TICKETS } from "./layout";
 import { isWinTicket, type Ticket, type TicketSlot } from "./tickets";
 
@@ -175,7 +179,7 @@ export class CanvasPool {
     const { cardWidth, metrics } = layout;
     const cssW = contentWidth(layout);
     const cssH = tile.cssH;
-    const dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const dpr = activeDpr();
     const bw = Math.round(cssW * dpr);
     const bh = Math.round(cssH * dpr);
 

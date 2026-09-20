@@ -18,6 +18,18 @@ export type CellBoxModel = {
 /** Total horizontal gap reserved in the cell-width formula: (ticketWidth − 6) / 6. */
 export const CELL_GAP_TOTAL_PX = 6;
 
+/**
+ * Device-pixel-ratio used for the atlas AND canvas — the single source so they
+ * can never disagree. Capped at 3 (not 2): a 2× atlas painted on a 2.5×/3×
+ * display gets browser-upscaled → blurry, mis-sized numbers vs the crisp native
+ * DOM ("wrong on settle" on dpr>2 screens). 3 covers essentially every real
+ * device exactly; only >3 (very rare) is capped, to bound canvas memory.
+ */
+export const DPR_CAP = 3;
+export function activeDpr(): number {
+  return Math.min(window.devicePixelRatio || 1, DPR_CAP);
+}
+
 /** Snap a CSS length to the device pixel grid. */
 export function snapCss(css: number, dpr: number): number {
   return Math.round(css * dpr) / dpr;
@@ -30,7 +42,7 @@ export function snapCss(css: number, dpr: number): number {
  */
 export function resolveCellBoxModel(
   layout: CatalogLayout = getActiveLayout(),
-  dpr = Math.min(window.devicePixelRatio || 1, 2),
+  dpr = activeDpr(),
 ): CellBoxModel {
   const m = layout.metrics;
   const sep = m.separatorWidth;

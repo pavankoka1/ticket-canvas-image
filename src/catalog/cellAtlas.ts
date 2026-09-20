@@ -10,6 +10,7 @@ import {
 } from "./atlasStore";
 import { getActiveLayout, type CatalogLayout } from "./catalogLayout";
 import {
+  activeDpr,
   applyCellBoxCssVars,
   resolveCellBoxModel,
   setLiveCellBoxModel,
@@ -103,7 +104,7 @@ export function atlasCacheKey(
   layout: CatalogLayout = getActiveLayout(),
   model?: CellBoxModel,
 ): string {
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const dpr = activeDpr();
   const m = layout.metrics;
   const box = model ?? resolveCellBoxModel(layout, dpr);
   return [
@@ -198,7 +199,7 @@ export async function warmCellAtlas(
   }
 
   const layout = getActiveLayout();
-  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const dpr = activeDpr();
   const model = resolveCellBoxModel(layout, dpr);
   setLiveCellBoxModel(model);
   applyTicketCssVars(host, layout.metrics);
