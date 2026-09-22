@@ -409,7 +409,7 @@ export function Compare() {
 
   const downloadSprites = () => {
     const a = document.createElement("a");
-    const save = (url: string | null, name: string) => {
+    const save = (url: string | null | undefined, name: string) => {
       if (!url) return;
       a.href = url;
       a.download = name;
