@@ -12,7 +12,6 @@ import { computeDomBand } from "./bands";
 import { CanvasPool } from "./CanvasPool";
 import {
   applyCellBoxCssVars,
-  resolveCellBoxModel,
   setLiveCellBoxModel,
 } from "./cellBoxModel";
 import {
@@ -23,13 +22,22 @@ import {
   setActiveLayout,
 } from "./catalogLayout";
 import {
+  cancelCellWarm,
   cellAtlasSize,
   clearCellAtlas,
   getCellSpriteDataUrl,
   getTicketGeometry,
+  prewarmCellAtlas,
+  resolveLiveCellBoxModel,
   warmCellAtlas,
   type AtlasSource,
 } from "./cellAtlas";
+import {
+  idGlyphCount,
+  warmIdGlyphs,
+  type HeaderTextEntry,
+  type GlyphColor,
+} from "./idDigitAtlas";
 import { DomPool } from "./DomPool";
 import {
   CATALOG_VIEWPORT_HEIGHT,
@@ -40,10 +48,22 @@ import {
 import {
   buildSlots,
   createTickets,
+  isWinTicket,
   MULTIPLIER_VALUES,
   type Ticket,
   type TicketSlot,
 } from "./tickets";
+
+/** Unique id/win strings to SnapDOM for the header atlas. */
+function headerEntriesForTickets(tickets: readonly Ticket[]): HeaderTextEntry[] {
+  const out: HeaderTextEntry[] = [];
+  for (const t of tickets) {
+    const idColor: GlyphColor = isWinTicket(t) ? "idGold" : "idNormal";
+    out.push({ text: t.no, color: idColor });
+    if (isWinTicket(t) && t.win) out.push({ text: t.win, color: "win" });
+  }
+  return out;
+}
 import {
   applyTicketCssVars,
   getPreset,
@@ -54,8 +74,30 @@ import {
 
 type PresetMode = "auto" | TicketPresetId;
 
+/** Rebuild the canvas only after the viewport has been still this long. */
+const SETTLE_MS = 1500;
+
 function layoutCacheKey(layout: ReturnType<typeof getActiveLayout>): string {
   return `${layout.metrics.id}|${layout.cardWidth}|${layout.columns}|${layout.cardHeight}`;
+}
+
+/**
+ * The layout the app would use in the OTHER orientation — used to pre-warm that
+ * size on idle so a rotate finds a cache hit. availWidth is an estimate (the
+ * counterpart's real width isn't known until it happens); a miss just means the
+ * rotate warms on demand, so an approximate estimate is fine.
+ */
+function counterpartLayout(
+  viewportW: number,
+  viewportH: number,
+): ReturnType<typeof resolveCatalogLayout> {
+  const w = viewportH;
+  const h = viewportW; // swapped
+  const metrics = resolvePresetFromViewport(w, h);
+  const isMobile = metrics.id.startsWith("mobile");
+  const isLandscape = w > h;
+  const availWidth = Math.max(0, Math.floor(w - 24));
+  return resolveCatalogLayout(isMobile, isLandscape, availWidth, metrics);
 }
 
 export function Catalog() {
@@ -65,7 +107,11 @@ export function Catalog() {
   const canvasHostRef = useRef<HTMLDivElement>(null);
   const atlasHostRef = useRef<HTMLDivElement>(null);
   const badgeHostRef = useRef<HTMLDivElement>(null);
+  const idHostRef = useRef<HTMLDivElement>(null);
+  const prewarmHostRef = useRef<HTMLDivElement>(null);
   const cssHostRef = useRef<HTMLDivElement>(null);
+  const settleTimerRef = useRef(0);
+  const idleHandleRef = useRef(0);
   const domPoolRef = useRef<DomPool | null>(null);
   const canvasPoolRef = useRef<CanvasPool | null>(null);
   const slotsRef = useRef<TicketSlot[]>([]);
@@ -78,6 +124,7 @@ export function Catalog() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [atlasReady, setAtlasReady] = useState(0);
   const [atlasSource, setAtlasSource] = useState<AtlasSource>("empty");
+  const [idReady, setIdReady] = useState(0);
   const [domCount, setDomCount] = useState(0);
   const [tileCount, setTileCount] = useState(0);
   const [presetMode, setPresetMode] = useState<PresetMode>("auto");
@@ -102,7 +149,9 @@ export function Catalog() {
 
   useLayoutEffect(() => {
     setActiveLayout(layout);
-    const model = resolveCellBoxModel(layout);
+    // Prefer measured atlas geometry when available for this card size so a
+    // layout-effect re-run never clobbers measured bodyTop with analytic.
+    const model = resolveLiveCellBoxModel(layout);
     setLiveCellBoxModel(model);
     const host = cssHostRef.current;
     if (host) {
@@ -175,6 +224,39 @@ export function Catalog() {
     setTileCount(canvas.tileCount);
   }, []);
 
+  const revealCanvas = useCallback(() => {
+    const host = canvasHostRef.current;
+    if (host) host.style.visibility = "visible";
+  }, []);
+
+  const hideCanvas = useCallback(() => {
+    const host = canvasHostRef.current;
+    if (host) host.style.visibility = "hidden";
+  }, []);
+
+  /**
+   * Pre-warm the opposite-orientation atlas on idle so a rotate finds a cache
+   * hit and never shows a canvas gap. Best-effort; skipped if no idle host.
+   */
+  const schedulePrewarm = useCallback(() => {
+    const host = prewarmHostRef.current;
+    if (!host) return;
+    const ric =
+      (window as unknown as { requestIdleCallback?: (cb: () => void) => number })
+        .requestIdleCallback ?? ((cb: () => void) => window.setTimeout(cb, 800));
+    if (idleHandleRef.current) {
+      const cancel =
+        (window as unknown as { cancelIdleCallback?: (h: number) => void })
+          .cancelIdleCallback ?? window.clearTimeout;
+      cancel(idleHandleRef.current);
+    }
+    idleHandleRef.current = ric(() => {
+      idleHandleRef.current = 0;
+      const other = counterpartLayout(window.innerWidth, window.innerHeight);
+      void prewarmCellAtlas(host, other);
+    }) as unknown as number;
+  }, []);
+
   const startAtlasWarm = useCallback(() => {
     const host = atlasHostRef.current;
     if (!host) return;
@@ -197,11 +279,28 @@ export function Catalog() {
       if (source === "empty") return;
       setAtlasReady(cellAtlasSize());
       setAtlasSource(source);
+      // Warm whole-string header sprites for current tickets (id + win).
+      const idHost = idHostRef.current;
+      if (idHost) {
+        const entries = headerEntriesForTickets(
+          ticketsByIdRef.current
+            ? [...ticketsByIdRef.current.values()]
+            : [],
+        );
+        void warmIdGlyphs(idHost, getActiveLayout(), entries).then((ready) => {
+          if (gen !== atlasGenRef.current || !ready) return;
+          setIdReady(idGlyphCount());
+          canvasPoolRef.current?.refresh();
+          syncCanvas();
+        });
+      }
       canvasPoolRef.current?.refresh();
       syncCanvas();
       syncDom();
+      revealCanvas();
+      schedulePrewarm();
     });
-  }, [syncCanvas, syncDom]);
+  }, [syncCanvas, syncDom, revealCanvas, schedulePrewarm]);
 
   const scrollToBottom = useCallback(() => {
     const container = scrollRef.current;
@@ -211,6 +310,28 @@ export function Catalog() {
       container.scrollHeight - container.clientHeight,
     );
   }, []);
+
+  /**
+   * Resize / orientation teardown. The canvas underlay is built for one exact
+   * size; when the viewport changes we DROP it immediately (hide + clear +
+   * cancel any in-flight warm — but keep the RAM/IDB cache) so a stale-size
+   * canvas never sits behind the DOM that has already reflowed. The DOM reflows
+   * on its own and covers the viewport, so a hidden canvas is invisible to the
+   * user. We rebuild only after the viewport has been still for SETTLE_MS.
+   */
+  const tearDownAndScheduleRebuild = useCallback(() => {
+    hideCanvas();
+    canvasPoolRef.current?.clear();
+    setTileCount(0);
+    setIdReady(0);
+    atlasGenRef.current += 1; // invalidate the warm-progress generation
+    cancelCellWarm(); // abandon the half-built old-size atlas (cache kept)
+    if (settleTimerRef.current) window.clearTimeout(settleTimerRef.current);
+    settleTimerRef.current = window.setTimeout(() => {
+      settleTimerRef.current = 0;
+      startAtlasWarm(); // warms cell + id, then syncCanvas + revealCanvas
+    }, SETTLE_MS);
+  }, [hideCanvas, startAtlasWarm]);
 
   useEffect(() => {
     const domHost = domHostRef.current;
@@ -229,6 +350,8 @@ export function Catalog() {
       domPoolRef.current = null;
       canvasPoolRef.current = null;
       if (domThrottleRef.current) window.clearTimeout(domThrottleRef.current);
+      if (settleTimerRef.current) window.clearTimeout(settleTimerRef.current);
+      if (idleHandleRef.current) window.clearTimeout(idleHandleRef.current);
     };
   }, [syncCanvas, syncDom]);
 
@@ -255,21 +378,36 @@ export function Catalog() {
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
+    let first = true;
     const ro = new ResizeObserver((entries) => {
       const w = entries[0]?.contentRect.width ?? el.clientWidth;
+      // Any width change past the first (mount) reading is a viewport shift:
+      // hide the canvas instantly so the old-size underlay can't flash behind
+      // the reflowing DOM. The layout-change effect schedules the rebuild.
+      if (!first) hideCanvas();
+      first = false;
       setAvailWidth(Math.max(0, Math.floor(w - 24)));
     });
     ro.observe(el);
     setAvailWidth(Math.max(0, Math.floor(el.clientWidth - 24)));
     return () => ro.disconnect();
-  }, []);
+  }, [hideCanvas]);
 
   useEffect(() => {
-    const onResize = () =>
+    const onShift = () => {
+      hideCanvas(); // vanish the stale canvas before React re-renders
       setViewport({ w: window.innerWidth, h: window.innerHeight });
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
+    };
+    window.addEventListener("resize", onShift);
+    window.addEventListener("orientationchange", onShift);
+    const mq = window.matchMedia("(orientation: portrait)");
+    mq.addEventListener?.("change", onShift);
+    return () => {
+      window.removeEventListener("resize", onShift);
+      window.removeEventListener("orientationchange", onShift);
+      mq.removeEventListener?.("change", onShift);
+    };
+  }, [hideCanvas]);
 
   useEffect(() => {
     const key = layoutCacheKey(layout);
@@ -279,15 +417,25 @@ export function Catalog() {
       syncDom();
       return;
     }
+    const firstBuild = prevLayoutKeyRef.current === "";
     prevLayoutKeyRef.current = key;
+    // DOM reflows immediately (it covers the viewport); canvas waits for settle.
     domPoolRef.current?.refreshLayout();
-    const t = window.setTimeout(() => {
-      startAtlasWarm();
-      syncCanvas();
-      syncDom();
-    }, 120);
-    return () => window.clearTimeout(t);
-  }, [layout, startAtlasWarm, syncCanvas, syncDom]);
+    syncDom();
+
+    if (firstBuild) {
+      // Initial size — no stale canvas to tear down; warm right away.
+      const t = window.setTimeout(() => {
+        startAtlasWarm();
+        syncCanvas();
+        syncDom();
+      }, 120);
+      return () => window.clearTimeout(t);
+    }
+    // A real size change (resize / orientation / preset) — drop the old canvas
+    // now and rebuild SETTLE_MS after the viewport goes still.
+    tearDownAndScheduleRebuild();
+  }, [layout, startAtlasWarm, syncCanvas, syncDom, tearDownAndScheduleRebuild]);
 
   useLayoutEffect(() => {
     if (tickets.length === 0) {
@@ -345,10 +493,30 @@ export function Catalog() {
   };
 
   // —— Dab / multiplier / gold demo controls (mutate tickets in place) ——
+  const warmHeaderSprites = useCallback(() => {
+    const host = idHostRef.current;
+    if (!host) return;
+    void warmIdGlyphs(
+      host,
+      getActiveLayout(),
+      headerEntriesForTickets(tickets),
+    ).then((ready) => {
+      if (!ready) return;
+      setIdReady(idGlyphCount());
+      canvasPoolRef.current?.refresh();
+    });
+  }, [tickets]);
+
+  useEffect(() => {
+    warmHeaderSprites();
+  }, [warmHeaderSprites, layout]);
+
   const refreshStates = useCallback(() => {
     canvasPoolRef.current?.refresh();
     syncDom();
-  }, [syncDom]);
+    // Hits may flip gold/win → need new header string colours.
+    warmHeaderSprites();
+  }, [syncDom, warmHeaderSprites]);
 
   const addDab = () => {
     for (const t of tickets) {
@@ -522,6 +690,10 @@ export function Catalog() {
             </strong>
           </span>
           <span className="stat">
+            id <strong>{idReady}</strong>
+            {idReady > 0 ? " ✓" : "…"}
+          </span>
+          <span className="stat">
             dom <strong>{domCount}</strong>/{DOM_POOL_SIZE}
           </span>
         </div>
@@ -551,6 +723,8 @@ export function Catalog() {
       </div>
       <div ref={atlasHostRef} className="catalog__captureHost" />
       <div ref={badgeHostRef} className="catalog__captureHost" />
+      <div ref={idHostRef} className="catalog__captureHost" />
+      <div ref={prewarmHostRef} className="catalog__captureHost" />
     </div>
   );
 }

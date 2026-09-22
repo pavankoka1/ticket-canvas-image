@@ -6,6 +6,16 @@ export const DOM_POOL_SIZE = 80;
 /** Tickets per canvas tile (100–200 budget). */
 export const CANVAS_TILE_TICKETS = 150;
 
+/**
+ * Tickets per tile, shrunk at high dpr so a single tile's backing store
+ * (cssW × cssH × dpr²) stays bounded now that DPR_CAP is 4. At dpr ≤ 2 we keep
+ * the full 150; at dpr 3–4 we drop to 100 so no individual tile canvas gets
+ * huge on flagship phones.
+ */
+export function canvasTileTickets(dpr: number): number {
+  return dpr >= 3 ? 100 : CANVAS_TILE_TICKETS;
+}
+
 export const CATALOG_VIEWPORT_HEIGHT = 200;
 
 /** DOM near-viewport row buffer. */

@@ -7,7 +7,22 @@ export type Ticket = {
   hits: number[];
   /** Cell index → multiplier value (>0). A multiplier cell is also a hit. */
   multipliers: Record<number, number>;
+  /**
+   * Pre-formatted win amount shown top-left in the header (POC: random). Only
+   * rendered when the ticket is in a win state (`isWinTicket`).
+   */
+  win: string;
 };
+
+/** POC-only random win amount, formatted like the live game (e.g. "1,250.00"). */
+function randomWinAmount(): string {
+  const cents = 25 + Math.floor(Math.random() * 500000); // 0.25 … ~5000
+  const value = cents / 100;
+  return value.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
 
 /** Multiplier values offered in the POC UI (also drives the badge atlas). */
 export const MULTIPLIER_VALUES = [2, 3, 5, 10] as const;
@@ -36,6 +51,7 @@ export function createTickets(count: number): Ticket[] {
       balls,
       hits: [],
       multipliers: {},
+      win: randomWinAmount(),
     });
   }
   return out;

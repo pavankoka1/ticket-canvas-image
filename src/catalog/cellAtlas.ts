@@ -18,8 +18,10 @@ import {
   type CellBox,
   type CellBoxModel,
 } from "./cellBoxModel";
+import { normalizeBatch } from "./normalizeClient";
 import { applyTicketCssVars, type TicketMetrics } from "./ticketPresets";
 import { applyTicketCellLayout, createTicketDom } from "./ticketCardElement";
+import { ensureTicketFont } from "./ticketFont";
 
 export type { CellBox };
 
@@ -47,9 +49,28 @@ type AtlasEntry = {
 };
 
 /** Snapshot from real ticket DOM; cellW = (cw − 6) / 6. Sprites ink-shifted to native. */
-const ATLAS_VERSION = "v20-percell";
+const ATLAS_VERSION = "v22-selfhost-font";
 
 const ramCache = new Map<string, AtlasEntry>();
+
+/**
+ * Cap RAM atlases so rotating through sizes (resize, orientation, preset menu)
+ * can't leak ImageBitmaps. Map keeps insertion order; we re-insert on access so
+ * the first key is the least-recently-used. The active entry is never evicted.
+ */
+const MAX_RAM_ATLASES = 6;
+
+function rememberEntry(entry: AtlasEntry): void {
+  ramCache.delete(entry.key);
+  ramCache.set(entry.key, entry);
+  while (ramCache.size > MAX_RAM_ATLASES) {
+    const oldestKey = ramCache.keys().next().value as string | undefined;
+    if (oldestKey === undefined || oldestKey === active?.key) break;
+    const victim = ramCache.get(oldestKey);
+    if (victim) for (const b of victim.bitmaps.values()) b.close();
+    ramCache.delete(oldestKey);
+  }
+}
 
 let active: AtlasEntry | null = null;
 let warmPromise: Promise<AtlasSource> | null = null;
@@ -140,6 +161,17 @@ export function resetCellAtlasRam(key?: string): void {
   warmPromiseKey = null;
 }
 
+/**
+ * Cancel any in-flight SnapDOM build WITHOUT dropping the RAM/IDB cache.
+ * Used by the resize/orientation teardown: we abandon a half-built atlas for the
+ * old size, but keep every already-built size so a rebuild is a cache hit.
+ */
+export function cancelCellWarm(): void {
+  buildGen += 1;
+  warmPromise = null;
+  warmPromiseKey = null;
+}
+
 export function clearCellAtlas(): void {
   const key = active?.key ?? warmPromiseKey;
   resetCellAtlasRam();
@@ -169,19 +201,66 @@ function yieldToMain(): Promise<void> {
   return new Promise((r) => setTimeout(r, 0));
 }
 
+function modelFromGeometry(
+  geo: TicketGeometry,
+  sep = getActiveLayout().metrics.separatorWidth,
+): CellBoxModel {
+  return {
+    dpr: geo.dpr,
+    cardWidth: geo.cardWidth,
+    cellW: geo.cellW,
+    cellH: geo.cellH,
+    padX: geo.cells[0]?.x ?? 0,
+    bodyTop: geo.cells[0]?.y ?? 0,
+    sep,
+    cells: geo.cells,
+  };
+}
+
+/**
+ * Analytic model for CSS/warm, unless the active atlas already measured this
+ * card size — then keep (or restore) the measured model so paint/DOM never
+ * regress to snapped bodyTop while geo is correct.
+ */
+export function resolveLiveCellBoxModel(
+  layout: CatalogLayout = getActiveLayout(),
+  dpr = activeDpr(),
+): CellBoxModel {
+  const analytic = resolveCellBoxModel(layout, dpr);
+  const geo = active?.geometry;
+  if (geo && geo.cardWidth === layout.cardWidth) {
+    return modelFromGeometry(geo, analytic.sep);
+  }
+  return analytic;
+}
+
 function activate(entry: AtlasEntry): void {
   active = entry;
-  ramCache.set(entry.key, entry);
-  setLiveCellBoxModel({
-    dpr: entry.geometry.dpr,
-    cardWidth: entry.geometry.cardWidth,
-    cellW: entry.geometry.cellW,
-    cellH: entry.geometry.cellH,
-    padX: entry.geometry.cells[0]?.x ?? 0,
-    bodyTop: entry.geometry.cells[0]?.y ?? 0,
-    sep: getActiveLayout().metrics.separatorWidth,
-    cells: entry.geometry.cells,
-  });
+  rememberEntry(entry);
+  setLiveCellBoxModel(modelFromGeometry(entry.geometry));
+}
+
+/**
+ * Pre-warm the atlas for a layout WITHOUT activating it (no change to the live
+ * cell-box model or the active atlas). Used to build the orientation
+ * counterpart on idle so a later rotate finds a RAM/IDB hit and never shows a
+ * canvas gap. Must run on a host not shared with the live warm.
+ */
+export async function prewarmCellAtlas(
+  host: HTMLElement,
+  layout: CatalogLayout,
+): Promise<void> {
+  const dpr = activeDpr();
+  const model = resolveCellBoxModel(layout, dpr);
+  const key = atlasCacheKey(layout, model);
+  if (ramCache.get(key)?.bitmaps.size === 60) return;
+  buildGen += 1;
+  const gen = buildGen;
+  try {
+    await buildAtlas(host, key, model, gen, undefined, layout, true);
+  } catch {
+    // pre-warm is best-effort — a failure just means the rotate warms on demand
+  }
 }
 
 export async function warmCellAtlas(
@@ -192,24 +271,31 @@ export async function warmCellAtlas(
   // fontIdentity() (document.fonts.check), so a cold load would key on
   // "fallback-system" and the next (font cached) load on "MB-Onest" — a
   // guaranteed IndexedDB miss that forces a needless SnapDOM rebuild every time.
-  try {
-    await document.fonts.ready;
-  } catch {
-    // fonts API unavailable — key falls back deterministically, still fine.
-  }
+  await ensureTicketFont(getActiveLayout().metrics.numberFontSize);
 
   const layout = getActiveLayout();
   const dpr = activeDpr();
-  const model = resolveCellBoxModel(layout, dpr);
-  setLiveCellBoxModel(model);
+  // Analytic model keys/builds the atlas. Live model prefers measured geometry
+  // when the active atlas already matches this card size — never let the
+  // analytic prologue overwrite measured bodyTop (17.75 → 18) for paint/DOM.
+  const analytic = resolveCellBoxModel(layout, dpr);
+  const live = resolveLiveCellBoxModel(layout, dpr);
+  setLiveCellBoxModel(live);
   applyTicketCssVars(host, layout.metrics);
-  applyCellBoxCssVars(host, model, layout.metrics);
+  applyCellBoxCssVars(host, analytic, layout.metrics);
 
-  const key = atlasCacheKey(layout, model);
+  const key = atlasCacheKey(layout, analytic);
   const hit = ramCache.get(key);
   if (hit && hit.bitmaps.size === 60) {
     activate(hit);
     onProgress?.(60, "ram");
+    console.info("[atlas:cell]", {
+      src: "ram",
+      glyphs: 60,
+      dpr,
+      cw: layout.cardWidth,
+      cell: `${analytic.cellW}x${analytic.cellH}`,
+    });
     return "ram";
   }
 
@@ -218,7 +304,15 @@ export async function warmCellAtlas(
   buildGen += 1;
   const gen = buildGen;
   warmPromiseKey = key;
-  warmPromise = buildAtlas(host, key, model, gen, onProgress).finally(() => {
+  warmPromise = buildAtlas(
+    host,
+    key,
+    analytic,
+    gen,
+    onProgress,
+    layout,
+    false,
+  ).finally(() => {
     if (warmPromiseKey === key) {
       warmPromise = null;
       warmPromiseKey = null;
@@ -238,9 +332,12 @@ async function buildAtlas(
   model: CellBoxModel,
   gen: number,
   onProgress?: (ready: number, source: AtlasSource) => void,
+  layout: CatalogLayout = getActiveLayout(),
+  skipActivate = false,
 ): Promise<AtlasSource> {
-  const layout = getActiveLayout();
   const m = layout.metrics;
+  const cacheEntry = (entry: AtlasEntry) =>
+    skipActivate ? rememberEntry(entry) : activate(entry);
 
   const stored = await loadAtlas(key);
   if (gen !== buildGen) return "empty";
@@ -272,7 +369,16 @@ async function buildAtlas(
         const bitmaps = new Map<number, ImageBitmap>();
         bmps.forEach((b, i) => bitmaps.set(i + 1, b));
         onProgress?.(60, "idb");
-        activate({ key, bitmaps, geometry: stored.geometry as TicketGeometry });
+        cacheEntry({ key, bitmaps, geometry: stored.geometry as TicketGeometry });
+        if (!skipActivate) {
+          console.info("[atlas:cell]", {
+            src: "idb",
+            glyphs: 60,
+            dpr: model.dpr,
+            cw: layout.cardWidth,
+            cell: `${model.cellW}x${model.cellH}`,
+          });
+        }
         return "idb";
       }
     } catch {
@@ -290,20 +396,11 @@ async function buildAtlas(
   // can resolve before a specific weight is ready, so the sheet would rasterise
   // a thinner fallback while the live DOM later shows real Onest 700 — the
   // "thin numbers that re-adjust" seen on Linux.
-  try {
-    await Promise.all([
-      document.fonts.load(`700 ${m.numberFontSize}px "MB-Onest"`),
-      document.fonts.load(`700 ${m.numberFontSize}px Onest`),
-    ]);
-  } catch {
-    // ignore — fontIdentity below records what actually resolved
-  }
-  await document.fonts.ready;
-  const face = fontIdentity(m.numberFontSize);
+  const { face, mbOnest700, onest700 } = await ensureTicketFont(m.numberFontSize);
   console.info("[atlas] font", {
     face,
-    mbOnest700: document.fonts.check(`700 ${m.numberFontSize}px "MB-Onest"`),
-    onest700: document.fonts.check(`700 ${m.numberFontSize}px Onest`),
+    mbOnest700,
+    onest700,
     onest400: document.fonts.check(`400 ${m.numberFontSize}px Onest`),
   });
   if (face === "fallback-system") {
@@ -390,8 +487,11 @@ async function buildAtlas(
   // Opaque white face for a stable cross-platform raster; un-matted per sprite.
   captureCell.style.background = "#FFFFFF";
 
-  // —— Mechanism-B shift: pre-capture "8" (warm-up discards SnapDOM's cold
-  // first capture, so the measured "8" matches the warm sprites below). ——
+  // —— Mechanism-B shift: pre-capture "8". The first SnapDOM capture of a build
+  // is COLD (different baseline); the discard absorbs it so the measured "8" and
+  // the 60 sprites below are all warm. This MUST run per build — sharing one
+  // warm-up across builds leaves every size after the first cold, which drifts
+  // sprites per-number (up/down). Do not "optimise" this to once per session. ——
   let inkShift = 0;
   {
     ticket.cellTexts[0]!.data = "8";
@@ -481,19 +581,30 @@ async function buildAtlas(
       );
     }
     const results = await Promise.all(caps);
-    for (const { n, raw } of results) {
-      if (!loggedFirst) {
-        loggedFirst = true;
-        console.info("[atlas] per-cell snap", {
-          raw: `${raw.width}x${raw.height}`,
-          want: `${wantW}x${wantH}`,
-          css: `${captureW}x${captureH}`,
-          pool: POOL,
-          dpr,
-        });
-      }
-      bitmaps.set(n, await normalizeBitmap(raw, wantW, wantH, inkShift, glyph));
+    if (!loggedFirst && results[0]) {
+      loggedFirst = true;
+      console.info("[atlas] per-cell snap", {
+        raw: `${results[0].raw.width}x${results[0].raw.height}`,
+        want: `${wantW}x${wantH}`,
+        css: `${captureW}x${captureH}`,
+        pool: POOL,
+        dpr,
+      });
     }
+    // Crop + vertical shift + un-matte off the main thread (worker), so the
+    // pixel loops for 60 sprites never jank scroll. Falls back to main if no
+    // worker/OffscreenCanvas.
+    const normed = await normalizeBatch(
+      results.map(({ n, raw }) => ({
+        n,
+        src: raw,
+        wantW,
+        wantH,
+        shiftY: inkShift,
+        glyph,
+      })),
+    );
+    for (const [n, bmp] of normed) bitmaps.set(n, bmp);
     onProgress?.(bitmaps.size, "snap");
     await yieldToMain();
   }
@@ -522,8 +633,18 @@ async function buildAtlas(
     return "empty";
   }
 
-  activate({ key, bitmaps, geometry });
+  cacheEntry({ key, bitmaps, geometry });
   onProgress?.(60, "snap");
+  if (!skipActivate) {
+    console.info("[atlas:cell]", {
+      src: "snap",
+      glyphs: bitmaps.size,
+      dpr,
+      cw: layout.cardWidth,
+      cell: `${captureW}x${captureH}`,
+      inkShift,
+    });
+  }
   return "snap";
 }
 
@@ -656,61 +777,9 @@ function parseRgb(s: string): Rgb | null {
 }
 
 /**
- * Convert a white-matted glyph to straight-alpha transparent, in place.
- * For a pixel C = glyph·cov + white·(1−cov), coverage per channel is
- * (255 − C) / (255 − glyph); we take the strongest channel, then rewrite the
- * pixel as the glyph colour at that alpha. Grayscale AA (font-smoothing:
- * antialiased) makes this exact; the result composites over the gradient like
- * the live DOM cell — without changing the glyph's raster position.
+ * Crop + vertical shift + un-matte white→transparent now runs in
+ * normalize.worker (see normalizeClient.normalizeBatch), off the main thread.
  */
-function unmatteFromWhite(
-  ctx: CanvasRenderingContext2D,
-  w: number,
-  h: number,
-  F: Rgb,
-): void {
-  const dr = 255 - F.r;
-  const dg = 255 - F.g;
-  const db = 255 - F.b;
-  const img = ctx.getImageData(0, 0, w, h);
-  const d = img.data;
-  for (let i = 0; i < d.length; i += 4) {
-    if (d[i + 3] === 0) continue; // untouched margin — already transparent
-    const cr = dr > 0 ? (255 - d[i]!) / dr : 0;
-    const cg = dg > 0 ? (255 - d[i + 1]!) / dg : 0;
-    const cb = db > 0 ? (255 - d[i + 2]!) / db : 0;
-    let cov = Math.max(cr, cg, cb);
-    cov = cov < 0 ? 0 : cov > 1 ? 1 : cov;
-    d[i] = F.r;
-    d[i + 1] = F.g;
-    d[i + 2] = F.b;
-    d[i + 3] = Math.round(cov * 255);
-  }
-  ctx.putImageData(img, 0, 0);
-}
-
-
-/** Pad/crop + vertical shift (device px) + un-matte white → transparent sprite. */
-async function normalizeBitmap(
-  src: HTMLCanvasElement,
-  wantW: number,
-  wantH: number,
-  shiftY: number,
-  glyph: Rgb,
-): Promise<ImageBitmap> {
-  const out = document.createElement("canvas");
-  out.width = wantW;
-  out.height = wantH;
-  const ctx = out.getContext("2d", { willReadFrequently: true });
-  if (!ctx) return createImageBitmap(src);
-  ctx.imageSmoothingEnabled = false;
-  const sw = Math.min(src.width, wantW);
-  const sh = Math.min(src.height, wantH);
-  // shiftY > 0 pushes the glyph down; empty margins above/below absorb it.
-  ctx.drawImage(src, 0, 0, sw, sh, 0, shiftY, sw, sh);
-  unmatteFromWhite(ctx, wantW, wantH, glyph);
-  return createImageBitmap(out);
-}
 
 function prepareFactoryHost(host: HTMLElement): void {
   const s = host.style;

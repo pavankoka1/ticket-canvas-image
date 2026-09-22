@@ -1,4 +1,4 @@
-import { getDabImage, getDiscImage, getMultiplierLabel } from "./badgeAtlas";
+import { getDabImage, getMultiplierBadge } from "./badgeAtlas";
 import { contentWidth, getActiveLayout } from "./catalogLayout";
 import { getCellBitmap, getTicketGeometry } from "./cellAtlas";
 import {
@@ -6,7 +6,12 @@ import {
   getLiveCellBoxModel,
   resolveCellBoxModel,
 } from "./cellBoxModel";
-import { BALLS_PER_TICKET, CANVAS_TILE_TICKETS } from "./layout";
+import {
+  getHeaderSprite,
+  idGlyphsReady,
+  type GlyphColor,
+} from "./idDigitAtlas";
+import { BALLS_PER_TICKET, canvasTileTickets } from "./layout";
 import { isWinTicket, type Ticket, type TicketSlot } from "./tickets";
 
 type Tile = {
@@ -107,7 +112,7 @@ export class CanvasPool {
     const layout = getActiveLayout();
     const { cardHeight } = layout;
     const n = this.slots.length;
-    const budget = CANVAS_TILE_TICKETS;
+    const budget = canvasTileTickets(activeDpr());
 
     if (n === 0) {
       this.clear();
@@ -199,16 +204,15 @@ export class CanvasPool {
 
     const geo = getTicketGeometry();
     const live = getLiveCellBoxModel() ?? resolveCellBoxModel(layout, dpr);
-    const boxes =
-      geo && geo.cardWidth === cardWidth && geo.cellW === live.cellW
-        ? geo.cells
-        : live.cells;
+    // Trust measured atlas body geometry whenever the active size matches.
+    // Do NOT gate on geo.cellW === live.cellW: live is often still the analytic
+    // model (warmCellAtlas prologue / Catalog layout effect) while geo holds the
+    // real measured tops (e.g. 17.75 vs 18) — that gate silently fell back to
+    // analytic boxes and shifted every number + dab by ~0.5 device px.
     const useSprites = Boolean(
-      geo &&
-      geo.cardWidth === cardWidth &&
-      geo.cellW === live.cellW &&
-      geo.cellH === live.cellH,
+      geo && geo.cardWidth === cardWidth && geo.cellH === live.cellH,
     );
+    const boxes = geo && geo.cardWidth === cardWidth ? geo.cells : live.cells;
 
     for (let i = tile.start; i < tile.end; i++) {
       const slot = this.slots[i]!;
@@ -219,7 +223,12 @@ export class CanvasPool {
       const x = Math.round(slot.x * dpr) / dpr;
       const y = Math.round((slot.y - tile.minY) * dpr) / dpr;
 
-      paintChrome(ctx, x, y, ticket.no, cardWidth, metrics, gold);
+      paintChrome(ctx, x, y, cardWidth, metrics, gold);
+
+      // Header text (ID top-right, win amount top-left) — glyph sprites in
+      // device space (same rasteriser output as the DOM → no cross-OS drift),
+      // with a fillText fallback only until the glyph atlas has warmed.
+      paintHeaderText(ctx, slot, ticket, gold, metrics, cardWidth, dpr, tile.minY);
 
       // Absolute device-pixel origins once — do NOT snap slot and box.y separately
       // (that double-rounds fractional bodyTop=19.5 on dpr 1.25/1.5 → Y crawl).
@@ -283,7 +292,10 @@ function drawContain(
   ctx.drawImage(img, cx - w / 2, cy - h / 2, w, h);
 }
 
-/** Dab / multiplier disc + label, centred on the cell (art, so smoothing on). */
+/**
+ * Dab PNG or full multiplier badge sprite, centred on the measured cell box.
+ * Multipliers are one SnapDOM unit (disc + label) — no canvas re-centering.
+ */
 function paintBadge(
   ctx: CanvasRenderingContext2D,
   cx: number,
@@ -295,13 +307,11 @@ function paintBadge(
   const prevSmoothing = ctx.imageSmoothingEnabled;
   ctx.imageSmoothingEnabled = true;
   if (multiplier > 0) {
-    const disc = getDiscImage();
-    if (disc) drawContain(ctx, disc, cx, cy, dabSize);
-    const label = getMultiplierLabel(multiplier);
-    if (label) {
-      const lw = label.width / dpr;
-      const lh = label.height / dpr;
-      ctx.drawImage(label, cx - lw / 2, cy - lh / 2, lw, lh);
+    const badge = getMultiplierBadge(multiplier);
+    if (badge) {
+      const bw = badge.width / dpr;
+      const bh = badge.height / dpr;
+      ctx.drawImage(badge, cx - bw / 2, cy - bh / 2, bw, bh);
     }
   } else {
     const dab = getDabImage();
@@ -314,7 +324,6 @@ function paintChrome(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
-  ticketNo: string,
   cardWidth: number,
   m: ReturnType<typeof getActiveLayout>["metrics"],
   gold: boolean,
@@ -358,14 +367,65 @@ function paintChrome(
   }
   ctx.fillRect(x, y, cardWidth, m.headerHeight);
 
-  // Ticket id (still fillText for now — sprite ID atlas is the next step).
-  ctx.fillStyle = gold ? "#9F8080" : "#B19797";
-  ctx.font = `700 ${m.metaFontSize}px MB-Onest, Onest, system-ui, sans-serif`;
-  ctx.textAlign = "right";
-  ctx.textBaseline = "bottom";
-  ctx.fillText(ticketNo, x + cardWidth - m.headerPadX, y + m.headerHeight - 1);
-
   ctx.restore();
+}
+
+/**
+ * ID (right-aligned) + win amount (left-aligned) as whole-string SnapDOM
+ * sprites — pixel-identical to the DOM header nodes. Falls back to fillText
+ * only while a given string is still warming.
+ */
+function paintHeaderText(
+  ctx: CanvasRenderingContext2D,
+  slot: TicketSlot,
+  ticket: Ticket,
+  gold: boolean,
+  m: ReturnType<typeof getActiveLayout>["metrics"],
+  cardWidth: number,
+  dpr: number,
+  tileMinY: number,
+): void {
+  const win = isWinTicket(ticket);
+  const idColor: GlyphColor = gold ? "idGold" : "idNormal";
+  const idSpr = idGlyphsReady()
+    ? getHeaderSprite(ticket.no, idColor)
+    : undefined;
+  const winSpr =
+    win && ticket.win && idGlyphsReady()
+      ? getHeaderSprite(ticket.win, "win")
+      : undefined;
+
+  if (idSpr || winSpr) {
+    const topDev = Math.round(slot.y * dpr) - Math.round(tileMinY * dpr);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    if (idSpr) {
+      const rightDev = Math.round((slot.x + cardWidth - m.headerPadX) * dpr);
+      ctx.drawImage(idSpr, rightDev - idSpr.width, topDev);
+    }
+    if (winSpr) {
+      const leftDev = Math.round((slot.x + m.headerPadX) * dpr);
+      ctx.drawImage(winSpr, leftDev, topDev);
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  if (idSpr && (winSpr || !win || !ticket.win)) return;
+
+  // Fallback for any string not yet in the atlas.
+  const x = Math.round(slot.x * dpr) / dpr;
+  const y = Math.round((slot.y - tileMinY) * dpr) / dpr;
+  ctx.font = `700 ${m.metaFontSize}px MB-Onest, Onest, system-ui, sans-serif`;
+  ctx.textBaseline = "bottom";
+  if (!idSpr) {
+    ctx.fillStyle = gold ? "#9F8080" : "#B19797";
+    ctx.textAlign = "right";
+    ctx.fillText(ticket.no, x + cardWidth - m.headerPadX, y + m.headerHeight - 1);
+  }
+  if (win && ticket.win && !winSpr) {
+    ctx.fillStyle = "#704F4F";
+    ctx.textAlign = "left";
+    ctx.fillText(ticket.win, x + m.headerPadX, y + m.headerHeight - 1);
+  }
 }
 
 function paintSeparators(

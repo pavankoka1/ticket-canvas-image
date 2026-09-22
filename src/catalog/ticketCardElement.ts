@@ -14,6 +14,7 @@ import { isWinTicket, type Ticket } from "./tickets";
 export type TicketDomParts = {
   root: HTMLElement;
   idText: Text;
+  winText: Text;
   cellEls: HTMLElement[];
   cellTexts: Text[];
 };
@@ -31,6 +32,8 @@ export function createTicketDom(): TicketDomParts {
 
   const winEl = document.createElement("span");
   winEl.className = "ticketCard__win";
+  const winText = document.createTextNode("");
+  winEl.appendChild(winText);
 
   const idEl = document.createElement("span");
   idEl.className = "ticketCard__id";
@@ -54,7 +57,7 @@ export function createTicketDom(): TicketDomParts {
   }
 
   root.append(header, body);
-  return { root, idText, cellEls, cellTexts };
+  return { root, idText, winText, cellEls, cellTexts };
 }
 
 /** Apply (ticketWidth − 6) / 6 fixed cell boxes — same as atlas. */
@@ -91,6 +94,7 @@ type CellBadge = {
 export class TicketCard {
   readonly dom: HTMLElement;
   private readonly idText: Text;
+  private readonly winText: Text;
   private readonly cellTexts: Text[] = [];
   private readonly cellEls: HTMLElement[] = [];
   private readonly badges: (CellBadge | null)[] = [];
@@ -105,6 +109,7 @@ export class TicketCard {
 
     this.dom = parts.root;
     this.idText = parts.idText;
+    this.winText = parts.winText;
     this.cellEls = parts.cellEls;
     this.cellTexts = parts.cellTexts;
     this.badges = parts.cellEls.map(() => null);
@@ -167,6 +172,9 @@ export class TicketCard {
   bind(ticket: Ticket, x?: number, y?: number): void {
     this.applyCardWidth(getActiveLayout().cardWidth);
     if (this.idText.data !== ticket.no) this.idText.data = ticket.no;
+    // Win amount shows only in the win state (mirrors canvas paintHeaderText).
+    const winStr = isWinTicket(ticket) ? ticket.win : "";
+    if (this.winText.data !== winStr) this.winText.data = winStr;
 
     for (let i = 0; i < BALLS_PER_TICKET; i++) {
       const next = String(ticket.balls[i] ?? "");

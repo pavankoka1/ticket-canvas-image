@@ -20,12 +20,16 @@ export const CELL_GAP_TOTAL_PX = 6;
 
 /**
  * Device-pixel-ratio used for the atlas AND canvas — the single source so they
- * can never disagree. Capped at 3 (not 2): a 2× atlas painted on a 2.5×/3×
- * display gets browser-upscaled → blurry, mis-sized numbers vs the crisp native
- * DOM ("wrong on settle" on dpr>2 screens). 3 covers essentially every real
- * device exactly; only >3 (very rare) is capped, to bound canvas memory.
+ * can never disagree. Capped so the atlas grid matches the DOM's device grid;
+ * any cap BELOW the real dpr makes canvas geometry snap to a coarser grid than
+ * the DOM, so numbers sit ~0.5px off on that device (the mismatch seen on
+ * high-dpr phones). 4 covers every real device exactly — flagship Android tops
+ * out ~3.5–4, iPhone at 3 — so nothing real is capped now. The >4 cap only
+ * bounds canvas backing memory for exotic/synthetic ratios; and it is safe in
+ * practice because high-dpr devices are high-RAM flagships while low-RAM devices
+ * are low-dpr, so the memory cost lands where there is memory to pay it.
  */
-export const DPR_CAP = 3;
+export const DPR_CAP = 4;
 export function activeDpr(): number {
   return Math.min(window.devicePixelRatio || 1, DPR_CAP);
 }

@@ -11,14 +11,17 @@ import { fontIdentity } from "./cellAtlas";
 import { activeDpr } from "./cellBoxModel";
 import { MultiplierLabelNode } from "./multiplierLabel";
 import { applyTicketCssVars } from "./ticketPresets";
+import { ensureTicketFont } from "./ticketFont";
 
 /**
- * Dab/multiplier disc art (static PNGs) + per-value multiplier label sprites.
+ * Dab disc (static PNG) + per-value multiplier badge sprites.
  *
- * - Plain dab   → blit dab-full.png (crown disc) centred on the cell.
- * - Multiplier  → blit badge-circle.png (rim disc) + a SnapDOM sprite of the
- *   3-layer "N×" label (only a handful of values, so RAM cache is fine).
- * Discs are art, not text — no ink-shift needed; they're centred on the cell.
+ * - Plain dab   → blit dab-full.png centred on the cell (art, no SnapDOM).
+ * - Multiplier  → SnapDOM the real `.ticketCard__badgeHost_multiplier` node
+ *   (disc background-image + label), same CSS stack as TicketCard. Capture the
+ *   host itself with outerTransforms so −15° label + translate(-50%,-50%)
+ *   rasterise correctly — capturing a parent box with outerTransforms:false
+ *   was washing out the gradient label.
  */
 
 const dabImg = new Image();
@@ -62,27 +65,39 @@ export function getDiscImage(): HTMLImageElement | null {
   return discImg.naturalWidth > 0 ? discImg : null;
 }
 
-// —— Multiplier label sprites: RAM → IndexedDB → SnapDOM ——
-const BADGE_VERSION = "b1";
-const labelCache = new Map<string, ImageBitmap>();
-let labelWarmKey = "";
-let labelWarmPromise: Promise<void> | null = null;
+function waitForDiscImage(): Promise<void> {
+  ensureImages();
+  if (badgeImagesReady()) return Promise.resolve();
+  return new Promise((resolve) => {
+    readyCbs.add(() => resolve());
+  });
+}
+
+// —— Full multiplier badge sprites: RAM → IndexedDB → SnapDOM ——
+const BADGE_VERSION = "b6";
+const badgeCache = new Map<string, ImageBitmap>();
+let badgeWarmKey = "";
+let badgeWarmPromise: Promise<void> | null = null;
 
 function currentDpr(): number {
   return activeDpr();
 }
 
-/** Per-value RAM key (font is stable within a session, so not needed here). */
-function labelKey(value: number, dabSize: number, dpr: number): string {
-  return `${getActiveLayout().metrics.id}|dab=${dabSize}|dpr=${dpr}|v=${value}`;
+function badgeKey(
+  value: number,
+  dabSize: number,
+  dpr: number,
+  fontId: string,
+): string {
+  return `${getActiveLayout().metrics.id}|dab=${dabSize}|dpr=${dpr}|font=${fontId}|v=${value}`;
 }
 
-/** Persistent IDB key for the whole value-set (font- and size-accurate). */
-function labelSetKey(
+function badgeSetKey(
   dabSize: number,
   dpr: number,
   fontId: string,
   values: readonly number[],
+  multFontSize: number,
 ): string {
   const m = getActiveLayout().metrics;
   return [
@@ -91,14 +106,16 @@ function labelSetKey(
     `dab=${dabSize}`,
     `dpr=${dpr}`,
     `font=${fontId}`,
-    `mult=${(13 * dabSize) / 24}`,
+    `mult=${multFontSize}`,
     `vals=${[...values].join(",")}`,
   ].join("|");
 }
 
-export function getMultiplierLabel(value: number): ImageBitmap | undefined {
+export function getMultiplierBadge(value: number): ImageBitmap | undefined {
   const dabSize = getActiveLayout().metrics.dabSize;
-  return labelCache.get(labelKey(value, dabSize, currentDpr()));
+  const multFontSize = (13 * dabSize) / 24;
+  const fontId = fontIdentity(multFontSize);
+  return badgeCache.get(badgeKey(value, dabSize, currentDpr(), fontId));
 }
 
 function yieldToMain(): Promise<void> {
@@ -112,66 +129,98 @@ export function warmMultiplierLabels(
   const dabSize = getActiveLayout().metrics.dabSize;
   const dpr = currentDpr();
   const warmKey = `${getActiveLayout().metrics.id}|dab=${dabSize}|dpr=${dpr}`;
-  const haveAll = values.every((v) => labelCache.has(labelKey(v, dabSize, dpr)));
-  if (labelWarmKey === warmKey && haveAll) return Promise.resolve();
-  if (labelWarmPromise && labelWarmKey === warmKey) return labelWarmPromise;
+  if (badgeWarmPromise && badgeWarmKey === warmKey) return badgeWarmPromise;
 
-  labelWarmKey = warmKey;
-  labelWarmPromise = warmLabelSet(host, values, dabSize, dpr).finally(() => {
-    labelWarmPromise = null;
+  badgeWarmKey = warmKey;
+  badgeWarmPromise = warmBadgeSet(host, values, dabSize, dpr).finally(() => {
+    badgeWarmPromise = null;
   });
-  return labelWarmPromise;
+  return badgeWarmPromise;
 }
 
-async function warmLabelSet(
+async function warmBadgeSet(
   host: HTMLElement,
   values: readonly number[],
   dabSize: number,
   dpr: number,
 ): Promise<void> {
-  // Font must be resolved BEFORE the key (fallback→real flap = guaranteed miss).
-  await document.fonts.ready;
-  if (values.every((v) => labelCache.has(labelKey(v, dabSize, dpr)))) return;
+  const multFontSize = (13 * dabSize) / 24;
+  // Disc PNG must be in the browser cache before SnapDOM embeds background-image.
+  await waitForDiscImage();
+  const { face, mbOnest700, onest700 } = await ensureTicketFont(multFontSize);
+  console.info("[atlas:badge] font", { face, mbOnest700, onest700 });
 
-  const fontId = fontIdentity(getActiveLayout().metrics.metaFontSize);
-  const key = labelSetKey(dabSize, dpr, fontId, values);
+  const fontId = fontIdentity(multFontSize);
+  if (values.every((v) => badgeCache.has(badgeKey(v, dabSize, dpr, fontId)))) {
+    return;
+  }
 
-  // IndexedDB.
+  const key = badgeSetKey(dabSize, dpr, fontId, values, multFontSize);
+
   const stored = await loadSprites(key);
   if (stored && stored.blobs.length === values.length) {
     try {
       for (let i = 0; i < values.length; i++) {
-        labelCache.set(
-          labelKey(values[i]!, dabSize, dpr),
+        badgeCache.set(
+          badgeKey(values[i]!, dabSize, dpr, fontId),
           await blobToBitmap(stored.blobs[i]!),
         );
       }
+      console.info("[atlas:badge]", {
+        src: "idb",
+        values: values.length,
+        dabSize,
+        dpr,
+        font: fontId,
+      });
       return;
     } catch {
       // fall through to rebuild
     }
   }
 
-  // SnapDOM build, then persist.
-  const bitmaps = await buildLabelBitmaps(host, values, dabSize, dpr);
+  const bitmaps = await buildBadgeBitmaps(
+    host,
+    values,
+    dabSize,
+    dpr,
+    multFontSize,
+  );
   for (let i = 0; i < values.length; i++) {
-    labelCache.set(labelKey(values[i]!, dabSize, dpr), bitmaps[i]!);
+    badgeCache.set(badgeKey(values[i]!, dabSize, dpr, fontId), bitmaps[i]!);
   }
+  console.info("[atlas:badge]", {
+    src: "snap",
+    values: values.length,
+    dabSize,
+    dpr,
+    font: fontId,
+    sprite: `${bitmaps[0]?.width ?? 0}x${bitmaps[0]?.height ?? 0}`,
+  });
   try {
     const blobs: Blob[] = [];
     for (const bmp of bitmaps) blobs.push(await bitmapToPngBlob(bmp));
-    const ok = await saveSprites({ key, meta: { values, dabSize, dpr }, blobs });
+    const ok = await saveSprites({
+      key,
+      meta: { values, dabSize, dpr, font: fontId },
+      blobs,
+    });
     if (!ok) console.warn("[badge] IndexedDB save failed for", key);
   } catch (err) {
     console.warn("[badge] persist failed", err);
   }
 }
 
-async function buildLabelBitmaps(
+/**
+ * Build one sprite per multiplier value by SnapDOM-capturing a real
+ * `.ticketCard__badgeHost_multiplier` (same classes/CSS as TicketCard).
+ */
+async function buildBadgeBitmaps(
   host: HTMLElement,
   values: readonly number[],
   dabSize: number,
   dpr: number,
+  multFontSize: number,
 ): Promise<ImageBitmap[]> {
   const layout = getActiveLayout();
   applyTicketCssVars(host, layout.metrics);
@@ -181,12 +230,14 @@ async function buildLabelBitmaps(
   host.style.pointerEvents = "none";
   host.style.zIndex = "-1";
 
-  const multFontSize = (13 * dabSize) / 24;
-  // Slightly larger than the disc so the rotated label never clips; it stays
-  // centred, and the canvas blit is centre-anchored, so the extra margin is inert.
-  const boxSize = Math.ceil(dabSize * 1.3);
+  // Cell-sized stage so the host's translate(-50%,-50%) centres like in a real cell.
+  const stageSize = Math.ceil(dabSize * 2);
   const snapOpts = {
     embedFonts: true,
+    // Required: host has translate(-50%,-50%) and label has rotate(-15deg).
+    // Capturing a parent with outerTransforms:false washed out gradient text.
+    outerTransforms: true,
+    outerShadows: false,
     backgroundColor: "transparent" as const,
     fast: true,
     cache: "disabled" as const,
@@ -194,31 +245,43 @@ async function buildLabelBitmaps(
     scale: 1,
     dpr,
     burst: true,
+    reconcile: true,
   };
 
   const out: ImageBitmap[] = [];
   let warmed = false;
   for (const value of values) {
-    const box = document.createElement("div");
-    box.style.position = "relative";
-    box.style.width = `${boxSize}px`;
-    box.style.height = `${boxSize}px`;
-    box.style.overflow = "visible";
-    box.style.setProperty("--multiplier-font-size", `${multFontSize}px`);
+    const stage = document.createElement("div");
+    stage.style.cssText = [
+      "position:relative",
+      `width:${stageSize}px`,
+      `height:${stageSize}px`,
+      "overflow:visible",
+      "background:transparent",
+    ].join(";");
+    stage.style.setProperty("--ticket-dab-size", `${dabSize}px`);
+    stage.style.setProperty("--multiplier-font-size", `${multFontSize}px`);
 
+    const badgeHost = document.createElement("span");
+    badgeHost.className =
+      "ticketCard__badgeHost ticketCard__badgeHost_multiplier";
+    // Centre in stage the same way a cell centres the host (top/left 50% + translate).
     const label = new MultiplierLabelNode();
     label.update(value);
-    box.appendChild(label.dom);
-    host.appendChild(box);
-    void box.offsetWidth;
+    badgeHost.appendChild(label.dom);
+    stage.appendChild(badgeHost);
+    host.appendChild(stage);
+    void stage.offsetWidth;
 
     if (!warmed) {
-      // SnapDOM's first capture is cold — discard one so sprites are consistent.
-      await snapdom.toCanvas(box, { ...snapOpts, invalidate: true });
+      await snapdom.toCanvas(badgeHost, { ...snapOpts, invalidate: true });
       warmed = true;
     }
-    const raw = await snapdom.toCanvas(box, { ...snapOpts, invalidate: true });
-    box.remove();
+    const raw = (await snapdom.toCanvas(badgeHost, {
+      ...snapOpts,
+      invalidate: true,
+    })) as HTMLCanvasElement;
+    stage.remove();
 
     out.push(await createImageBitmap(raw));
     await yieldToMain();
