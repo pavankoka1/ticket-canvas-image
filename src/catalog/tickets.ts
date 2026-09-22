@@ -12,16 +12,22 @@ export type Ticket = {
    * rendered when the ticket is in a win state (`isWinTicket`).
    */
   win: string;
+  /** Disabled / locked ticket — teal body; uses disabled multiplier sprites. */
+  disabled?: boolean;
 };
 
-/** POC-only random win amount, formatted like the live game (e.g. "1,250.00"). */
+/** POC win amount — currency is part of the string ($, €, £, …). */
+const WIN_CURRENCIES = ["$", "€", "£"] as const;
+
 function randomWinAmount(): string {
   const cents = 25 + Math.floor(Math.random() * 500000); // 0.25 … ~5000
   const value = cents / 100;
-  return value.toLocaleString("en-US", {
+  const amount = value.toLocaleString("en-US", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
+  const cur = WIN_CURRENCIES[Math.floor(Math.random() * WIN_CURRENCIES.length)]!;
+  return `${cur}${amount}`;
 }
 
 /** Multiplier values offered in the POC UI (also drives the badge atlas). */

@@ -1,5 +1,7 @@
 # Bingo canvas cache — solutions
 
+> Historical design note. Live routes, DPR, and the file map are in `AGENTS.md`. Header id and win paint as SnapDOM sprites in `idDigitAtlas.ts` (`fillText` is only the warm-up fallback). Do not implement from the sections below.
+
 Current architecture (as built): a **per-cell sprite atlas**. For each layout size we
 SnapDOM-capture the 60 ball numbers (1…60) from a real `.ticketCard__cell`, over white,
 un-matte to transparent, and bake a vertical `inkShift` so the glyph lands where native DOM

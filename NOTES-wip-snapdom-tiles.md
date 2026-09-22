@@ -1,3 +1,5 @@
+> Historical WIP. Live architecture is `AGENTS.md`. Do not implement from this note.
+
 # Snapshot of the abandoned SnapDOM-tile WIP
 
 Rolled back on 18 Aug 2026 to **`15e3b68` (`first commit`)** — the last version that felt glitchless.

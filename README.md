@@ -1,9 +1,12 @@
 # Canvas bitmap cache POC
 
-1. **+100** → **strict bake** every ticket to `ImageBitmap` (retries + assert) **before** tickets enter the catalog
-2. **Viewport** (~360px, game-grid sized) → always real DOM
-3. **Scroll** → 400 canvas nodes as underlay around the DOM band (path ahead/behind already painted)
-4. No layer flip; DOM stays on top
+DOM cards cover the near viewport. Canvas tiles paint the full catalog underneath, from SnapDOM sprites (cell numbers, header id / win, multiplier badges).
+
+Routes, the DPR rule, and the file map are in `AGENTS.md`. `docs/CANVAS_CACHE_SOLUTIONS.md` is a historical note, not the live paint path.
+
+1. `/` → catalog (`Catalog`)
+2. `/compare` or `#compare` → DOM stacked on the same `paintTicket` path (`Compare`)
+3. Viewport height is `CATALOG_VIEWPORT_HEIGHT` (200). DOM pool is 80 cards. Canvas is tiled (~150 tickets per tile), not a 400-card window.
 
 ## Run
 
@@ -15,17 +18,8 @@ npm run dev
 
 ## What to verify
 
-1. **+100** — wait for `baking N/100`; tickets appear only when `cache ✓`
-2. Scroll — `canvas` count ~400 (or less near edges); no blank rows in the path
-3. Viewport height stays 360px
-4. Another +100 — full bake again before append
+1. Add tickets — cells, id, and win render. No bake progress gate.
+2. Scroll — DOM count stays within the pool. Canvas tiles stay painted (no blank rows).
+3. `/compare` — difference blend shows DOM vs canvas. A 1px miss is a pixel bug, not a nudge to commit.
 
-## Key files
-
-| File | Role |
-|------|------|
-| `src/catalog/bakeQueue.ts` | Strict DOM→bitmap bake + retries |
-| `src/catalog/bands.ts` | DOM viewport + 400 canvas underlay window |
-| `src/catalog/CanvasPool.ts` | `drawImage` underlay |
-| `src/catalog/DomPool.ts` | Viewport DOM |
-| `src/catalog/Catalog.tsx` | Bake-first add + scroll sync |
+File map: `AGENTS.md`.

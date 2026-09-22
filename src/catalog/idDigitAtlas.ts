@@ -9,17 +9,17 @@ import { ensureTicketFont } from "./ticketFont";
 import { createTicketDom } from "./ticketCardElement";
 
 /**
- * Header text (ticket ID + win amount) as **whole-string** SnapDOM sprites.
+ * Header text (ticket ID + win amount) as **full-header** SnapDOM sprites.
  *
- * Per-glyph composition always left a ±0.5px seam vs the DOM's continuous run
- * (and SnapDOM warned that inline captures need `reconcile: true`). Capturing
- * the real `.ticketCard__id` / `.ticketCard__win` node with its text is the same
- * philosophy as the cell atlas: the sprite *is* the DOM raster, so canvas cannot
- * drift. Cache is keyed by (text, color, layout, dpr, font); viewport strings
- * are few and ids repeat while scrolling.
+ * Capture the real `.ticketCard__header` at live card width so id/win sit in the
+ * same flex slots as DOM. Shrink-wrap + right-align paint drifted horizontally
+ * (and broke across ticket sizes). Sprite = cardWidth × headerHeight; paint at
+ * ticket origin. Cache keyed by (text, color, cardWidth, layout, dpr, font).
  */
 
-const ID_VERSION = "id-v6-string";
+const ID_VERSION = "id-v13-edgeX";
+/** Bust old header bitmaps while proving edge X lock (same as SKIP_BADGE_IDB). */
+const SKIP_ID_IDB = true;
 
 export type GlyphColor = "idNormal" | "idGold" | "win";
 
@@ -35,7 +35,7 @@ const COLORS: Record<GlyphColor, Rgb> = {
 
 const SNAP_OPTS = {
   embedFonts: true,
-  outerTransforms: true,
+  outerTransforms: false,
   outerShadows: false,
   backgroundColor: "#FFFFFF" as const,
   fast: true,
@@ -43,8 +43,6 @@ const SNAP_OPTS = {
   compress: false,
   scale: 1,
   burst: true,
-  // Required for shrink-wrapped header spans — without it SnapDOM keeps
-  // natural/fallback width and the string reflows vs the live DOM.
   reconcile: true,
 };
 
@@ -64,8 +62,10 @@ function layoutKey(layout: CatalogLayout, dpr: number): string {
   return [
     ID_VERSION,
     m.id,
+    `cw=${layout.cardWidth}`,
     `meta=${m.metaFontSize}`,
     `hdr=${m.headerHeight}`,
+    `pad=${m.headerPadX}`,
     `dpr=${dpr}`,
     `font=${fontIdentity(m.metaFontSize)}`,
   ].join("|");
@@ -99,6 +99,22 @@ export function getHeaderSprite(
 ): ImageBitmap | undefined {
   if (!text || !activeLayoutKey) return undefined;
   return ramCache.get(entryKey(activeLayoutKey, text, color));
+}
+
+/** PNG data-URL for /compare overlay + download. */
+export function getHeaderSpriteDataUrl(
+  text: string,
+  color: GlyphColor,
+): string | null {
+  const bmp = getHeaderSprite(text, color);
+  if (!bmp) return null;
+  const c = document.createElement("canvas");
+  c.width = bmp.width;
+  c.height = bmp.height;
+  const ctx = c.getContext("2d");
+  if (!ctx) return null;
+  ctx.drawImage(bmp, 0, 0);
+  return c.toDataURL("image/png");
 }
 
 export function getGlyphSpriteHeightDev(): number {
@@ -220,25 +236,29 @@ async function buildHeaderStrings(
 
   // Try IDB for the missing set as one blob pack keyed by content hash.
   const setKey = `${key}|vals=${entries.map((e) => `${e.color}:${e.text}`).join(";")}`;
-  const stored = await loadSprites(setKey);
-  if (myGen !== gen) return false;
-  if (stored && stored.blobs.length === entries.length) {
-    try {
-      for (let i = 0; i < entries.length; i++) {
-        const e = entries[i]!;
-        const bmp = await blobToBitmap(stored.blobs[i]!);
-        ramCache.set(entryKey(key, e.text, e.color), bmp);
+  if (!SKIP_ID_IDB) {
+    const stored = await loadSprites(setKey);
+    if (myGen !== gen) return false;
+    if (stored && stored.blobs.length === entries.length) {
+      try {
+        for (let i = 0; i < entries.length; i++) {
+          const e = entries[i]!;
+          const bmp = await blobToBitmap(stored.blobs[i]!);
+          ramCache.set(entryKey(key, e.text, e.color), bmp);
+        }
+        console.info("[atlas:id]", {
+          src: "idb",
+          strings: entries.length,
+          dpr,
+          font: fontIdentity(m.metaFontSize),
+        });
+        return true;
+      } catch {
+        // fall through
       }
-      console.info("[atlas:id]", {
-        src: "idb",
-        strings: entries.length,
-        dpr,
-        font: fontIdentity(m.metaFontSize),
-      });
-      return true;
-    } catch {
-      // fall through
     }
+  } else {
+    console.info("[atlas:id] SKIP_ID_IDB — forcing SnapDOM");
   }
 
   applyTicketCssVars(host, m);
@@ -248,42 +268,64 @@ async function buildHeaderStrings(
   host.style.pointerEvents = "none";
   host.style.zIndex = "-1";
 
-  // Mechanism-B ink shift — measure once per layout key, reuse across string batches.
-  let inkShift = inkShiftByLayout.get(key) ?? null;
-  if (inkShift == null) {
+  // Mechanism-B ink shift Y — measure once per layout key (do NOT retune for X).
+  let inkShiftY = inkShiftByLayout.get(key) ?? null;
+  if (inkShiftY == null) {
     const probe = await captureRawString(host, m, dpr, "8", "idNormal", true);
-    inkShift = 0;
+    inkShiftY = 0;
     if (probe) {
       const nativeCentre = nativeHeaderInkCentreDevice(host, m, dpr);
-      const ink8 = scanInkBBox(probe);
+      const ink8 = scanInkBBoxY(probe.raw);
       if (ink8 && nativeCentre != null) {
-        inkShift = Math.round(nativeCentre - ink8.center);
+        inkShiftY = Math.round(nativeCentre - ink8.center);
       }
       console.log("[id:INK-FIX]", {
         preset: m.id,
         dpr,
         nativeInkCentre: nativeCentre == null ? "n/a" : +nativeCentre.toFixed(2),
         spriteInkCentre: ink8 ? +ink8.center.toFixed(2) : "n/a",
-        inkShift,
+        inkShift: inkShiftY,
+        note: "Y only — X = id right-edge / win left-edge vs sprite ink",
       });
     }
-    inkShiftByLayout.set(key, inkShift);
+    inkShiftByLayout.set(key, inkShiftY);
   }
   if (myGen !== gen) return false;
 
   const blobs: Blob[] = [];
   for (const e of entries) {
     if (myGen !== gen) return false;
-    const raw = await captureRawString(host, m, dpr, e.text, e.color, false);
-    if (!raw) continue;
+    const captured = await captureRawString(host, m, dpr, e.text, e.color, false);
+    if (!captured) continue;
+    const { raw, shiftX, probe } = captured;
+    if (probe) {
+      console.info("[compare:probe]", {
+        dpr,
+        id: {
+          text: e.text,
+          color: e.color,
+          ...probe,
+          shiftX,
+          evidence:
+            e.color === "win"
+              ? probe.domRect.left < probe.spriteInkBBox.left - 0.5
+                ? "win: dom left of sprite ink → canvas sits RIGHT of DOM"
+                : "win left≈aligned"
+              : probe.domRect.right < probe.spriteInkBBox.right - 0.5
+                ? "id: dom right of sprite ink → canvas sits RIGHT of DOM"
+                : "id right≈aligned",
+        },
+        cellOrigin: null,
+      });
+    }
     const mask = toCoverageMask(raw);
     if (!mask) continue;
+    const spriteW = Math.round(layout.cardWidth * dpr);
     const spriteH = Math.round(m.headerHeight * dpr);
-    // Keep full string width; only normalise height + ink-shift.
-    const norm = fitMaskHeight(mask, spriteH, inkShift);
+    // Y = mechanism-B; X = id right-edge / win left-edge lock.
+    const norm = fitMaskBox(mask, spriteW, spriteH, inkShiftY, shiftX);
     const tinted = await tint(norm, COLORS[e.color]);
     ramCache.set(entryKey(key, e.text, e.color), tinted);
-    // Persist the already-tinted sprite (color is part of the entry key).
     blobs.push(await bitmapToPngBlob(tinted));
     await yieldToMain();
   }
@@ -296,17 +338,19 @@ async function buildHeaderStrings(
     dpr,
     font: fontIdentity(m.metaFontSize),
     spriteH: activeSpriteH,
-    inkShift,
+    inkShiftY,
   });
 
-  try {
-    await saveSprites({
-      key: setKey,
-      meta: { entries, inkShift, spriteH: activeSpriteH },
-      blobs,
-    });
-  } catch (err) {
-    console.warn("[id-atlas] persist failed", err);
+  if (!SKIP_ID_IDB) {
+    try {
+      await saveSprites({
+        key: setKey,
+        meta: { entries, inkShiftY, spriteH: activeSpriteH },
+        blobs,
+      });
+    } catch (err) {
+      console.warn("[id-atlas] persist failed", err);
+    }
   }
   return true;
 }
@@ -315,9 +359,29 @@ function yieldToMain(): Promise<void> {
   return new Promise((r) => setTimeout(r, 0));
 }
 
+type InkBBox2D = {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  centerX: number;
+  centerY: number;
+  width: number;
+  height: number;
+};
+
+type DomRectDev = InkBBox2D;
+
+type CaptureResult = {
+  raw: HTMLCanvasElement;
+  shiftX: number;
+  /** Required probe for Bug A (ticket id). */
+  probe: { domRect: DomRectDev; spriteInkBBox: InkBBox2D } | null;
+};
+
 /**
- * SnapDOM a real header id/win span (shrink-wrapped) with black ink over white.
- * Discard cold first capture when `warm` is true.
+ * SnapDOM the live `.ticketCard__header` on a ticket so CSS vars stay inherited.
+ * X lock: id → right edges; win → left edges (atlas shiftX). Y stays mechanism-B.
  */
 async function captureRawString(
   host: HTMLElement,
@@ -326,28 +390,26 @@ async function captureRawString(
   text: string,
   color: GlyphColor,
   warm: boolean,
-): Promise<HTMLCanvasElement | null> {
+): Promise<CaptureResult | null> {
+  const cardWidth = getActiveLayout().cardWidth;
   const ticket = createTicketDom();
   ticket.root.style.position = "relative";
-  ticket.root.style.width = `${getActiveLayout().cardWidth}px`;
+  ticket.root.style.width = `${cardWidth}px`;
   ticket.root.style.height = `${m.cardHeight}px`;
   ticket.root.style.background = "#FFFFFF";
   ticket.root.style.boxShadow = "none";
   applyTicketCssVars(ticket.root, m);
 
-  if (color === "idGold") ticket.root.classList.add("ticketCard_win");
+  const header = ticket.root.querySelector(
+    ".ticketCard__header",
+  ) as HTMLElement;
+  header.style.background = "#FFFFFF";
+  header.style.overflow = "hidden";
 
-  const target =
-    color === "win"
-      ? (ticket.root.querySelector(".ticketCard__win") as HTMLElement)
-      : (ticket.root.querySelector(".ticketCard__id") as HTMLElement);
-
-  // Shrink-wrap so the sprite is the text run, not the flex:1 half-header.
-  target.style.flex = "0 0 auto";
-  target.style.width = "max-content";
-  target.style.minWidth = "0";
-  target.style.background = "#FFFFFF";
-  target.style.color = "#000000";
+  const idEl = ticket.root.querySelector(".ticketCard__id") as HTMLElement;
+  const winEl = ticket.root.querySelector(".ticketCard__win") as HTMLElement;
+  idEl.style.color = "#000000";
+  winEl.style.color = "#000000";
 
   if (color === "win") {
     ticket.winText.data = text;
@@ -362,19 +424,66 @@ async function captureRawString(
 
   try {
     if (warm) {
-      await snapdom.toCanvas(target, { ...SNAP_OPTS, dpr, invalidate: true });
+      await snapdom.toCanvas(header, { ...SNAP_OPTS, dpr, invalidate: true });
     }
-    const raw = (await snapdom.toCanvas(target, {
+    const raw = (await snapdom.toCanvas(header, {
       ...SNAP_OPTS,
       dpr,
       invalidate: true,
     })) as HTMLCanvasElement;
-    return raw;
+
+    const targetEl = color === "win" ? winEl : idEl;
+    const domRect = textRectDev(targetEl, header, dpr);
+    const spriteInkBBox = scanInkBBox2D(raw);
+    let shiftX = 0;
+    if (domRect && spriteInkBBox) {
+      // Id is right-aligned; win is left-aligned at headerPadX.
+      shiftX =
+        color === "win"
+          ? Math.round(domRect.left - spriteInkBBox.left)
+          : Math.round(domRect.right - spriteInkBBox.right);
+    }
+
+    return {
+      raw,
+      shiftX,
+      probe:
+        domRect && spriteInkBBox ? { domRect, spriteInkBBox } : null,
+    };
   } catch {
     return null;
   } finally {
     ticket.root.remove();
   }
+}
+
+/** Live text ink via Range, device px relative to `root` (header = sprite space). */
+function textRectDev(
+  el: HTMLElement,
+  root: HTMLElement,
+  dpr: number,
+): DomRectDev | null {
+  const node = el.firstChild;
+  if (!node) return null;
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  const r = range.getBoundingClientRect();
+  const rootR = root.getBoundingClientRect();
+  if (r.width <= 0 || r.height <= 0) return null;
+  const left = (r.left - rootR.left) * dpr;
+  const top = (r.top - rootR.top) * dpr;
+  const right = (r.right - rootR.left) * dpr;
+  const bottom = (r.bottom - rootR.top) * dpr;
+  return {
+    left,
+    top,
+    right,
+    bottom,
+    centerX: (left + right) / 2,
+    centerY: (top + bottom) / 2,
+    width: right - left,
+    height: bottom - top,
+  };
 }
 
 function toCoverageMask(raw: HTMLCanvasElement): ImageData | null {
@@ -416,25 +525,37 @@ async function tint(mask: ImageData, color: Rgb): Promise<ImageBitmap> {
   return createImageBitmap(c);
 }
 
-/** Pad/crop vertically to header height; keep full string width. */
-function fitMaskHeight(mask: ImageData, wantH: number, shiftY = 0): ImageData {
-  if (mask.height === wantH && shiftY === 0) return mask;
+/** Exact header device box; shiftX/Y move ink to match live DOM (atlas-side). */
+function fitMaskBox(
+  mask: ImageData,
+  wantW: number,
+  wantH: number,
+  shiftY = 0,
+  shiftX = 0,
+): ImageData {
+  if (
+    mask.width === wantW &&
+    mask.height === wantH &&
+    shiftY === 0 &&
+    shiftX === 0
+  ) {
+    return mask;
+  }
   const c = document.createElement("canvas");
   c.width = mask.width;
   c.height = mask.height;
   c.getContext("2d")!.putImageData(mask, 0, 0);
   const out = document.createElement("canvas");
-  out.width = mask.width;
+  out.width = wantW;
   out.height = wantH;
   const octx = out.getContext("2d")!;
   octx.imageSmoothingEnabled = false;
-  octx.drawImage(c, 0, 0, mask.width, mask.height, 0, shiftY, mask.width, mask.height);
-  return octx.getImageData(0, 0, mask.width, wantH);
+  octx.drawImage(c, shiftX, shiftY);
+  return octx.getImageData(0, 0, wantW, wantH);
 }
 
-function scanInkBBox(
-  canvas: HTMLCanvasElement,
-): { top: number; bottom: number; height: number; center: number } | null {
+/** 2D ink bbox in device px (white or transparent face). */
+function scanInkBBox2D(canvas: HTMLCanvasElement): InkBBox2D | null {
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) return null;
   let data: Uint8ClampedArray;
@@ -445,29 +566,51 @@ function scanInkBBox(
   }
   const w = canvas.width;
   const h = canvas.height;
-  let top = -1;
+  let left = w;
+  let right = -1;
+  let top = h;
   let bottom = -1;
   for (let y = 0; y < h; y++) {
-    let ink = false;
     for (let x = 0; x < w; x++) {
       const i = (y * w + x) * 4;
       const a = data[i + 3]! / 255;
-      if (a === 0) continue;
+      if (a < 0.02) continue;
       const r = data[i]! * a + 255 * (1 - a);
       const g = data[i + 1]! * a + 255 * (1 - a);
       const b = data[i + 2]! * a + 255 * (1 - a);
       if (r < 200 || g < 200 || b < 200) {
-        ink = true;
-        break;
+        if (x < left) left = x;
+        if (x > right) right = x;
+        if (y < top) top = y;
+        if (y > bottom) bottom = y;
       }
     }
-    if (ink) {
-      if (top < 0) top = y;
-      bottom = y;
-    }
   }
-  if (top < 0) return null;
-  return { top, bottom, height: bottom - top + 1, center: (top + bottom + 1) / 2 };
+  if (right < left || bottom < top) return null;
+  return {
+    left,
+    right,
+    top,
+    bottom,
+    centerX: (left + right + 1) / 2,
+    centerY: (top + bottom + 1) / 2,
+    width: right - left + 1,
+    height: bottom - top + 1,
+  };
+}
+
+/** Vertical-only ink centre (existing mechanism-B probe). */
+function scanInkBBoxY(
+  canvas: HTMLCanvasElement,
+): { top: number; bottom: number; height: number; center: number } | null {
+  const box = scanInkBBox2D(canvas);
+  if (!box) return null;
+  return {
+    top: box.top,
+    bottom: box.bottom,
+    height: box.height,
+    center: box.centerY,
+  };
 }
 
 function inkOffsetFromBaseline(fontSizePx: number): number | null {

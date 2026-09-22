@@ -406,3 +406,126 @@ button:disabled {
 .ticketCard_win .ticketCard__cell:not(:first-child)::before {
   background: #cb9330;
 }
+
+/* —— Disabled / locked ticket (teal body) —— */
+.ticketCard_disabled {
+  background: #0c8f7e;
+}
+
+.ticketCard_disabled .ticketCard__header {
+  background: linear-gradient(180deg, #14a894 0%, #0c8f7e 100%);
+}
+
+.ticketCard_disabled .ticketCard__body {
+  background: linear-gradient(180deg, #1aad9a 0%, #0c8f7e 50%, #087a6a 100%);
+}
+
+.ticketCard_disabled .ticketCard__id,
+.ticketCard_disabled .ticketCard__win {
+  color: #0f6864;
+}
+
+.ticketCard_disabled .ticketCard__cell {
+  color: #0f6864;
+}
+
+.ticketCard_disabled .ticketCard__cell:not(:first-child)::before {
+  background: rgb(15 104 100 / 50%);
+}
+
+/* —— /compare overlay tool —— */
+.compare {
+  min-height: 100vh;
+  padding: 16px 20px 32px;
+  color: #e8f2f0;
+}
+
+.compare__toolbar {
+  max-width: 960px;
+  margin: 0 auto 20px;
+}
+
+.compare__nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.compare__nav a {
+  color: #1fa897;
+}
+
+.compare__status {
+  color: #8fb3ad;
+  font-size: 0.85rem;
+}
+
+.compare__controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: center;
+  font-size: 0.85rem;
+}
+
+.compare__controls label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.compare__controls input[type="number"] {
+  width: 4.5rem;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid #2a5550;
+  background: #071c1a;
+  color: #e8f2f0;
+  font: inherit;
+}
+
+.compare__hint {
+  margin: 10px 0 0;
+  color: #8fb3ad;
+  font-size: 0.8rem;
+  max-width: 52rem;
+}
+
+.compare__cases {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 28px;
+  max-width: 960px;
+  margin: 0 auto;
+}
+
+.compare__caseTitle {
+  margin: 0 0 8px;
+  font-size: 0.95rem;
+  font-weight: 650;
+}
+
+.compare__stack {
+  position: relative;
+  outline: 1px solid #2a5550;
+  background: #0a2421;
+  overflow: visible;
+}
+
+.compare__canvas {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  pointer-events: none;
+  image-rendering: pixelated;
+}
+
+.catalog__captureHost {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+  pointer-events: none;
+  z-index: -1;
+}

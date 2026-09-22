@@ -274,11 +274,17 @@ export function Catalog() {
         setAtlasReady(ready);
         setAtlasSource(source);
       }
-    }).then((source) => {
+    }).then(async (source) => {
       if (gen !== atlasGenRef.current) return;
       if (source === "empty") return;
       setAtlasReady(cellAtlasSize());
       setAtlasSource(source);
+      // Multiplier cell sprites need measured cell box — warm after cell atlas.
+      const badgeHost = badgeHostRef.current;
+      if (badgeHost) {
+        await warmMultiplierLabels(badgeHost, MULTIPLIER_VALUES);
+        if (gen !== atlasGenRef.current) return;
+      }
       // Warm whole-string header sprites for current tickets (id + win).
       const idHost = idHostRef.current;
       if (idHost) {
@@ -620,6 +626,8 @@ export function Catalog() {
         <p className="toolbar__hint">
           cellW=(ticketWidth−6)/6. Atlas stores measured cell tops. Rebuild
           atlas, check console [YDRIFT], then toggle sprite-over-DOM on Linux.
+          {" · "}
+          <a href="/compare">DOM↔Canvas compare</a>
         </p>
         <div className="toolbar__row">
           <button type="button" onClick={addHundred}>

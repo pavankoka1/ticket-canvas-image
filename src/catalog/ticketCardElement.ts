@@ -100,6 +100,7 @@ export class TicketCard {
   private readonly badges: (CellBadge | null)[] = [];
   private layoutKey: string | null = null;
   private winClass = false;
+  private disabledClass = false;
 
   constructor() {
     const parts = createTicketDom();
@@ -177,16 +178,23 @@ export class TicketCard {
     if (this.winText.data !== winStr) this.winText.data = winStr;
 
     for (let i = 0; i < BALLS_PER_TICKET; i++) {
-      const next = String(ticket.balls[i] ?? "");
-      if (this.cellTexts[i]!.data !== next) this.cellTexts[i]!.data = next;
       const hit = ticket.hits.includes(i);
-      this.applyCellBadge(i, hit, ticket.multipliers[i] ?? 0);
+      const mult = ticket.multipliers[i] ?? 0;
+      // Multiplier covers the cell — no digit under badge (matches canvas).
+      const next = mult > 0 ? "" : String(ticket.balls[i] ?? "");
+      if (this.cellTexts[i]!.data !== next) this.cellTexts[i]!.data = next;
+      this.applyCellBadge(i, hit, mult);
     }
 
     const win = isWinTicket(ticket);
     if (win !== this.winClass) {
       this.winClass = win;
       this.dom.classList.toggle("ticketCard_win", win);
+    }
+    const disabled = Boolean(ticket.disabled);
+    if (disabled !== this.disabledClass) {
+      this.disabledClass = disabled;
+      this.dom.classList.toggle("ticketCard_disabled", disabled);
     }
 
     if (x !== undefined && y !== undefined) {

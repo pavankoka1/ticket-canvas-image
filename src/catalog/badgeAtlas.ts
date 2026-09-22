@@ -6,23 +6,31 @@ import {
   loadSprites,
   saveSprites,
 } from "./atlasStore";
-import { getActiveLayout } from "./catalogLayout";
 import { fontIdentity } from "./cellAtlas";
-import { activeDpr } from "./cellBoxModel";
+import {
+  activeDpr,
+  getLiveCellBoxModel,
+  resolveCellBoxModel,
+} from "./cellBoxModel";
+import { getActiveLayout } from "./catalogLayout";
 import { MultiplierLabelNode } from "./multiplierLabel";
 import { applyTicketCssVars } from "./ticketPresets";
 import { ensureTicketFont } from "./ticketFont";
+import { isWinTicket, type Ticket } from "./tickets";
 
 /**
- * Dab disc (static PNG) + per-value multiplier badge sprites.
+ * Multiplier badge sprites — full TicketCard badge (disc + N× + shadow) snapped
+ * on the real ticket body background for each surface:
+ *   normal  — cream body gradient
+ *   gold    — win ticket body gradient
+ *   disabled — green/teal disabled body
  *
- * - Plain dab   → blit dab-full.png centred on the cell (art, no SnapDOM).
- * - Multiplier  → SnapDOM the real `.ticketCard__badgeHost_multiplier` node
- *   (disc background-image + label), same CSS stack as TicketCard. Capture the
- *   host itself with outerTransforms so −15° label + translate(-50%,-50%)
- *   rasterise correctly — capturing a parent box with outerTransforms:false
- *   was washing out the gradient label.
+ * Shell = body pad + cell + body pad. Paint at (cell.x, cell.y − padY).
+ * No ink-shift / layer split — blit the SnapDOM bitmap as captured.
  */
+
+export const BADGE_SURFACES = ["normal", "gold", "disabled"] as const;
+export type BadgeSurface = (typeof BADGE_SURFACES)[number];
 
 const dabImg = new Image();
 const discImg = new Image();
@@ -31,7 +39,7 @@ const readyCbs = new Set<() => void>();
 
 function fireReady(): void {
   if (badgeImagesReady()) {
-    for (const cb of readyCbs) cb();
+    for (const cb of Array.from(readyCbs)) cb();
     readyCbs.clear();
   }
 }
@@ -73,23 +81,88 @@ function waitForDiscImage(): Promise<void> {
   });
 }
 
-// —— Full multiplier badge sprites: RAM → IndexedDB → SnapDOM ——
-const BADGE_VERSION = "b6";
+/** Which badge surface a ticket should paint. */
+export function badgeSurfaceForTicket(ticket: Ticket): BadgeSurface {
+  if (ticket.disabled) return "disabled";
+  if (isWinTicket(ticket)) return "gold";
+  return "normal";
+}
+
+const BADGE_VERSION = "b50-surfaceBg";
+const SKIP_BADGE_IDB = false;
 const badgeCache = new Map<string, ImageBitmap>();
 let badgeWarmKey = "";
 let badgeWarmPromise: Promise<void> | null = null;
+
+const SNAP_OPTS = {
+  embedFonts: true,
+  outerTransforms: true,
+  outerShadows: false,
+  // Transparent: the shell already carries the ticket body fill.
+  backgroundColor: "transparent" as const,
+  fast: true,
+  cache: "disabled" as const,
+  compress: false,
+  scale: 1,
+  burst: true,
+  reconcile: true,
+};
 
 function currentDpr(): number {
   return activeDpr();
 }
 
+/** Shell = [padY][cell][padY]. padY matches live body padding above the cell. */
+export function shellGeometry(dpr: number = currentDpr()): {
+  cellW: number;
+  cellH: number;
+  padY: number;
+  shellW: number;
+  shellH: number;
+  wantW: number;
+  wantH: number;
+  dabSize: number;
+  headerHeight: number;
+} {
+  const m = getActiveLayout().metrics;
+  const model =
+    getLiveCellBoxModel() ?? resolveCellBoxModel(getActiveLayout(), dpr);
+  const cellW = model.cellW;
+  const cellH = model.cellH;
+  const padY = Math.max(0, model.bodyTop - m.headerHeight);
+  const shellW = cellW;
+  const shellH = padY + cellH + padY;
+  return {
+    cellW,
+    cellH,
+    padY,
+    shellW,
+    shellH,
+    wantW: Math.round(shellW * dpr),
+    wantH: Math.round(shellH * dpr),
+    dabSize: m.dabSize,
+    headerHeight: m.headerHeight,
+  };
+}
+
 function badgeKey(
   value: number,
+  surface: BadgeSurface,
   dabSize: number,
   dpr: number,
   fontId: string,
 ): string {
-  return `${getActiveLayout().metrics.id}|dab=${dabSize}|dpr=${dpr}|font=${fontId}|v=${value}`;
+  const g = shellGeometry(dpr);
+  return [
+    getActiveLayout().metrics.id,
+    `dab=${dabSize}`,
+    `dpr=${dpr}`,
+    `font=${fontId}`,
+    `shell=${g.shellW}x${g.shellH}`,
+    `pad=${g.padY}`,
+    `surf=${surface}`,
+    `v=${value}`,
+  ].join("|");
 }
 
 function badgeSetKey(
@@ -100,6 +173,7 @@ function badgeSetKey(
   multFontSize: number,
 ): string {
   const m = getActiveLayout().metrics;
+  const g = shellGeometry(dpr);
   return [
     BADGE_VERSION,
     m.id,
@@ -107,15 +181,38 @@ function badgeSetKey(
     `dpr=${dpr}`,
     `font=${fontId}`,
     `mult=${multFontSize}`,
+    `shell=${g.shellW}x${g.shellH}`,
+    `pad=${g.padY}`,
+    `surfs=${BADGE_SURFACES.join(",")}`,
     `vals=${[...values].join(",")}`,
   ].join("|");
 }
 
-export function getMultiplierBadge(value: number): ImageBitmap | undefined {
+export function getMultiplierBadge(
+  value: number,
+  surface: BadgeSurface = "normal",
+): ImageBitmap | undefined {
   const dabSize = getActiveLayout().metrics.dabSize;
   const multFontSize = (13 * dabSize) / 24;
   const fontId = fontIdentity(multFontSize);
-  return badgeCache.get(badgeKey(value, dabSize, currentDpr(), fontId));
+  return badgeCache.get(
+    badgeKey(value, surface, dabSize, currentDpr(), fontId),
+  );
+}
+
+export function getMultiplierBadgeDataUrl(
+  value: number,
+  surface: BadgeSurface = "normal",
+): string | undefined {
+  const bmp = getMultiplierBadge(value, surface);
+  if (!bmp) return undefined;
+  const c = document.createElement("canvas");
+  c.width = bmp.width;
+  c.height = bmp.height;
+  const ctx = c.getContext("2d");
+  if (!ctx) return undefined;
+  ctx.drawImage(bmp, 0, 0);
+  return c.toDataURL("image/png");
 }
 
 function yieldToMain(): Promise<void> {
@@ -128,7 +225,8 @@ export function warmMultiplierLabels(
 ): Promise<void> {
   const dabSize = getActiveLayout().metrics.dabSize;
   const dpr = currentDpr();
-  const warmKey = `${getActiveLayout().metrics.id}|dab=${dabSize}|dpr=${dpr}`;
+  const g = shellGeometry(dpr);
+  const warmKey = `${getActiveLayout().metrics.id}|shell=${g.shellW}x${g.shellH}|pad=${g.padY}|dpr=${dpr}|${BADGE_VERSION}`;
   if (badgeWarmPromise && badgeWarmKey === warmKey) return badgeWarmPromise;
 
   badgeWarmKey = warmKey;
@@ -145,37 +243,49 @@ async function warmBadgeSet(
   dpr: number,
 ): Promise<void> {
   const multFontSize = (13 * dabSize) / 24;
-  // Disc PNG must be in the browser cache before SnapDOM embeds background-image.
   await waitForDiscImage();
   const { face, mbOnest700, onest700 } = await ensureTicketFont(multFontSize);
   console.info("[atlas:badge] font", { face, mbOnest700, onest700 });
 
   const fontId = fontIdentity(multFontSize);
-  if (values.every((v) => badgeCache.has(badgeKey(v, dabSize, dpr, fontId)))) {
-    return;
-  }
+  const allReady = values.every((v) =>
+    BADGE_SURFACES.every((s) =>
+      badgeCache.has(badgeKey(v, s, dabSize, dpr, fontId)),
+    ),
+  );
+  if (allReady) return;
 
   const key = badgeSetKey(dabSize, dpr, fontId, values, multFontSize);
+  const g = shellGeometry(dpr);
+  const slotCount = values.length * BADGE_SURFACES.length;
 
-  const stored = await loadSprites(key);
-  if (stored && stored.blobs.length === values.length) {
-    try {
-      for (let i = 0; i < values.length; i++) {
-        badgeCache.set(
-          badgeKey(values[i]!, dabSize, dpr, fontId),
-          await blobToBitmap(stored.blobs[i]!),
-        );
+  if (!SKIP_BADGE_IDB) {
+    const stored = await loadSprites(key);
+    if (stored && stored.blobs.length === slotCount) {
+      try {
+        let i = 0;
+        for (const value of values) {
+          for (const surface of BADGE_SURFACES) {
+            badgeCache.set(
+              badgeKey(value, surface, dabSize, dpr, fontId),
+              await blobToBitmap(stored.blobs[i]!),
+            );
+            i++;
+          }
+        }
+        console.info("[atlas:badge]", {
+          src: "idb",
+          values: values.length,
+          surfaces: BADGE_SURFACES.length,
+          shell: `${g.shellW}x${g.shellH}`,
+          padY: g.padY,
+          dpr,
+          font: fontId,
+        });
+        return;
+      } catch {
+        // fall through
       }
-      console.info("[atlas:badge]", {
-        src: "idb",
-        values: values.length,
-        dabSize,
-        dpr,
-        font: fontId,
-      });
-      return;
-    } catch {
-      // fall through to rebuild
     }
   }
 
@@ -186,13 +296,24 @@ async function warmBadgeSet(
     dpr,
     multFontSize,
   );
-  for (let i = 0; i < values.length; i++) {
-    badgeCache.set(badgeKey(values[i]!, dabSize, dpr, fontId), bitmaps[i]!);
+  {
+    let i = 0;
+    for (const value of values) {
+      for (const surface of BADGE_SURFACES) {
+        badgeCache.set(
+          badgeKey(value, surface, dabSize, dpr, fontId),
+          bitmaps[i]!,
+        );
+        i++;
+      }
+    }
   }
   console.info("[atlas:badge]", {
     src: "snap",
     values: values.length,
-    dabSize,
+    surfaces: BADGE_SURFACES.length,
+    shell: `${g.shellW}x${g.shellH}`,
+    padY: g.padY,
     dpr,
     font: fontId,
     sprite: `${bitmaps[0]?.width ?? 0}x${bitmaps[0]?.height ?? 0}`,
@@ -202,7 +323,16 @@ async function warmBadgeSet(
     for (const bmp of bitmaps) blobs.push(await bitmapToPngBlob(bmp));
     const ok = await saveSprites({
       key,
-      meta: { values, dabSize, dpr, font: fontId },
+      meta: {
+        values,
+        surfaces: [...BADGE_SURFACES],
+        dabSize,
+        dpr,
+        font: fontId,
+        shellW: g.shellW,
+        shellH: g.shellH,
+        padY: g.padY,
+      },
       blobs,
     });
     if (!ok) console.warn("[badge] IndexedDB save failed for", key);
@@ -212,8 +342,8 @@ async function warmBadgeSet(
 }
 
 /**
- * Build one sprite per multiplier value by SnapDOM-capturing a real
- * `.ticketCard__badgeHost_multiplier` (same classes/CSS as TicketCard).
+ * Full badge on ticket-body background. Order: for each value × each surface.
+ * No ink-shift — bitmap origin = shell origin = paint origin.
  */
 async function buildBadgeBitmaps(
   host: HTMLElement,
@@ -230,61 +360,117 @@ async function buildBadgeBitmaps(
   host.style.pointerEvents = "none";
   host.style.zIndex = "-1";
 
-  // Cell-sized stage so the host's translate(-50%,-50%) centres like in a real cell.
-  const stageSize = Math.ceil(dabSize * 2);
-  const snapOpts = {
-    embedFonts: true,
-    // Required: host has translate(-50%,-50%) and label has rotate(-15deg).
-    // Capturing a parent with outerTransforms:false washed out gradient text.
-    outerTransforms: true,
-    outerShadows: false,
-    backgroundColor: "transparent" as const,
-    fast: true,
-    cache: "disabled" as const,
-    compress: false,
-    scale: 1,
-    dpr,
-    burst: true,
-    reconcile: true,
-  };
-
+  const g = shellGeometry(dpr);
+  const snapOpts = { ...SNAP_OPTS, dpr };
   const out: ImageBitmap[] = [];
   let warmed = false;
+  let logged = false;
+
   for (const value of values) {
-    const stage = document.createElement("div");
-    stage.style.cssText = [
-      "position:relative",
-      `width:${stageSize}px`,
-      `height:${stageSize}px`,
-      "overflow:visible",
-      "background:transparent",
-    ].join(";");
-    stage.style.setProperty("--ticket-dab-size", `${dabSize}px`);
-    stage.style.setProperty("--multiplier-font-size", `${multFontSize}px`);
+    for (const surface of BADGE_SURFACES) {
+      const shell = document.createElement("div");
+      // Real ticket body classes so SnapDOM AA matches live DOM on that surface.
+      const cardClass =
+        surface === "gold"
+          ? "ticketCard ticketCard_win"
+          : surface === "disabled"
+            ? "ticketCard ticketCard_disabled"
+            : "ticketCard";
+      shell.className = cardClass;
+      shell.style.cssText = [
+        "position:relative",
+        `width:${g.shellW}px`,
+        `height:${g.shellH}px`,
+        "overflow:hidden",
+        "box-sizing:border-box",
+        "border-radius:0",
+        "box-shadow:none",
+        "transform:none",
+      ].join(";");
+      shell.style.setProperty("--ticket-dab-size", `${dabSize}px`);
+      shell.style.setProperty("--multiplier-font-size", `${multFontSize}px`);
+      shell.style.setProperty("--ticket-cell-width", `${g.cellW}px`);
+      shell.style.setProperty("--ticket-cell-height", `${g.cellH}px`);
 
-    const badgeHost = document.createElement("span");
-    badgeHost.className =
-      "ticketCard__badgeHost ticketCard__badgeHost_multiplier";
-    // Centre in stage the same way a cell centres the host (top/left 50% + translate).
-    const label = new MultiplierLabelNode();
-    label.update(value);
-    badgeHost.appendChild(label.dom);
-    stage.appendChild(badgeHost);
-    host.appendChild(stage);
-    void stage.offsetWidth;
+      // Body band fills the shell — same gradient the live body uses under the cell.
+      const body = document.createElement("div");
+      body.className = "ticketCard__body";
+      body.style.cssText = [
+        "position:absolute",
+        "inset:0",
+        "height:100%",
+        "width:100%",
+        "padding:0",
+        "margin:0",
+        "border-radius:0",
+        "overflow:visible",
+      ].join(";");
 
-    if (!warmed) {
-      await snapdom.toCanvas(badgeHost, { ...snapOpts, invalidate: true });
-      warmed = true;
+      const cell = document.createElement("span");
+      cell.className = "ticketCard__cell";
+      cell.style.cssText = [
+        "position:absolute",
+        `top:${g.padY}px`,
+        "left:0",
+        `width:${g.cellW}px`,
+        `height:${g.cellH}px`,
+        "margin:0",
+        "overflow:visible",
+      ].join(";");
+
+      const badgeHost = document.createElement("span");
+      badgeHost.className =
+        "ticketCard__badgeHost ticketCard__badgeHost_multiplier";
+      const label = new MultiplierLabelNode();
+      label.update(value);
+      badgeHost.appendChild(label.dom);
+      cell.appendChild(badgeHost);
+      body.appendChild(cell);
+      shell.appendChild(body);
+      host.appendChild(shell);
+      void shell.offsetWidth;
+
+      if (!warmed) {
+        await snapdom.toCanvas(shell, { ...snapOpts, invalidate: true });
+        warmed = true;
+      }
+      const raw = (await snapdom.toCanvas(shell, {
+        ...snapOpts,
+        invalidate: true,
+      })) as HTMLCanvasElement;
+      shell.remove();
+
+      const bitmap = await toExactBitmap(raw, g.wantW, g.wantH);
+      if (!logged) {
+        logged = true;
+        console.info(
+          `[atlas:badge] shell ${g.shellW}x${g.shellH} padY=${g.padY} want=${g.wantW}x${g.wantH} raw=${raw.width}x${raw.height} surfaces=${BADGE_SURFACES.join(",")} paintFrom=cell.y−padY`,
+        );
+      }
+      out.push(bitmap);
+      await yieldToMain();
     }
-    const raw = (await snapdom.toCanvas(badgeHost, {
-      ...snapOpts,
-      invalidate: true,
-    })) as HTMLCanvasElement;
-    stage.remove();
-
-    out.push(await createImageBitmap(raw));
-    await yieldToMain();
   }
   return out;
+}
+
+/** Prefer exact shell device size; center-crop if SnapDOM oversizes. */
+async function toExactBitmap(
+  raw: HTMLCanvasElement,
+  wantW: number,
+  wantH: number,
+): Promise<ImageBitmap> {
+  if (raw.width === wantW && raw.height === wantH) {
+    return createImageBitmap(raw);
+  }
+  const out = document.createElement("canvas");
+  out.width = wantW;
+  out.height = wantH;
+  const ctx = out.getContext("2d");
+  if (!ctx) return createImageBitmap(raw);
+  ctx.clearRect(0, 0, wantW, wantH);
+  const sx = Math.round((raw.width - wantW) / 2);
+  const sy = Math.round((raw.height - wantH) / 2);
+  ctx.drawImage(raw, sx, sy, wantW, wantH, 0, 0, wantW, wantH);
+  return createImageBitmap(out);
 }

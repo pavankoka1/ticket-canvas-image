@@ -1,4 +1,9 @@
-import { getDabImage, getMultiplierBadge } from "./badgeAtlas";
+import {
+  badgeSurfaceForTicket,
+  getDabImage,
+  getMultiplierBadge,
+  shellGeometry,
+} from "./badgeAtlas";
 import { contentWidth, getActiveLayout } from "./catalogLayout";
 import { getCellBitmap, getTicketGeometry } from "./cellAtlas";
 import {
@@ -218,58 +223,92 @@ export class CanvasPool {
       const slot = this.slots[i]!;
       const ticket = this.ticketsById.get(slot.id);
       if (!ticket) continue;
-
-      const gold = isWinTicket(ticket);
-      const x = Math.round(slot.x * dpr) / dpr;
-      const y = Math.round((slot.y - tile.minY) * dpr) / dpr;
-
-      paintChrome(ctx, x, y, cardWidth, metrics, gold);
-
-      // Header text (ID top-right, win amount top-left) — glyph sprites in
-      // device space (same rasteriser output as the DOM → no cross-OS drift),
-      // with a fillText fallback only until the glyph atlas has warmed.
-      paintHeaderText(ctx, slot, ticket, gold, metrics, cardWidth, dpr, tile.minY);
-
-      // Absolute device-pixel origins once — do NOT snap slot and box.y separately
-      // (that double-rounds fractional bodyTop=19.5 on dpr 1.25/1.5 → Y crawl).
-      const slotYDev = Math.round(slot.y * dpr);
-      const slotXDev = Math.round(slot.x * dpr);
-      const tileYDev = Math.round(tile.minY * dpr);
-
-      for (let k = 0; k < BALLS_PER_TICKET; k++) {
-        const n = ticket.balls[k];
-        if (n == null) continue;
-        const box = boxes[k]!;
-        const bxDev = Math.round((slot.x + box.x) * dpr);
-        const byDev = Math.round((slot.y + box.y) * dpr);
-
-        // Number sprite first…
-        const bmp = useSprites ? getCellBitmap(n) : undefined;
-        if (bmp) {
-          ctx.setTransform(1, 0, 0, 1, 0, 0);
-          ctx.drawImage(bmp, bxDev, byDev - tileYDev);
-          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        }
-
-        // …then the dab / multiplier disc ON TOP (covers the digit, like the DOM).
-        if (ticket.hits.includes(k)) {
-          const cx = slot.x + box.x + box.w / 2;
-          const cy = slot.y - tile.minY + box.y + box.h / 2;
-          paintBadge(ctx, cx, cy, metrics.dabSize, ticket.multipliers[k] ?? 0, dpr);
-        }
-      }
-
-      // Separators between cells (not inside sprites).
-      paintSeparators(
+      paintTicket(
         ctx,
-        slotXDev / dpr,
-        (slotYDev - tileYDev) / dpr,
-        boxes,
+        slot,
+        ticket,
+        cardWidth,
         metrics,
-        gold,
+        dpr,
+        tile.minY,
+        boxes,
+        useSprites,
       );
     }
   }
+}
+
+/** Paint one ticket at its slot. Used by CanvasPool and /compare. */
+export function paintTicket(
+  ctx: CanvasRenderingContext2D,
+  slot: TicketSlot,
+  ticket: Ticket,
+  cardWidth: number,
+  metrics: ReturnType<typeof getActiveLayout>["metrics"],
+  dpr: number,
+  tileMinY: number,
+  boxes: { x: number; y: number; w: number; h: number }[],
+  useSprites: boolean,
+): void {
+  const gold = isWinTicket(ticket);
+  const disabled = Boolean(ticket.disabled);
+  const x = Math.round(slot.x * dpr) / dpr;
+  const y = Math.round((slot.y - tileMinY) * dpr) / dpr;
+
+  paintChrome(ctx, x, y, cardWidth, metrics, gold, disabled);
+  paintHeaderText(ctx, slot, ticket, gold, metrics, cardWidth, dpr, tileMinY);
+
+  const slotYDev = Math.round(slot.y * dpr);
+  const slotXDev = Math.round(slot.x * dpr);
+  const tileYDev = Math.round(tileMinY * dpr);
+  const badgeSurface = badgeSurfaceForTicket(ticket);
+
+  for (let k = 0; k < BALLS_PER_TICKET; k++) {
+    const n = ticket.balls[k];
+    if (n == null) continue;
+    const box = boxes[k]!;
+    const bxDev = Math.round((slot.x + box.x) * dpr);
+    const byDev = Math.round((slot.y + box.y) * dpr);
+
+    const mult = ticket.multipliers[k] ?? 0;
+    const isMult = ticket.hits.includes(k) && mult > 0;
+
+    // Multiplier shell covers the digit (like the DOM dab). Skip number under it.
+    const bmp = useSprites && !isMult ? getCellBitmap(n) : undefined;
+    if (bmp) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.drawImage(bmp, bxDev, byDev - tileYDev);
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    if (ticket.hits.includes(k)) {
+      if (isMult) {
+        const badge = getMultiplierBadge(mult, badgeSurface);
+        if (badge) {
+          // Shell origin = pad above cell = header↔body separator.
+          const padY = shellGeometry(dpr).padY;
+          const yDev =
+            Math.round((slot.y + box.y - padY) * dpr) - tileYDev;
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+          ctx.drawImage(badge, bxDev, yDev);
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        }
+      } else {
+        const cx = slot.x + box.x + box.w / 2;
+        const cy = slot.y - tileMinY + box.y + box.h / 2;
+        paintPlainDab(ctx, cx, cy, metrics.dabSize);
+      }
+    }
+  }
+
+  paintSeparators(
+    ctx,
+    slotXDev / dpr,
+    (slotYDev - tileYDev) / dpr,
+    boxes,
+    metrics,
+    gold,
+  );
 }
 
 /**
@@ -293,30 +332,19 @@ function drawContain(
 }
 
 /**
- * Dab PNG or full multiplier badge sprite, centred on the measured cell box.
- * Multipliers are one SnapDOM unit (disc + label) — no canvas re-centering.
+ * Plain dab PNG centred on the measured cell box (no SnapDOM).
+ * Multiplier cells use getMultiplierBadge() shells painted at headerHeight.
  */
-function paintBadge(
+function paintPlainDab(
   ctx: CanvasRenderingContext2D,
   cx: number,
   cy: number,
   dabSize: number,
-  multiplier: number,
-  dpr: number,
 ): void {
   const prevSmoothing = ctx.imageSmoothingEnabled;
   ctx.imageSmoothingEnabled = true;
-  if (multiplier > 0) {
-    const badge = getMultiplierBadge(multiplier);
-    if (badge) {
-      const bw = badge.width / dpr;
-      const bh = badge.height / dpr;
-      ctx.drawImage(badge, cx - bw / 2, cy - bh / 2, bw, bh);
-    }
-  } else {
-    const dab = getDabImage();
-    if (dab) drawContain(ctx, dab, cx, cy, dabSize);
-  }
+  const dab = getDabImage();
+  if (dab) drawContain(ctx, dab, cx, cy, dabSize);
   ctx.imageSmoothingEnabled = prevSmoothing;
 }
 
@@ -327,6 +355,7 @@ function paintChrome(
   cardWidth: number,
   m: ReturnType<typeof getActiveLayout>["metrics"],
   gold: boolean,
+  disabled = false,
 ): void {
   const r = m.radius;
   const cardHeight = m.cardHeight;
@@ -335,7 +364,7 @@ function paintChrome(
   ctx.clip();
 
   // Card face
-  ctx.fillStyle = gold ? "#FFD65C" : "#F8EADB";
+  ctx.fillStyle = disabled ? "#0C8F7E" : gold ? "#FFD65C" : "#F8EADB";
   ctx.fillRect(x, y, cardWidth, cardHeight);
 
   // Body gradient
@@ -345,7 +374,11 @@ function paintChrome(
     x,
     y + cardHeight,
   );
-  if (gold) {
+  if (disabled) {
+    bodyGrad.addColorStop(0, "#1AAD9A");
+    bodyGrad.addColorStop(0.5, "#0C8F7E");
+    bodyGrad.addColorStop(1, "#087A6A");
+  } else if (gold) {
     bodyGrad.addColorStop(0, "#FFE96E");
     bodyGrad.addColorStop(0.5, "#FFD054");
     bodyGrad.addColorStop(1, "#F98900");
@@ -357,7 +390,12 @@ function paintChrome(
   ctx.fillRect(x, y + m.headerHeight, cardWidth, m.bodyHeight);
 
   // Header
-  if (gold) {
+  if (disabled) {
+    const headGrad = ctx.createLinearGradient(x, y, x, y + m.headerHeight);
+    headGrad.addColorStop(0, "#14A894");
+    headGrad.addColorStop(1, "#0C8F7E");
+    ctx.fillStyle = headGrad;
+  } else if (gold) {
     const headGrad = ctx.createLinearGradient(x, y, x, y + m.headerHeight);
     headGrad.addColorStop(0, "#FFEFA5");
     headGrad.addColorStop(1, "#FFD65C");
@@ -397,15 +435,11 @@ function paintHeaderText(
 
   if (idSpr || winSpr) {
     const topDev = Math.round(slot.y * dpr) - Math.round(tileMinY * dpr);
+    const leftDev = Math.round(slot.x * dpr);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-    if (idSpr) {
-      const rightDev = Math.round((slot.x + cardWidth - m.headerPadX) * dpr);
-      ctx.drawImage(idSpr, rightDev - idSpr.width, topDev);
-    }
-    if (winSpr) {
-      const leftDev = Math.round((slot.x + m.headerPadX) * dpr);
-      ctx.drawImage(winSpr, leftDev, topDev);
-    }
+    // Full-header sprites — position is baked in (same flex as live DOM).
+    if (winSpr) ctx.drawImage(winSpr, leftDev, topDev);
+    if (idSpr) ctx.drawImage(idSpr, leftDev, topDev);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
 
