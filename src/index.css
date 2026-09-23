@@ -265,6 +265,10 @@ button:disabled {
   border-radius: 1px;
   background: rgb(177 151 151 / 50%);
   pointer-events: none;
+  transform: translate(
+    var(--ticket-sep-nudge-x, 0px),
+    var(--ticket-sep-nudge-y, 0px)
+  );
 }
 
 /* Hit state is semantic only — the dab disc covers the number once it lands. */
@@ -277,19 +281,19 @@ button:disabled {
   z-index: 1;
   position: absolute;
   display: flex;
-  top: 50%;
-  left: 50%;
+  top: 0;
+  left: 0;
   width: var(--ticket-dab-size, 24px);
   height: var(--ticket-dab-size, 24px);
-  background-position: center;
+  margin: 0;
+  background-position: 0 0;
   background-repeat: no-repeat;
   overflow: visible;
   pointer-events: none;
   background-size: contain;
   align-items: center;
   justify-content: center;
-  transform: translate(-50%, -50%);
-  transform-origin: center center;
+  transform: none;
 }
 
 .ticketCard__badgeHost_dab {
@@ -505,6 +509,29 @@ button:disabled {
   margin: 0 0 8px;
   font-size: 0.95rem;
   font-weight: 650;
+}
+
+.compare__fullSnap {
+  max-width: 960px;
+  margin: 28px auto 0;
+}
+
+.compare__cellRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 28px;
+  align-items: flex-end;
+}
+
+.compare__canvas_plain {
+  mix-blend-mode: normal;
+  transform: none;
+}
+
+.compare__snapNote {
+  margin: 0 0 8px;
+  color: #8fb3ad;
+  font-size: 0.8rem;
 }
 
 .compare__stack {

@@ -101,3 +101,78 @@ export function setLiveCellBoxModel(model: CellBoxModel): void {
 export function getLiveCellBoxModel(): CellBoxModel | null {
   return liveModel;
 }
+
+export type DeviceBox = { x: number; y: number; w: number; h: number };
+
+/**
+ * Dab / multiplier host centred on a cell, in device pixels.
+ * `leftCss` / `topCss` are the host's position inside that cell.
+ * The same box is the canvas blit origin.
+ */
+export function badgeHostDevice(
+  cell: { x: number; y: number; w: number; h: number },
+  dabSizeCss: number,
+  dpr: number,
+): DeviceBox & { leftCss: number; topCss: number; sizeCss: number } {
+  const x0 = cell.x * dpr;
+  const y0 = cell.y * dpr;
+  const size = Math.max(1, Math.round(dabSizeCss * dpr));
+  const x = Math.round(x0 + (cell.w * dpr - size) / 2);
+  const y = Math.round(y0 + (cell.h * dpr - size) / 2);
+  return {
+    x,
+    y,
+    w: size,
+    h: size,
+    leftCss: (x - x0) / dpr,
+    topCss: (y - y0) / dpr,
+    sizeCss: size / dpr,
+  };
+}
+
+/** `background-size: contain` + center, with edges on device pixels. */
+export function containDeviceRect(
+  host: DeviceBox,
+  imgW: number,
+  imgH: number,
+  dpr: number,
+): DeviceBox & { leftCss: number; topCss: number; wCss: number; hCss: number } {
+  const scale = Math.min(host.w / imgW, host.h / imgH);
+  const w = Math.max(1, Math.round(imgW * scale));
+  const h = Math.max(1, Math.round(imgH * scale));
+  const x = host.x + Math.round((host.w - w) / 2);
+  const y = host.y + Math.round((host.h - h) / 2);
+  return {
+    x,
+    y,
+    w,
+    h,
+    leftCss: (x - host.x) / dpr,
+    topCss: (y - host.y) / dpr,
+    wCss: w / dpr,
+    hCss: h / dpr,
+  };
+}
+
+type BadgeChrome = (
+  host: HTMLElement,
+  box: DeviceBox,
+  isMult: boolean,
+  dpr: number,
+) => void;
+
+let badgeChrome: BadgeChrome | null = null;
+
+/** Registered by badgeAtlas so the DOM host does not import the atlas. */
+export function setBadgeChrome(fn: BadgeChrome): void {
+  badgeChrome = fn;
+}
+
+export function applyBadgeChrome(
+  host: HTMLElement,
+  box: DeviceBox,
+  isMult: boolean,
+  dpr: number,
+): void {
+  badgeChrome?.(host, box, isMult, dpr);
+}

@@ -1,6 +1,8 @@
 import {
   activeDpr,
+  applyBadgeChrome,
   applyCellBoxCssVars,
+  badgeHostDevice,
   getLiveCellBoxModel,
   resolveCellBoxModel,
   setLiveCellBoxModel,
@@ -145,6 +147,23 @@ export class TicketCard {
     return badge;
   }
 
+  /** Device-pixel host box shared with canvas disc blit. */
+  private placeBadge(i: number, host: HTMLElement, isMult: boolean): void {
+    const layout = getActiveLayout();
+    const model = getLiveCellBoxModel() ?? resolveCellBoxModel(layout);
+    const cell = model.cells[i];
+    if (!cell) return;
+    const dpr = activeDpr();
+    const box = badgeHostDevice(cell, layout.metrics.dabSize, dpr);
+    host.style.left = `${box.leftCss}px`;
+    host.style.top = `${box.topCss}px`;
+    host.style.width = `${box.sizeCss}px`;
+    host.style.height = `${box.sizeCss}px`;
+    host.style.transform = "none";
+    host.style.margin = "0";
+    applyBadgeChrome(host, box, isMult, dpr);
+  }
+
   private applyCellBadge(i: number, hit: boolean, multiplier: number): void {
     const existing = this.badges[i];
     if (!hit) {
@@ -158,6 +177,7 @@ export class TicketCard {
     const isMult = multiplier > 0;
     badge.host.classList.toggle("ticketCard__badgeHost_multiplier", isMult);
     badge.host.classList.toggle("ticketCard__badgeHost_dab", !isMult);
+    this.placeBadge(i, badge.host, isMult);
     if (isMult) {
       if (!badge.label) {
         badge.label = new MultiplierLabelNode();

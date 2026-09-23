@@ -1,15 +1,17 @@
 import {
   badgeSurfaceForTicket,
   getDabImage,
+  getDiscImage,
   getMultiplierBadge,
-  shellGeometry,
+  getMultiplierLabelPlace,
 } from "./badgeAtlas";
+import { catalogCellBoxes, paintCatalogTicket } from "./catalogPaint";
 import { contentWidth, getActiveLayout } from "./catalogLayout";
-import { getCellBitmap, getTicketGeometry } from "./cellAtlas";
+import { getCellBitmap } from "./cellAtlas";
 import {
   activeDpr,
-  getLiveCellBoxModel,
-  resolveCellBoxModel,
+  badgeHostDevice,
+  containDeviceRect,
 } from "./cellBoxModel";
 import {
   getHeaderSprite,
@@ -186,7 +188,7 @@ export class CanvasPool {
     const c = tile.canvas;
     const ctx = tile.ctx;
     const layout = getActiveLayout();
-    const { cardWidth, metrics } = layout;
+    const { cardWidth } = layout;
     const cssW = contentWidth(layout);
     const cssH = tile.cssH;
     const dpr = activeDpr();
@@ -207,33 +209,13 @@ export class CanvasPool {
     ctx.clearRect(0, 0, cssW, cssH);
     ctx.imageSmoothingEnabled = false;
 
-    const geo = getTicketGeometry();
-    const live = getLiveCellBoxModel() ?? resolveCellBoxModel(layout, dpr);
-    // Trust measured atlas body geometry whenever the active size matches.
-    // Do NOT gate on geo.cellW === live.cellW: live is often still the analytic
-    // model (warmCellAtlas prologue / Catalog layout effect) while geo holds the
-    // real measured tops (e.g. 17.75 vs 18) — that gate silently fell back to
-    // analytic boxes and shifted every number + dab by ~0.5 device px.
-    const useSprites = Boolean(
-      geo && geo.cardWidth === cardWidth && geo.cellH === live.cellH,
-    );
-    const boxes = geo && geo.cardWidth === cardWidth ? geo.cells : live.cells;
+    const boxes = catalogCellBoxes(dpr);
 
     for (let i = tile.start; i < tile.end; i++) {
       const slot = this.slots[i]!;
       const ticket = this.ticketsById.get(slot.id);
       if (!ticket) continue;
-      paintTicket(
-        ctx,
-        slot,
-        ticket,
-        cardWidth,
-        metrics,
-        dpr,
-        tile.minY,
-        boxes,
-        useSprites,
-      );
+      paintCatalogTicket(ctx, slot, ticket, cardWidth, dpr, tile.minY, boxes);
     }
   }
 }
@@ -273,7 +255,7 @@ export function paintTicket(
     const mult = ticket.multipliers[k] ?? 0;
     const isMult = ticket.hits.includes(k) && mult > 0;
 
-    // Multiplier shell covers the digit (like the DOM dab). Skip number under it.
+    // Multiplier disc covers the digit. Skip the number under it.
     const bmp = useSprites && !isMult ? getCellBitmap(n) : undefined;
     if (bmp) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -282,21 +264,24 @@ export function paintTicket(
     }
 
     if (ticket.hits.includes(k)) {
+      const originX = Math.round(slot.x * dpr);
+      const originY = slotYDev - tileYDev;
+      const host = badgeHostDevice(box, metrics.dabSize, dpr);
+      const disc = isMult ? getDiscImage() : getDabImage();
+      if (disc) paintDisc(ctx, originX + host.x, originY + host.y, host, disc, dpr);
       if (isMult) {
         const badge = getMultiplierBadge(mult, badgeSurface);
-        if (badge) {
-          // Shell origin = pad above cell = header↔body separator.
-          const padY = shellGeometry(dpr).padY;
-          const yDev =
-            Math.round((slot.y + box.y - padY) * dpr) - tileYDev;
+        const place = getMultiplierLabelPlace(mult);
+        if (badge && place) {
           ctx.setTransform(1, 0, 0, 1, 0, 0);
-          ctx.drawImage(badge, bxDev, yDev);
+          ctx.imageSmoothingEnabled = false;
+          ctx.drawImage(
+            badge,
+            originX + host.x + place.dx,
+            originY + host.y + place.dy,
+          );
           ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         }
-      } else {
-        const cx = slot.x + box.x + box.w / 2;
-        const cy = slot.y - tileMinY + box.y + box.h / 2;
-        paintPlainDab(ctx, cx, cy, metrics.dabSize);
       }
     }
   }
@@ -311,41 +296,30 @@ export function paintTicket(
   );
 }
 
-/**
- * Draw an image centred at (cx,cy) using `background-size: contain` semantics —
- * scale to fit within a dabSize box preserving aspect (the discs aren't square).
- */
-function drawContain(
+/** Disc PNG into the same device rect the DOM background uses. */
+function paintDisc(
   ctx: CanvasRenderingContext2D,
+  hostX: number,
+  hostY: number,
+  host: { x: number; y: number; w: number; h: number },
   img: HTMLImageElement,
-  cx: number,
-  cy: number,
-  dabSize: number,
+  dpr: number,
 ): void {
-  const iw = img.naturalWidth;
-  const ih = img.naturalHeight;
-  if (iw <= 0 || ih <= 0) return;
-  const scale = Math.min(dabSize / iw, dabSize / ih);
-  const w = iw * scale;
-  const h = ih * scale;
-  ctx.drawImage(img, cx - w / 2, cy - h / 2, w, h);
-}
-
-/**
- * Plain dab PNG centred on the measured cell box (no SnapDOM).
- * Multiplier cells use getMultiplierBadge() shells painted at headerHeight.
- */
-function paintPlainDab(
-  ctx: CanvasRenderingContext2D,
-  cx: number,
-  cy: number,
-  dabSize: number,
-): void {
-  const prevSmoothing = ctx.imageSmoothingEnabled;
+  const dest = containDeviceRect(
+    { x: hostX, y: hostY, w: host.w, h: host.h },
+    img.naturalWidth,
+    img.naturalHeight,
+    dpr,
+  );
+  const prev = ctx.imageSmoothingEnabled;
+  const prevQ = ctx.imageSmoothingQuality;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.imageSmoothingEnabled = true;
-  const dab = getDabImage();
-  if (dab) drawContain(ctx, dab, cx, cy, dabSize);
-  ctx.imageSmoothingEnabled = prevSmoothing;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(img, dest.x, dest.y, dest.w, dest.h);
+  ctx.imageSmoothingEnabled = prev;
+  ctx.imageSmoothingQuality = prevQ;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
 function paintChrome(

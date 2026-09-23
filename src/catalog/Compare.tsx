@@ -1,17 +1,19 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { snapdom } from "@zumer/snapdom";
 
 import {
   badgeSurfaceForTicket,
   getMultiplierBadge,
   getMultiplierBadgeDataUrl,
+  getMultiplierLabelPlace,
   onBadgeImagesReady,
-  shellGeometry,
   warmMultiplierLabels,
 } from "./badgeAtlas";
 import { paintTicket } from "./CanvasPool";
 import {
   activeDpr,
   applyCellBoxCssVars,
+  badgeHostDevice,
   getLiveCellBoxModel,
   resolveCellBoxModel,
   setLiveCellBoxModel,
@@ -32,7 +34,9 @@ import {
   type GlyphColor,
   type HeaderTextEntry,
 } from "./idDigitAtlas";
+import { headerSlice, ticketChrome, warmCellBitmaps } from "./cellBitmaps";
 import { TicketCard } from "./ticketCardElement";
+import { rasterizeTicketSvg } from "./ticketSvgRaster";
 import {
   applyTicketCssVars,
   resolvePresetFromViewport,
@@ -250,9 +254,9 @@ function TicketStack({
           geo && geo.cardWidth === cardWidth
             ? geo.cells[idx]
             : live.cells[idx];
-        if (url && box && sprite) {
-          // Shell at cell.x, cell.y − padY (header↔body separator).
-          const { padY } = shellGeometry(dpr);
+        const place = getMultiplierLabelPlace(mult);
+        if (url && box && sprite && place) {
+          const host = badgeHostDevice(box, getActiveLayout().metrics.dabSize, dpr);
           const w = sprite.width / dpr;
           const h = sprite.height / dpr;
           const img = document.createElement("img");
@@ -261,8 +265,8 @@ function TicketStack({
           img.src = url;
           img.style.cssText = [
             "position:absolute",
-            `left:${box.x}px`,
-            `top:${box.y - padY}px`,
+            `left:${(host.x + place.dx) / dpr}px`,
+            `top:${(host.y + place.dy) / dpr}px`,
             `width:${w}px`,
             `height:${h}px`,
             "opacity:0.55",
@@ -300,6 +304,570 @@ function TicketStack({
             transform: `translate(${nudgeX}px, ${nudgeY}px)`,
           }}
         />
+      </div>
+    </section>
+  );
+}
+
+const SNAP_OPTS = {
+  embedFonts: true,
+  // Drop the card's translate3d(0,0,0). Leaving it on pads the bitmap by
+  // 1px on every side and the card paints low and to the right.
+  outerTransforms: true,
+  outerShadows: false,
+  backgroundColor: "transparent" as const,
+  fast: true,
+  cache: "disabled" as const,
+  compress: false,
+  scale: 1,
+};
+
+/**
+ * SnapDOM's text raster is off native by one device pixel, and the
+ * direction depends on the card's font metrics. Measured at dpr 2:
+ *   39px card — numbers 1px high, amount/id 1px low, rules 1px down-right.
+ *   43px card — numbers seated, amount/id 1px high, rules 1px right.
+ * Applied only on the clone that gets snapped. The rotated N× is
+ * painted separately, around the label center.
+ */
+function nudgeSnapText(root: HTMLElement, dpr: number): boolean {
+  if (Math.abs(dpr - 2) > 0.01) return false;
+  const cardH = parseFloat(
+    getComputedStyle(root).getPropertyValue("--ticket-card-height"),
+  );
+  if (cardH === 39) {
+    nudgeNumberText(root, 0.5);
+    nudgeHeaderText(root, -0.5);
+    root.style.setProperty("--ticket-sep-nudge-x", "-0.5px");
+    root.style.setProperty("--ticket-sep-nudge-y", "-0.5px");
+    return true;
+  }
+  if (cardH === 43) {
+    nudgeHeaderText(root, 0.5);
+    root.style.setProperty("--ticket-sep-nudge-x", "-0.5px");
+    return true;
+  }
+  return false;
+}
+
+function nudgeHeaderText(root: HTMLElement, dy: number): void {
+  const px = `translateY(${dy}px)`;
+  for (const sel of [".ticketCard__win", ".ticketCard__id"]) {
+    const el = root.querySelector<HTMLElement>(sel);
+    if (el) el.style.transform = px;
+  }
+}
+
+function nudgeNumberText(root: HTMLElement, dy: number): void {
+  for (const cell of root.querySelectorAll(".ticketCard__cell")) {
+    const text = [...cell.childNodes].find(
+      (node) => node.nodeType === Node.TEXT_NODE && node.textContent?.trim(),
+    );
+    if (!text?.textContent) continue;
+    const span = document.createElement("span");
+    span.style.display = "inline-block";
+    span.style.transform = `translateY(${dy}px)`;
+    span.textContent = text.textContent;
+    text.replaceWith(span);
+  }
+}
+
+async function snapCardBox(
+  el: HTMLElement,
+  dpr: number,
+): Promise<HTMLCanvasElement> {
+  const shot = await snapdom(el, { ...SNAP_OPTS, dpr });
+  const { contentX, contentY, w0, h0 } = shot.meta;
+  return shot.toCanvas({
+    crop: { x: contentX, y: contentY, width: w0, height: h0 },
+  });
+}
+
+const MULTIPLIER_ROTATION = (-15 * Math.PI) / 180;
+
+type DeviceBox = { x: number; y: number; w: number; h: number; cx: number; cy: number };
+
+function deviceBox(
+  box: DOMRect,
+  root: DOMRect,
+  bitmapW: number,
+  bitmapH: number,
+): DeviceBox {
+  const sx = bitmapW / root.width;
+  const sy = bitmapH / root.height;
+  const x = (box.left - root.left) * sx;
+  const y = (box.top - root.top) * sy;
+  const w = box.width * sx;
+  const h = box.height * sy;
+  return { x, y, w, h, cx: x + w / 2, cy: y + h / 2 };
+}
+
+/**
+ * SnapDOM rotates around the top-left and drops the centering translation,
+ * so a CSS `rotate(-15deg)` does not land on the browser's rotation.
+ * The unrotated label matches the DOM exactly. Capture that, rotate it
+ * around the label's own center, and paint it where the live label sits.
+ */
+function paintRotatedMultiplier(
+  base: HTMLCanvasElement,
+  flat: HTMLCanvasElement,
+  flatRoot: HTMLElement,
+  liveRoot: HTMLElement,
+): HTMLCanvasElement {
+  const flatLabel = flatRoot.querySelector<HTMLElement>(".ticketCard__multiplier");
+  const liveLabel = liveRoot.querySelector<HTMLElement>(".ticketCard__multiplier");
+  if (!flatLabel || !liveLabel) return base;
+
+  const src = deviceBox(
+    flatLabel.getBoundingClientRect(),
+    flatRoot.getBoundingClientRect(),
+    flat.width,
+    flat.height,
+  );
+  const dest = deviceBox(
+    liveLabel.getBoundingClientRect(),
+    liveRoot.getBoundingClientRect(),
+    base.width,
+    base.height,
+  );
+  const fontPx = parseFloat(getComputedStyle(flatLabel).fontSize) || 13;
+  const pad = Math.ceil(fontPx * 0.8 * (flat.width / flatRoot.getBoundingClientRect().width));
+  const cropX = Math.floor(src.x - pad);
+  const cropY = Math.floor(src.y - pad);
+  const cropW = Math.ceil(src.w + pad * 2);
+  const cropH = Math.ceil(src.h + pad * 2);
+
+  const sprite = document.createElement("canvas");
+  sprite.width = cropW;
+  sprite.height = cropH;
+  const sctx = sprite.getContext("2d");
+  const bg = document.createElement("canvas");
+  bg.width = cropW;
+  bg.height = cropH;
+  const bctx = bg.getContext("2d");
+  if (!sctx || !bctx) return base;
+  sctx.drawImage(flat, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+  bctx.drawImage(base, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+  const img = sctx.getImageData(0, 0, cropW, cropH);
+  const bimg = bctx.getImageData(0, 0, cropW, cropH);
+  const data = img.data;
+  const bd = bimg.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const diff = Math.max(
+      Math.abs(data[i]! - bd[i]!),
+      Math.abs(data[i + 1]! - bd[i + 1]!),
+      Math.abs(data[i + 2]! - bd[i + 2]!),
+    );
+    const alpha = Math.min(1, diff / 70);
+    if (alpha < 0.06) {
+      data[i + 3] = 0;
+    } else {
+      data[i] = Math.max(0, Math.min(255, Math.round((data[i]! - bd[i]! * (1 - alpha)) / alpha)));
+      data[i + 1] = Math.max(0, Math.min(255, Math.round((data[i + 1]! - bd[i + 1]! * (1 - alpha)) / alpha)));
+      data[i + 2] = Math.max(0, Math.min(255, Math.round((data[i + 2]! - bd[i + 2]! * (1 - alpha)) / alpha)));
+      data[i + 3] = Math.round(alpha * 255);
+    }
+  }
+  sctx.putImageData(img, 0, 0);
+
+  const out = document.createElement("canvas");
+  out.width = base.width;
+  out.height = base.height;
+  const ctx = out.getContext("2d");
+  if (!ctx) return base;
+  ctx.drawImage(base, 0, 0);
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.translate(dest.cx, dest.cy);
+  ctx.rotate(MULTIPLIER_ROTATION);
+  ctx.translate(-(src.cx - cropX), -(src.cy - cropY));
+  ctx.drawImage(sprite, 0, 0);
+  ctx.restore();
+  return out;
+}
+
+function captureClone(live: HTMLElement): HTMLElement {
+  const clone = live.cloneNode(true) as HTMLElement;
+  clone.style.position = "fixed";
+  clone.style.left = "-10000px";
+  clone.style.top = "0";
+  clone.style.transform = "none";
+  clone.style.visibility = "visible";
+  (live.closest(".compare") ?? document.body).appendChild(clone);
+  return clone;
+}
+
+async function snapFullCard(
+  live: HTMLElement,
+  dpr: number,
+): Promise<{ bitmap: HTMLCanvasElement; nudged: boolean }> {
+  const hidden = captureClone(live);
+  const flat = captureClone(live);
+  const nudged = nudgeSnapText(hidden, dpr);
+  nudgeSnapText(flat, dpr);
+  const hiddenLabel = hidden.querySelector<HTMLElement>(".ticketCard__multiplier");
+  const flatLabel = flat.querySelector<HTMLElement>(".ticketCard__multiplier");
+  if (hiddenLabel) hiddenLabel.style.visibility = "hidden";
+  if (flatLabel) flatLabel.style.transform = "none";
+  try {
+    await snapCardBox(hidden, dpr);
+    const base = await snapCardBox(hidden, dpr);
+    await snapCardBox(flat, dpr);
+    const flatBmp = await snapCardBox(flat, dpr);
+    return { bitmap: paintRotatedMultiplier(base, flatBmp, flat, live), nudged };
+  } finally {
+    hidden.remove();
+    flat.remove();
+  }
+}
+function FullSnapStack({
+  ticket,
+  cardWidth,
+  cardHeight,
+  canvasOpacity,
+  blend,
+  nudgeX,
+  nudgeY,
+  showDom,
+  showCanvas,
+  paintGen,
+}: Omit<StackProps, "label" | "headerOverlay" | "badgeOverlay">) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const cardRef = useRef<TicketCard | null>(null);
+  const [snapNote, setSnapNote] = useState("waiting for the live card…");
+
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    let card = cardRef.current;
+    if (!card) {
+      card = new TicketCard();
+      cardRef.current = card;
+      wrap.appendChild(card.dom);
+    }
+    card.bind(ticket, 0, 0);
+    card.dom.style.visibility = showDom ? "visible" : "hidden";
+    card.dom.style.zIndex = "1";
+  }, [ticket, showDom, cardWidth, cardHeight, paintGen]);
+
+  useEffect(() => {
+    const card = cardRef.current;
+    const c = canvasRef.current;
+    if (!card || !c || paintGen < 1) return;
+    let cancelled = false;
+    const dpr = activeDpr();
+
+    void (async () => {
+      setSnapNote("snapping the live ticket…");
+      const shot = await snapFullCard(card.dom, dpr);
+      if (cancelled) return;
+      const raw = shot.bitmap;
+      const nudged = shot.nudged;
+
+      if (c.width !== raw.width || c.height !== raw.height) {
+        c.width = raw.width;
+        c.height = raw.height;
+      }
+      c.style.width = `${cardWidth}px`;
+      c.style.height = `${cardHeight}px`;
+      const ctx = c.getContext("2d");
+      if (!ctx) return;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.imageSmoothingEnabled = false;
+      ctx.clearRect(0, 0, raw.width, raw.height);
+      ctx.drawImage(raw, 0, 0);
+      const wantW = Math.round(cardWidth * dpr);
+      const wantH = Math.round(cardHeight * dpr);
+      const box =
+        raw.width === wantW && raw.height === wantH
+          ? `${raw.width}×${raw.height} card box`
+          : `snap ${raw.width}×${raw.height}, card ${wantW}×${wantH}`;
+      setSnapNote(nudged ? `${box} · text snapped` : box);
+    })().catch((err: unknown) => {
+      if (!cancelled) {
+        setSnapNote(err instanceof Error ? err.message : "snap failed");
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [ticket, cardWidth, cardHeight, paintGen]);
+
+  const mult = ticket.multipliers[3] ?? "";
+  return (
+    <section className="compare__fullSnap">
+      <h2 className="compare__caseTitle">
+        Full-ticket snap · DAB + {mult}× + {ticket.win} (#{ticket.no})
+      </h2>
+      <p className="compare__snapNote">{snapNote}</p>
+      <div
+        ref={wrapRef}
+        className="compare__stack"
+        style={{ width: cardWidth, height: cardHeight }}
+      >
+        <canvas
+          ref={canvasRef}
+          className="compare__canvas"
+          style={{
+            opacity: showCanvas && paintGen > 0 ? canvasOpacity : 0,
+            mixBlendMode: blend,
+            transform: `translate(${nudgeX}px, ${nudgeY}px)`,
+          }}
+        />
+      </div>
+    </section>
+  );
+}
+
+/** Same dab ticket, rasterized as a self-contained SVG instead of a DOM clone. */
+function SvgRasterStack({
+  ticket,
+  cardWidth,
+  cardHeight,
+  canvasOpacity,
+  blend,
+  nudgeX,
+  nudgeY,
+  showDom,
+  showCanvas,
+  paintGen,
+}: Omit<StackProps, "label" | "headerOverlay" | "badgeOverlay">) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const cardRef = useRef<TicketCard | null>(null);
+  const [note, setNote] = useState("waiting for the live card…");
+
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    let card = cardRef.current;
+    if (!card) {
+      card = new TicketCard();
+      cardRef.current = card;
+      wrap.appendChild(card.dom);
+    }
+    card.bind(ticket, 0, 0);
+    card.dom.style.visibility = showDom ? "visible" : "hidden";
+    card.dom.style.zIndex = "1";
+  }, [ticket, showDom, cardWidth, cardHeight, paintGen]);
+
+  useEffect(() => {
+    const card = cardRef.current;
+    const c = canvasRef.current;
+    if (!card || !c || paintGen < 1) return;
+    let cancelled = false;
+    const dpr = activeDpr();
+    void (async () => {
+      setNote("rasterizing SVG…");
+      const raw = await rasterizeTicketSvg(card.dom, dpr);
+      if (cancelled) return;
+      if (c.width !== raw.width || c.height !== raw.height) {
+        c.width = raw.width;
+        c.height = raw.height;
+      }
+      c.style.width = `${cardWidth}px`;
+      c.style.height = `${cardHeight}px`;
+      const ctx = c.getContext("2d");
+      if (!ctx) return;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.imageSmoothingEnabled = false;
+      ctx.clearRect(0, 0, raw.width, raw.height);
+      ctx.drawImage(raw, 0, 0);
+      setNote(`${raw.width}×${raw.height} svg raster`);
+    })().catch((err: unknown) => {
+      if (!cancelled) setNote(err instanceof Error ? err.message : "svg failed");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [ticket, cardWidth, cardHeight, paintGen]);
+
+  const mult = ticket.multipliers[3] ?? "";
+  return (
+    <section className="compare__fullSnap">
+      <h2 className="compare__caseTitle">
+        SVG raster · DAB + {mult}× + {ticket.win} (#{ticket.no})
+      </h2>
+      <p className="compare__snapNote">{note}</p>
+      <div
+        ref={wrapRef}
+        className="compare__stack"
+        style={{ width: cardWidth, height: cardHeight }}
+      >
+        <canvas
+          ref={canvasRef}
+          className="compare__canvas"
+          style={{
+            opacity: showCanvas && paintGen > 0 ? canvasOpacity : 0,
+            mixBlendMode: blend,
+            transform: `translate(${nudgeX}px, ${nudgeY}px)`,
+          }}
+        />
+      </div>
+    </section>
+  );
+}
+
+/**
+ * One baked bitmap per ball number, one dab, and one bitmap per multiplier.
+ * Each was captured from a real cell, so it is drawn at that cell's origin.
+ * Header amount and ticket id are not in this set.
+ */
+function CellBitmapStack({
+  ticket,
+  cardWidth,
+  cardHeight,
+  canvasOpacity,
+  blend,
+  nudgeX,
+  nudgeY,
+  showDom,
+  showCanvas,
+  paintGen,
+}: Omit<StackProps, "label" | "headerOverlay" | "badgeOverlay">) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const plainRef = useRef<HTMLCanvasElement>(null);
+  const cardRef = useRef<TicketCard | null>(null);
+  const [note, setNote] = useState("capturing 60 numbers, dab, and multipliers…");
+
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    let card = cardRef.current;
+    if (!card) {
+      card = new TicketCard();
+      cardRef.current = card;
+      wrap.appendChild(card.dom);
+    }
+    card.bind(ticket, 0, 0);
+    card.dom.style.visibility = showDom ? "visible" : "hidden";
+    card.dom.style.zIndex = "1";
+  }, [ticket, showDom, cardWidth, cardHeight, paintGen]);
+
+  useEffect(() => {
+    const card = cardRef.current;
+    const overlay = canvasRef.current;
+    const plain = plainRef.current;
+    const host = document.querySelector(".catalog__captureHost");
+    if (!card || !overlay || !plain || !host || paintGen < 1) return;
+    let cancelled = false;
+    const dpr = activeDpr();
+    void (async () => {
+      setNote("capturing 60 numbers, dab, and multipliers…");
+      const set = await warmCellBitmaps(host as HTMLElement);
+      if (cancelled) return;
+      const win = isWinTicket(ticket);
+      const chrome = await ticketChrome(host as HTMLElement, win);
+      const winEl = card.dom.querySelector(".ticketCard__win") as HTMLElement | null;
+      const idEl = card.dom.querySelector(".ticketCard__id") as HTMLElement | null;
+      const winText = winEl?.textContent ?? "";
+      const idText = idEl?.textContent ?? "";
+      const winBmp = winEl && winText ? await headerSlice(winEl, `win|${winText}`) : null;
+      const idBmp = idEl && idText ? await headerSlice(idEl, `id|${idText}|${win ? "gold" : "plain"}`) : null;
+      if (cancelled) return;
+      const origin = card.dom.getBoundingClientRect();
+      const sliceAt = (el: HTMLElement) => {
+        const r = el.getBoundingClientRect();
+        return {
+          x: Math.round((r.x - origin.x) * dpr),
+          y: Math.round((r.y - origin.y) * dpr),
+        };
+      };
+      const winAt = winEl && winBmp ? sliceAt(winEl) : null;
+      const idAt = idEl && idBmp ? sliceAt(idEl) : null;
+      const model = getLiveCellBoxModel() ?? resolveCellBoxModel(getActiveLayout(), dpr);
+      const bw = Math.round(cardWidth * dpr);
+      const bh = Math.round(cardHeight * dpr);
+      const paint = (c: HTMLCanvasElement) => {
+        if (c.width !== bw || c.height !== bh) {
+          c.width = bw;
+          c.height = bh;
+        }
+        c.style.width = `${cardWidth}px`;
+        c.style.height = `${cardHeight}px`;
+        const ctx = c.getContext("2d");
+        if (!ctx) return;
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.imageSmoothingEnabled = false;
+        ctx.clearRect(0, 0, bw, bh);
+        ctx.drawImage(chrome, 0, 0);
+        if (winBmp && winAt) ctx.drawImage(winBmp, winAt.x, winAt.y);
+        if (idBmp && idAt) ctx.drawImage(idBmp, idAt.x, idAt.y);
+        for (let i = 0; i < ticket.balls.length; i++) {
+          const cell = model.cells[i];
+          if (!cell) continue;
+          const x = Math.round(cell.x * dpr);
+          const y = Math.round(cell.y * dpr);
+          const mult = ticket.multipliers[i] ?? 0;
+          const badge = badgeHostDevice(cell, getActiveLayout().metrics.dabSize, dpr);
+          const padX = (padCss: number) => badge.x - Math.round(padCss * dpr);
+          const padY = (padCss: number) => badge.y - Math.round(padCss * dpr);
+          if (mult > 0) {
+            const bmp = set.multipliers.get(mult);
+            if (bmp) ctx.drawImage(bmp.canvas, padX(bmp.padCss), padY(bmp.padCss));
+            continue;
+          }
+          const number = set.numbers[ticket.balls[i] ?? 0];
+          if (number) ctx.drawImage(number, x, y);
+          if (ticket.hits.includes(i)) {
+            ctx.drawImage(set.dab.canvas, padX(set.dab.padCss), padY(set.dab.padCss));
+          }
+        }
+      };
+      paint(overlay);
+      paint(plain);
+      setNote("gold, separators, amount, id, numbers, dab, multipliers");
+    })().catch((err: unknown) => {
+      if (!cancelled) setNote(err instanceof Error ? err.message : "capture failed");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [ticket, cardWidth, cardHeight, paintGen]);
+
+  const mult = ticket.multipliers[3] ?? "";
+  return (
+    <section className="compare__fullSnap">
+      <h2 className="compare__caseTitle">
+        Cell bitmaps · DAB + {mult}× + {ticket.win} (#{ticket.no})
+      </h2>
+      <p className="compare__snapNote">{note}</p>
+      <div className="compare__cellRow">
+        <div>
+          <p className="compare__snapNote">overlay</p>
+          <div
+            ref={wrapRef}
+            className="compare__stack"
+            style={{ width: cardWidth, height: cardHeight }}
+          >
+            <canvas
+              ref={canvasRef}
+              className="compare__canvas"
+              style={{
+                opacity: showCanvas && paintGen > 0 ? canvasOpacity : 0,
+                mixBlendMode: blend,
+                transform: `translate(${nudgeX}px, ${nudgeY}px)`,
+              }}
+            />
+          </div>
+        </div>
+        <div>
+          <p className="compare__snapNote">canvas</p>
+          <div
+            className="compare__stack"
+            style={{ width: cardWidth, height: cardHeight }}
+          >
+            <canvas
+              ref={plainRef}
+              className="compare__canvas compare__canvas_plain"
+              style={{ opacity: paintGen > 0 ? 1 : 0 }}
+            />
+          </div>
+        </div>
       </div>
     </section>
   );
@@ -526,10 +1094,11 @@ export function Compare() {
           </label>
         </div>
         <p className="compare__hint">
-          Multiplier = full badge SnapDOM on normal / gold / disabled body bg
-          (shell [padY|cell+badge|padY]). Blit as captured — no ink-shift.
-          (outerTransforms), blit at cell.y − padY (b35).
-          / download to inspect.
+          Multiplier disc and dab share one device-pixel box. The N× label is
+          a SnapDOM sprite shifted onto the live label. Difference blend
+          should go dark where they match. The bottom row blits 60 number
+          cells, one dab, and multipliers 2, 3, 5, and 10. Amount and ticket
+          id are not in that set.
         </p>
       </header>
 
@@ -553,6 +1122,52 @@ export function Compare() {
           />
         ))}
       </div>
+
+      {fixtures
+        .filter((f) => f.ticket.id === "cmp-dab")
+        .map(({ ticket }) => (
+          <Fragment key={`rows-${ticket.no}-${ticket.win}`}>
+          <FullSnapStack
+            key={`snap-${ticket.no}-${ticket.win}-${ticket.multipliers[3] ?? 0}`}
+            ticket={ticket}
+            cardWidth={layout.cardWidth}
+            cardHeight={layout.cardHeight}
+            canvasOpacity={canvasOpacity}
+            blend={blend}
+            nudgeX={nudgeX}
+            nudgeY={nudgeY}
+            showDom={showDom}
+            showCanvas={showCanvas}
+            paintGen={paintGen}
+          />
+          <SvgRasterStack
+            key={`svg-${ticket.no}-${ticket.win}-${ticket.multipliers[3] ?? 0}`}
+            ticket={ticket}
+            cardWidth={layout.cardWidth}
+            cardHeight={layout.cardHeight}
+            canvasOpacity={canvasOpacity}
+            blend={blend}
+            nudgeX={nudgeX}
+            nudgeY={nudgeY}
+            showDom={showDom}
+            showCanvas={showCanvas}
+            paintGen={paintGen}
+          />
+          <CellBitmapStack
+            key={`cells-${ticket.no}-${ticket.win}-${ticket.multipliers[3] ?? 0}`}
+            ticket={ticket}
+            cardWidth={layout.cardWidth}
+            cardHeight={layout.cardHeight}
+            canvasOpacity={canvasOpacity}
+            blend={blend}
+            nudgeX={nudgeX}
+            nudgeY={nudgeY}
+            showDom={showDom}
+            showCanvas={showCanvas}
+            paintGen={paintGen}
+          />
+          </Fragment>
+        ))}
 
       <div ref={atlasHostRef} className="catalog__captureHost" />
       <div ref={badgeHostRef} className="catalog__captureHost" />

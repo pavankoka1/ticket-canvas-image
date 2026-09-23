@@ -16,18 +16,20 @@ export type Ticket = {
   disabled?: boolean;
 };
 
-/** POC win amount — currency is part of the string ($, €, £, …). */
-const WIN_CURRENCIES = ["$", "€", "£"] as const;
+/**
+ * Live win amounts are a handful of shared strings, not one per ticket.
+ * The catalog captures each distinct string once.
+ */
+export const WIN_AMOUNT_POOL = [
+  "$12.50",
+  "$150.00",
+  "€1,509.31",
+  "£706.48",
+  "$3,993.60",
+] as const;
 
-function randomWinAmount(): string {
-  const cents = 25 + Math.floor(Math.random() * 500000); // 0.25 … ~5000
-  const value = cents / 100;
-  const amount = value.toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-  const cur = WIN_CURRENCIES[Math.floor(Math.random() * WIN_CURRENCIES.length)]!;
-  return `${cur}${amount}`;
+function assignWinAmount(): string {
+  return WIN_AMOUNT_POOL[Math.floor(Math.random() * WIN_AMOUNT_POOL.length)]!;
 }
 
 /** Multiplier values offered in the POC UI (also drives the badge atlas). */
@@ -57,7 +59,7 @@ export function createTickets(count: number): Ticket[] {
       balls,
       hits: [],
       multipliers: {},
-      win: randomWinAmount(),
+      win: assignWinAmount(),
     });
   }
   return out;

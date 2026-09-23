@@ -3,6 +3,9 @@
 /** Live DOM cards in the near-viewport pool. */
 export const DOM_POOL_SIZE = 80;
 
+/** Hard cap for the catalog add button on `/`. */
+export const MAX_TICKETS = 1000;
+
 /** Tickets per canvas tile (100–200 budget). */
 export const CANVAS_TILE_TICKETS = 150;
 

@@ -24,14 +24,14 @@ First paint waits on `ensureTicketFont`. No `StrictMode` (it double-fired SnapDO
 Catalog shows a DOM pool over a full-catalog canvas underlay.
 
 - DOM: near the viewport only. `computeDomBand` + `DomPool`. Pool size `DOM_POOL_SIZE` (80). Viewport height `CATALOG_VIEWPORT_HEIGHT` (200). Scroll throttles DOM rebind and pauses canvas repaint.
-- Canvas: `CanvasPool` tiles, ~150 tickets each (`canvasTileTickets`; 100 when dpr ≥ 3). Every ticket is painted. Tiles are not a 400-card window.
-- Shared paint: `paintTicket` in `CanvasPool.ts`. `Compare` calls the same function.
+- Canvas: `CanvasPool` tiles, ~150 tickets each (`canvasTileTickets`; 100 when dpr ≥ 3). Every ticket is painted. Tiles are not a 400-card window. While the catalog scrolls, the DOM pool hides and this canvas is the view. DOM returns when scrolling stops.
+- Catalog paint: `paintCatalogTicket` in `catalogPaint.ts` — chrome raster, whole win-amount bitmaps, id digits, and `cellBitmaps`. `paintTicket` in `CanvasPool.ts` is the compare rows.
 
 Sprites come from SnapDOM of real ticket DOM, keyed by layout / font / dpr, RAM + IndexedDB (`atlasStore.ts`):
 
 - Ball numbers → `cellAtlas.ts`
 - Header id and win amount → `idDigitAtlas.ts` (whole-string sprites). `fillText` is only the warm-up fallback inside `paintHeaderText`.
-- Multiplier badges → `badgeAtlas.ts`. Plain hits use the dab image.
+- Multiplier badges → `badgeAtlas.ts`. Disc and plain dab share one device-pixel contain rect. The N× label is a SnapDOM sprite shifted onto the live label.
 - Live DOM cards → `TicketCard` in `ticketCardElement.ts`
 
 ## DPR
@@ -47,6 +47,8 @@ Pixel, overlay, blur, hit-test, zoom, or resize work: load `.cursor/skills/canva
 ## Compare
 
 `src/catalog/Compare.tsx` stacks one live DOM card and one canvas per fixture (id-only, and dab + multiplier + win). Toolbar: opacity, `difference` blend, nudge, header and badge sprite overlays. Use it to see drift. Do not bake a nudge into source to hide a 1px miss.
+
+The dab fixture has three extra rows under those stacks. The bottom row (`CellBitmapStack`) blits a closed set from `cellBitmaps.ts`: numbers 1–60, one dab, and multipliers 2, 3, 5, and 10. Each bitmap is a `rasterizeTicketSvg` foreignObject of the real cell or badge. The gold face, separators, amount, and ticket id are rasters of that same card, blitted under the cells. That row shows the overlay and, beside it, the same canvas with normal blending. Catalog paint is still `paintTicket`.
 
 ## Skills
 
@@ -66,13 +68,17 @@ Project skills are `.cursor/skills/<name>/SKILL.md`. They are not always-on. Do 
 | `src/main.tsx` | Font gate, Catalog vs Compare |
 | `src/catalog/Catalog.tsx` | Scroll catalog |
 | `src/catalog/Compare.tsx` | DOM ↔ canvas match view |
-| `src/catalog/CanvasPool.ts` | Tiles + `paintTicket` |
+| `src/catalog/CanvasPool.ts` | Tiles. Catalog uses `paintCatalogTicket` |
+| `src/catalog/catalogPaint.ts` | Catalog ticket blit |
+| `src/catalog/headerGlyphs.ts` | Id digits and shared win-amount bitmaps |
 | `src/catalog/DomPool.ts` | Viewport DOM cards |
 | `src/catalog/bands.ts` | Which slots get DOM |
 | `src/catalog/cellBoxModel.ts` | `activeDpr`, `snapCss`, cell boxes |
 | `src/catalog/cellAtlas.ts` | Number sprites |
+| `src/catalog/cellBitmaps.ts` | 60 numbers + dab + 4 multiplier rasters |
+| `src/catalog/ticketSvgRaster.ts` | foreignObject raster of live DOM |
 | `src/catalog/idDigitAtlas.ts` | Id / win sprites |
-| `src/catalog/badgeAtlas.ts` | Dab + multiplier sprites |
+| `src/catalog/badgeAtlas.ts` | Disc images + multiplier label sprites |
 | `src/catalog/ticketCardElement.ts` | DOM ticket |
 | `src/catalog/ticketPresets.ts` | Size tokens |
 | `src/catalog/catalogLayout.ts` | Columns, card size, active layout |
