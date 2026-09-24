@@ -108,14 +108,22 @@ export async function rasterizeTicketSvg(
   const bw = Math.round(cssW * dpr);
   const bh = Math.round(cssH * dpr);
 
-  const [fontCss, dabUrl, discUrl] = await Promise.all([
+  // Blob SVG images cannot load page URLs. Every badge the clone may
+  // reference has to be inlined, including the green-ticket discs. Those
+  // two were missing, so a disabled dab/multiplier raster was empty and the
+  // original number showed through.
+  const [fontCss, dabUrl, discUrl, dabOffUrl, discOffUrl] = await Promise.all([
     fontFaceCss(),
     imageDataUrl("/dab-full.png"),
     imageDataUrl("/badge-circle.png"),
+    imageDataUrl("/dab-disabled.png"),
+    imageDataUrl("/badge-circle-disabled.png"),
   ]);
   const images = new Map<string, string>([
     ["/dab-full.png", dabUrl],
     ["/badge-circle.png", discUrl],
+    ["/dab-disabled.png", dabOffUrl],
+    ["/badge-circle-disabled.png", discOffUrl],
   ]);
   for (const [path, data] of [...images]) {
     images.set(`${location.origin}${path}`, data);
@@ -158,11 +166,19 @@ export async function rasterizeTicketSvg(
 
   const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
   const url = URL.createObjectURL(blob);
+  let canvasOut: HTMLCanvasElement | null = null;
   try {
     const img = new Image();
     img.decoding = "sync";
     img.src = url;
-    await img.decode();
+    try {
+      await img.decode();
+    } catch {
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error("svg raster failed"));
+      });
+    }
     const canvas = document.createElement("canvas");
     canvas.width = bw;
     canvas.height = bh;
@@ -170,8 +186,17 @@ export async function rasterizeTicketSvg(
     if (!ctx) return canvas;
     ctx.imageSmoothingEnabled = false;
     ctx.drawImage(img, 0, 0, bw, bh);
+    canvasOut = canvas;
     return canvas;
   } finally {
+    if (canvasOut) rasterSvgBlobs.set(canvasOut, blob);
     URL.revokeObjectURL(url);
   }
+}
+
+/** SVG bytes for a raster, so the bitmap can be stored without reading pixels. */
+const rasterSvgBlobs = new WeakMap<HTMLCanvasElement, Blob>();
+
+export function rasterSvgBlob(canvas: HTMLCanvasElement): Blob | undefined {
+  return rasterSvgBlobs.get(canvas);
 }

@@ -19,12 +19,10 @@ export function canvasTileTickets(dpr: number): number {
   return dpr >= 3 ? 100 : CANVAS_TILE_TICKETS;
 }
 
-export const CATALOG_VIEWPORT_HEIGHT = 200;
-
 /** DOM near-viewport row buffer. */
 export const ROW_BUFFER = 2;
 
-/** Throttle DOM rebind/translate while scrolling (ms). Canvas is always fully painted. */
+/** Unused by the live band. Visible rows stay DOM while scrolling. */
 export const DOM_SCROLL_THROTTLE_MS = 300;
 
 export const BALLS_PER_TICKET = 6;

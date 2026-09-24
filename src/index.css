@@ -58,6 +58,16 @@ body {
   gap: 10px;
 }
 
+.ticketAdds {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.ticketAdds__btn {
+  min-width: 52px;
+  font-variant-numeric: tabular-nums;
+}
+
 button {
   appearance: none;
   border: 0;
@@ -103,19 +113,28 @@ button:disabled {
   font: inherit;
 }
 
-.catalog {
+.catalogFrame {
   flex: 0 0 auto;
-  overflow: auto;
-  border-radius: 12px;
-  border: 1px solid #1a3d38;
+  margin: 0 auto;
+  background: #0a2421;
+  outline: 1px solid #1a3d38;
+}
+
+.catalog {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overflow-anchor: none;
+  overscroll-behavior: contain;
   background: #0a2421;
   scrollbar-width: thin;
 }
 
 .catalog__content {
   position: relative;
-  margin: 12px auto;
-  /* Allow the canvas band to sit in content coords; catalog scrolls over it. */
+  margin-inline: auto;
   overflow: visible;
 }
 
@@ -165,8 +184,6 @@ button:disabled {
   transform-origin: center center;
   -webkit-font-smoothing: antialiased;
   text-rendering: geometricPrecision;
-  contain: layout style;
-  transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
   pointer-events: none;
 }
@@ -294,6 +311,7 @@ button:disabled {
   align-items: center;
   justify-content: center;
   transform: none;
+  transform-origin: center center;
 }
 
 .ticketCard__badgeHost_dab {
@@ -411,17 +429,66 @@ button:disabled {
   background: #cb9330;
 }
 
-/* —— Disabled / locked ticket (teal body) —— */
+.ticketCard_appear {
+  overflow: visible;
+}
+
+/* Shine sweep and multiplier sparkles — Fortunamania ticket draw. */
+.ticketCard__shine {
+  z-index: 2;
+  position: absolute;
+  display: none;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.ticketCard__shineBand {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  background: linear-gradient(
+    90deg,
+    rgb(255 255 255 / 0%) 0%,
+    rgb(255 255 255 / 40%) 50%,
+    rgb(255 255 255 / 0%) 100%
+  );
+  transform-origin: center center;
+  pointer-events: none;
+}
+
+.ticketCard__sparkles {
+  z-index: 3;
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.ticketCard__sparkle {
+  position: absolute;
+  top: 50%;
+  width: calc(var(--ticket-dab-size, 24px) * 1.15);
+  height: calc(var(--ticket-dab-size, 24px) * 1.15);
+  object-fit: contain;
+  opacity: 0;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+/* No-win ticket after the sixth ball — Fortunamania disabled green. */
 .ticketCard_disabled {
-  background: #0c8f7e;
+  background: #0d5b58;
+  box-shadow: none;
 }
 
 .ticketCard_disabled .ticketCard__header {
-  background: linear-gradient(180deg, #14a894 0%, #0c8f7e 100%);
+  background: #0a4845;
 }
 
 .ticketCard_disabled .ticketCard__body {
-  background: linear-gradient(180deg, #1aad9a 0%, #0c8f7e 50%, #087a6a 100%);
+  background: #0d5b58;
 }
 
 .ticketCard_disabled .ticketCard__id,
@@ -430,11 +497,33 @@ button:disabled {
 }
 
 .ticketCard_disabled .ticketCard__cell {
-  color: #0f6864;
+  color: #193b3a;
 }
 
 .ticketCard_disabled .ticketCard__cell:not(:first-child)::before {
-  background: rgb(15 104 100 / 50%);
+  background: #0a4744;
+}
+
+.ticketCard_disabled .ticketCard__badgeHost_dab {
+  background-image: url("/dab-disabled.png");
+}
+
+.ticketCard_disabled .ticketCard__badgeHost_multiplier {
+  background-image: url("/badge-circle-disabled.png");
+}
+
+.ticketCard_disabled .ticketCard__multiplierFill {
+  background-image: none;
+  -webkit-text-fill-color: #236260;
+}
+
+.ticketCard_disabled .ticketCard__multiplierStroke {
+  visibility: hidden;
+}
+
+.ticketCard_disabled .ticketCard__multiplierShadow {
+  --layer-stroke-color: #053734;
+  -webkit-text-fill-color: #053734;
 }
 
 /* —— /compare overlay tool —— */

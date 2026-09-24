@@ -103,6 +103,9 @@ export class TicketCard {
   private layoutKey: string | null = null;
   private winClass = false;
   private disabledClass = false;
+  private shineHost: HTMLElement | null = null;
+  private shineBandEl: HTMLElement | null = null;
+  private sparkleEls: HTMLElement[] | null = null;
 
   constructor() {
     const parts = createTicketDom();
@@ -218,17 +221,88 @@ export class TicketCard {
     }
 
     if (x !== undefined && y !== undefined) {
-      const dpr = activeDpr();
-      const sx = Math.round(x * dpr) / dpr;
-      const sy = Math.round(y * dpr) / dpr;
+      const { x: sx, y: sy } = snapSlot(x, y);
       this.dom.style.transform = `translate3d(${sx}px, ${sy}px, 0)`;
     }
     this.dom.style.visibility = "visible";
   }
 
-  hide(): void {
-    this.dom.style.visibility = "hidden";
+  badgeHostAt(cell: number): HTMLElement | null {
+    return this.badges[cell]?.host ?? null;
   }
+
+  badgeLabelAt(cell: number): HTMLElement | null {
+    return this.badges[cell]?.label?.dom ?? null;
+  }
+
+  /** Shine band, parked off the card until the draw gesture starts it. */
+  shineBand(cardWidth: number, cardHeight: number, multiplier: boolean): HTMLElement {
+    if (!this.shineHost || !this.shineBandEl) {
+      const host = document.createElement("span");
+      host.className = "ticketCard__shine";
+      const band = document.createElement("span");
+      band.className = "ticketCard__shineBand";
+      host.appendChild(band);
+      this.dom.appendChild(host);
+      this.shineHost = host;
+      this.shineBandEl = band;
+    }
+    const deg = multiplier ? -45 : -30;
+    const rad = (deg * Math.PI) / 180;
+    const projected = Math.abs(cardWidth * Math.cos(rad)) + Math.abs(cardHeight * Math.sin(rad));
+    const travel = projected + Math.hypot(cardWidth, cardHeight) * 0.45;
+    this.shineBandEl.style.transform = `translate(-50%, -50%) rotate(${deg}deg) translateX(${-travel / 2}px)`;
+    this.shineHost.style.display = "block";
+    return this.shineBandEl;
+  }
+
+  hideShine(): void {
+    if (!this.shineHost || !this.shineBandEl) return;
+    this.shineHost.style.display = "none";
+    this.shineBandEl.getAnimations().forEach((animation) => animation.cancel());
+    this.shineBandEl.style.removeProperty("transform");
+  }
+
+  sparkles(): HTMLElement[] {
+    if (this.sparkleEls) return this.sparkleEls;
+    const container = document.createElement("span");
+    container.className = "ticketCard__sparkles";
+    const imgs: HTMLElement[] = [];
+    for (const left of [28, 55, 85]) {
+      const img = document.createElement("img");
+      img.className = "ticketCard__sparkle";
+      img.src = "/sparkle.webp";
+      img.alt = "";
+      img.draggable = false;
+      img.style.left = `${left}%`;
+      img.style.opacity = "0";
+      container.appendChild(img);
+      imgs.push(img);
+    }
+    this.dom.appendChild(container);
+    this.sparkleEls = imgs;
+    return imgs;
+  }
+
+  hide(): void {
+    this.dom.getAnimations({ subtree: true }).forEach((animation) => animation.cancel());
+    this.hideShine();
+    this.dom.classList.remove("ticketCard_appear");
+    this.dom.style.visibility = "hidden";
+    this.dom.style.removeProperty("z-index");
+    this.dom.style.removeProperty("opacity");
+    this.dom.style.removeProperty("translate");
+    this.dom.style.removeProperty("scale");
+  }
+}
+
+/** Device-snapped slot origin. Same rounding the resting `translate3d` uses. */
+export function snapSlot(x: number, y: number): { x: number; y: number } {
+  const dpr = activeDpr();
+  return {
+    x: Math.round(x * dpr) / dpr,
+    y: Math.round(y * dpr) / dpr,
+  };
 }
 
 export function attachTicketCard(card: TicketCard): TicketCard {

@@ -21,10 +21,10 @@ First paint waits on `ensureTicketFont`. No `StrictMode` (it double-fired SnapDO
 
 ## What paints
 
-Catalog shows a DOM pool over a full-catalog canvas underlay.
+Catalog shows live DOM for the visible rows and canvas for everything scrolled away. The scrollport is the Fortunamania ticket box (`resolveTicketFrame`): desktop 1001×231, and the smaller bands from `GameGrid.module.css`.
 
-- DOM: near the viewport only. `computeDomBand` + `DomPool`. Pool size `DOM_POOL_SIZE` (80). Viewport height `CATALOG_VIEWPORT_HEIGHT` (200). Scroll throttles DOM rebind and pauses canvas repaint.
-- Canvas: `CanvasPool` tiles, ~150 tickets each (`canvasTileTickets`; 100 when dpr ≥ 3). Every ticket is painted. Tiles are not a 400-card window. While the catalog scrolls, the DOM pool hides and this canvas is the view. DOM returns when scrolling stops.
+- DOM: the near-viewport band, including while scrolling, plus the add gesture and the ball-draw gesture. `computeDomBand` + `DomPool`. Pool size `DOM_POOL_SIZE` (80). Adds under 25 run `playTicketAppear` (Fortunamania 310ms appear) on the last 12 cards, then smooth-scroll to the bottom. Adds of 25 or 100 only scroll. A short row is centered, so adding a ticket slides the others in that row left (`buildSlots`). Draw deals six balls. A ball dabs every ticket that still has it. Rounds 3, 5 and 6 are multiplier draws. The dab, dip, shine and sparkles run on the visible DOM cards (`drawGesture.ts`). After the gesture, tickets shuffle so the highest payout is first (`sortTickets`, 600ms FLIP). After the sixth ball every ticket is gold or green. Scrolled-away tickets update on the canvas at the settled frame.
+- Canvas: `CanvasPool` tiles, ~150 tickets each (`canvasTileTickets`; 100 when dpr ≥ 3). Tickets outside the live DOM band are painted when the catalog or the sprites change. The band itself is left blank, so an animating card has no canvas ticket behind it. Scroll only updates those holes. Resize drops the tiles before any repaint. Green-ticket chrome, badges, and id digits are captured in that same warm-up.
 - Catalog paint: `paintCatalogTicket` in `catalogPaint.ts` — chrome raster, whole win-amount bitmaps, id digits, and `cellBitmaps`. `paintTicket` in `CanvasPool.ts` is the compare rows.
 
 Sprites come from SnapDOM of real ticket DOM, keyed by layout / font / dpr, RAM + IndexedDB (`atlasStore.ts`):
@@ -48,7 +48,7 @@ Pixel, overlay, blur, hit-test, zoom, or resize work: load `.cursor/skills/canva
 
 `src/catalog/Compare.tsx` stacks one live DOM card and one canvas per fixture (id-only, and dab + multiplier + win). Toolbar: opacity, `difference` blend, nudge, header and badge sprite overlays. Use it to see drift. Do not bake a nudge into source to hide a 1px miss.
 
-The dab fixture has three extra rows under those stacks. The bottom row (`CellBitmapStack`) blits a closed set from `cellBitmaps.ts`: numbers 1–60, one dab, and multipliers 2, 3, 5, and 10. Each bitmap is a `rasterizeTicketSvg` foreignObject of the real cell or badge. The gold face, separators, amount, and ticket id are rasters of that same card, blitted under the cells. That row shows the overlay and, beside it, the same canvas with normal blending. Catalog paint is still `paintTicket`.
+The dab fixture has three extra rows under those stacks. The bottom row (`CellBitmapStack`) blits a closed set from `cellBitmaps.ts`: numbers 1–60, one dab, and multipliers 2, 3, 5, and 10. Each bitmap is a `rasterizeTicketSvg` foreignObject of the real cell or badge. The gold face, separators, amount, and ticket id are rasters of that same card, blitted under the cells. That row shows the overlay and, beside it, the same canvas with normal blending. Catalog paint is `paintCatalogTicket`.
 
 ## Skills
 

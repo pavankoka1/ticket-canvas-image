@@ -7,6 +7,12 @@ import {
   useState,
 } from "react";
 
+import {
+  APPEAR_MAX_TICKETS,
+  APPEAR_MS,
+  prefersReducedMotion,
+  TICKET_ANIMATED_COUNT,
+} from "./appear";
 import { computeDomBand } from "./bands";
 import { CanvasPool } from "./CanvasPool";
 import {
@@ -17,10 +23,12 @@ import {
   setLiveCellBoxModel,
 } from "./cellBoxModel";
 import {
+  catalogSpacerRows,
   contentHeight,
   contentWidth,
   getActiveLayout,
   resolveCatalogLayout,
+  resolveTicketFrame,
   setActiveLayout,
 } from "./catalogLayout";
 import {
@@ -33,16 +41,17 @@ import {
 import { ticketChrome, warmCellBitmaps } from "./cellBitmaps";
 import { idDigitCount, warmAmounts, warmIdDigits } from "./headerGlyphs";
 import { DomPool } from "./DomPool";
+import { DOM_POOL_SIZE, MAX_TICKETS, ROW_BUFFER } from "./layout";
 import {
-  CATALOG_VIEWPORT_HEIGHT,
-  DOM_POOL_SIZE,
-  MAX_TICKETS,
-  ROW_BUFFER,
-} from "./layout";
-import {
+  applyDrawnBall,
   buildSlots,
   createTickets,
-  MULTIPLIER_VALUES,
+  DRAW_ROUND_COUNT,
+  DRAW_ROUNDS,
+  finishRound,
+  pickDrawBall,
+  shuffleDelayMs,
+  sortTickets,
   type Ticket,
   type TicketSlot,
 } from "./tickets";
@@ -88,9 +97,14 @@ export function Catalog() {
   const [domCount, setDomCount] = useState(0);
   const [tileCount, setTileCount] = useState(0);
   const [presetMode, setPresetMode] = useState<PresetMode>("auto");
+  const [drawRound, setDrawRound] = useState(0);
+  const [lastDraw, setLastDraw] = useState("");
+  const drawnBallsRef = useRef<number[]>([]);
+  const prevSlotsRef = useRef(new Map<string, { x: number; y: number }>());
+  const shuffleMsRef = useRef(400);
+  const shuffleTimerRef = useRef(0);
   const [spriteOverlay, setSpriteOverlay] = useState(false);
   const [overlayInfo, setOverlayInfo] = useState<string>("");
-  const [availWidth, setAvailWidth] = useState(1000);
   const [viewport, setViewport] = useState(() => ({
     w: typeof window !== "undefined" ? window.innerWidth : 1366,
     h: typeof window !== "undefined" ? window.innerHeight : 768,
@@ -102,9 +116,13 @@ export function Catalog() {
       : getPreset(presetMode);
   const isMobile = metrics.id.startsWith("mobile");
   const isLandscape = viewport.w > viewport.h;
+  const frame = useMemo(
+    () => resolveTicketFrame(viewport.w, viewport.h),
+    [viewport],
+  );
   const layout = useMemo(
-    () => resolveCatalogLayout(isMobile, isLandscape, availWidth, metrics),
-    [isMobile, isLandscape, availWidth, metrics],
+    () => resolveCatalogLayout(isMobile, isLandscape, frame.width, metrics),
+    [isMobile, isLandscape, frame.width, metrics],
   );
 
   useLayoutEffect(() => {
@@ -142,9 +160,29 @@ export function Catalog() {
   );
   const height = contentHeight(tickets.length, layout);
   const width = contentWidth(layout);
+  const spacerPx =
+    tickets.length > 0
+      ? catalogSpacerRows(viewport.w, viewport.h) * (layout.cardHeight + layout.gap)
+      : 0;
 
   slotsRef.current = slots;
   ticketsByIdRef.current = ticketsById;
+
+  const freshIdsRef = useRef(new Set<string>());
+  const knownIdsRef = useRef(new Set<string>());
+  const scrollTimerRef = useRef(0);
+
+  const domIds = useCallback((): Set<string> => {
+    const container = scrollRef.current;
+    if (!container) return new Set();
+    const { dom: domSlots } = computeDomBand(
+      slotsRef.current,
+      container.scrollTop,
+      container.clientHeight,
+      ROW_BUFFER,
+    );
+    return new Set(domSlots.map((slot) => slot.id));
+  }, []);
 
   const syncDom = useCallback(() => {
     const container = scrollRef.current;
@@ -157,17 +195,20 @@ export function Catalog() {
       container.clientHeight,
       ROW_BUFFER,
     );
-    dom.rebind(domSlots, ticketsByIdRef.current);
+    const fresh = freshIdsRef.current;
+    freshIdsRef.current = new Set();
+    dom.rebind(domSlots, ticketsByIdRef.current, fresh);
+    for (const id of fresh) knownIdsRef.current.add(id);
     setDomCount(domSlots.length);
   }, []);
 
-  /** Paint / extend full-catalog canvas tiles. Not tied to scroll. */
+  /** Paint every ticket that is not on a live DOM card. */
   const syncCanvas = useCallback(() => {
     const canvas = canvasPoolRef.current;
     if (!canvas?.isReady) return;
-    canvas.setCatalog(slotsRef.current, ticketsByIdRef.current);
+    canvas.setCatalog(slotsRef.current, ticketsByIdRef.current, domIds());
     setTileCount(canvas.tileCount);
-  }, []);
+  }, [domIds]);
 
   const revealCanvas = useCallback(() => {
     const host = canvasHostRef.current;
@@ -178,6 +219,57 @@ export function Catalog() {
     const host = canvasHostRef.current;
     if (host) host.style.visibility = "hidden";
   }, []);
+
+  const warmLayoutBitmaps = useCallback(async (
+    host: HTMLElement,
+    layout: ReturnType<typeof getActiveLayout>,
+  ) => {
+    const prev = getActiveLayout();
+    const prevModel = getLiveCellBoxModel();
+    canvasPoolRef.current?.pause();
+    setActiveLayout(layout);
+    const model = resolveCellBoxModel(layout, activeDpr());
+    setLiveCellBoxModel(model);
+    applyTicketCssVars(host, layout.metrics);
+    applyCellBoxCssVars(host, model, layout.metrics);
+    try {
+      await warmCellBitmaps(host);
+      await ticketChrome(host, false);
+      await ticketChrome(host, true);
+      await ticketChrome(host, false, true);
+      await warmIdDigits(host);
+    } finally {
+      setActiveLayout(prev);
+      if (prevModel) setLiveCellBoxModel(prevModel);
+      canvasPoolRef.current?.resume();
+    }
+  }, []);
+
+  const scheduleLandscapePrewarm = useCallback(() => {
+    const host = prewarmHostRef.current;
+    if (!host || window.innerWidth > window.innerHeight) return;
+    const run = () => {
+      const w = window.innerHeight;
+      const h = window.innerWidth;
+      const metrics = resolvePresetFromViewport(w, h);
+      const next = resolveCatalogLayout(
+        metrics.id.startsWith("mobile"),
+        true,
+        resolveTicketFrame(w, h).width,
+        metrics,
+      );
+      const current = getActiveLayout();
+      if (
+        next.metrics.id === current.metrics.id &&
+        next.cardWidth === current.cardWidth
+      ) {
+        return;
+      }
+      void warmLayoutBitmaps(host, next);
+    };
+    if (window.requestIdleCallback) window.requestIdleCallback(() => run());
+    else window.setTimeout(run, 800);
+  }, [warmLayoutBitmaps]);
 
   const startAtlasWarm = useCallback(() => {
     const host = atlasHostRef.current;
@@ -194,6 +286,7 @@ export function Catalog() {
       setAtlasReady(65);
       await ticketChrome(host, false);
       await ticketChrome(host, true);
+      await ticketChrome(host, false, true);
       if (gen !== atlasGenRef.current) return;
       await warmIdDigits(host);
       if (gen !== atlasGenRef.current) return;
@@ -209,17 +302,9 @@ export function Catalog() {
       syncCanvas();
       syncDom();
       revealCanvas();
+      scheduleLandscapePrewarm();
     })();
-  }, [syncCanvas, syncDom, revealCanvas]);
-
-  const scrollToBottom = useCallback(() => {
-    const container = scrollRef.current;
-    if (!container) return;
-    container.scrollTop = Math.max(
-      0,
-      container.scrollHeight - container.clientHeight,
-    );
-  }, []);
+  }, [syncCanvas, syncDom, revealCanvas, scheduleLandscapePrewarm]);
 
   /**
    * Resize / orientation teardown. The canvas underlay is built for one exact
@@ -264,26 +349,10 @@ export function Catalog() {
   }, [syncCanvas, syncDom]);
 
   useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    let first = true;
-    const ro = new ResizeObserver((entries) => {
-      const w = entries[0]?.contentRect.width ?? el.clientWidth;
-      // Any width change past the first (mount) reading is a viewport shift:
-      // hide the canvas instantly so the old-size underlay can't flash behind
-      // the reflowing DOM. The layout-change effect schedules the rebuild.
-      if (!first) hideCanvas();
-      first = false;
-      setAvailWidth(Math.max(0, Math.floor(w - 24)));
-    });
-    ro.observe(el);
-    setAvailWidth(Math.max(0, Math.floor(el.clientWidth - 24)));
-    return () => ro.disconnect();
-  }, [hideCanvas]);
-
-  useEffect(() => {
     const onShift = () => {
-      hideCanvas(); // vanish the stale canvas before React re-renders
+      hideCanvas();
+      canvasPoolRef.current?.clear();
+      setTileCount(0);
       setViewport({ w: window.innerWidth, h: window.innerHeight });
     };
     window.addEventListener("resize", onShift);
@@ -327,52 +396,83 @@ export function Catalog() {
 
   useLayoutEffect(() => {
     if (tickets.length === 0) {
+      prevSlotsRef.current = new Map();
       canvasPoolRef.current?.clear();
       setTileCount(0);
       syncDom();
       return;
     }
-    scrollToBottom();
-    syncCanvas();
+    const added: string[] = [];
+    for (const ticket of tickets) {
+      if (!knownIdsRef.current.has(ticket.id)) added.push(ticket.id);
+    }
+    for (const id of added) knownIdsRef.current.add(id);
+    // Fortunamania appearAddedTickets: under 25 animate the last 12, then
+    // smooth-scroll once that gesture ends. 25+ skip the gesture and scroll now.
+    const animate =
+      added.length > 0 && added.length < APPEAR_MAX_TICKETS && !prefersReducedMotion();
+    freshIdsRef.current = new Set(animate ? added.slice(-TICKET_ANIMATED_COUNT) : []);
+    const from = prevSlotsRef.current;
     syncDom();
-  }, [tickets, height, syncCanvas, syncDom, scrollToBottom]);
+    syncCanvas();
+    domPoolRef.current?.playMoves(from, slotsRef.current, shuffleMsRef.current);
+    prevSlotsRef.current = new Map(slotsRef.current.map((slot) => [slot.id, { x: slot.x, y: slot.y }]));
+    const scroll = scrollRef.current;
+    if (added.length === 0 || !scroll) return;
+    if (scrollTimerRef.current) window.clearTimeout(scrollTimerRef.current);
+    const delay = animate ? APPEAR_MS : 0;
+    scrollTimerRef.current = window.setTimeout(() => {
+      scrollTimerRef.current = 0;
+      const maxScroll = Math.max(0, scroll.scrollHeight - scroll.clientHeight);
+      scroll.scrollTo({ top: maxScroll, behavior: "smooth" });
+    }, delay);
+  }, [tickets, height, syncCanvas, syncDom]);
 
-  // While the finger or wheel is moving, the live cards hide and the canvas
-  // is the catalog. They come back once scrolling has stopped.
+  useEffect(() => {
+    return () => {
+      if (scrollTimerRef.current) window.clearTimeout(scrollTimerRef.current);
+    };
+  }, []);
+
+  // Off-screen tickets stay painted. Scroll only moves the holes so a
+  // live card, including one that is animating, never has canvas under it.
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
     let idle = 0;
     const onScroll = () => {
-      canvasPoolRef.current?.pause();
-      domPoolRef.current?.setVisible(false);
-      if (idle) window.clearTimeout(idle);
-      idle = window.setTimeout(() => {
+      if (idle) return;
+      idle = window.requestAnimationFrame(() => {
         idle = 0;
-        canvasPoolRef.current?.resume();
         syncDom();
-        domPoolRef.current?.setVisible(true);
-      }, 160);
+        canvasPoolRef.current?.setSkip(domIds());
+      });
     };
     container.addEventListener("scroll", onScroll, { passive: true });
     return () => {
       container.removeEventListener("scroll", onScroll);
-      if (idle) window.clearTimeout(idle);
-      canvasPoolRef.current?.resume();
-      domPoolRef.current?.setVisible(true);
+      if (idle) window.cancelAnimationFrame(idle);
     };
-  }, [syncDom]);
+  }, [syncDom, domIds]);
 
-  const addHundred = () => {
+  const addCount = (count: number) => {
+    shuffleMsRef.current = 400;
     setTickets((prev) => {
       const room = MAX_TICKETS - prev.length;
       if (room <= 0) return prev;
-      return [...prev, ...createTickets(Math.min(100, room))];
+      return [...prev, ...createTickets(Math.min(count, room))];
     });
   };
 
   const reset = () => {
     setTickets([]);
+    knownIdsRef.current = new Set();
+    freshIdsRef.current = new Set();
+    if (shuffleTimerRef.current) window.clearTimeout(shuffleTimerRef.current);
+    drawnBallsRef.current = [];
+    setDrawRound(0);
+    setLastDraw("");
+    domPoolRef.current?.clearMotion();
     setDomCount(0);
     setTileCount(0);
     canvasPoolRef.current?.clear();
@@ -408,37 +508,60 @@ export function Catalog() {
     syncDom();
   }, [syncDom]);
 
-  const addDab = () => {
-    for (const t of tickets) {
-      const unhit = [0, 1, 2, 3, 4, 5].filter((c) => !t.hits.includes(c));
-      if (!unhit.length) continue;
-      t.hits.push(unhit[Math.floor(Math.random() * unhit.length)]!);
-    }
+  const drawBall = () => {
+    if (tickets.length === 0 || drawRound >= DRAW_ROUND_COUNT) return;
+    const spec = DRAW_ROUNDS[drawRound]!;
+    const ball = pickDrawBall(tickets, drawnBallsRef.current, domIds());
+    if (ball == null) return;
+    drawnBallsRef.current.push(ball);
+    const nextRound = drawRound + 1;
+    const hits = applyDrawnBall(tickets, ball, spec.multiplier);
+    if (nextRound >= DRAW_ROUND_COUNT) finishRound(tickets);
+    setDrawRound(nextRound);
+    setLastDraw(
+      spec.multiplier > 0
+        ? `${ball} · ${spec.multiplier}× · ${hits.length} tickets`
+        : `${ball} · dab · ${hits.length} tickets`,
+    );
     refreshStates();
+    domPoolRef.current?.playDraws(hits);
+    const host = atlasHostRef.current;
+    if (host) {
+      const amounts = [...new Set(tickets.map((ticket) => ticket.win).filter(Boolean))];
+      void warmAmounts(host, amounts).then(() => {
+        canvasPoolRef.current?.refresh();
+        syncCanvas();
+      });
+    }
+    if (shuffleTimerRef.current) window.clearTimeout(shuffleTimerRef.current);
+    const delay = shuffleDelayMs(hits, tickets);
+    shuffleTimerRef.current = window.setTimeout(() => {
+      shuffleTimerRef.current = 0;
+      shuffleMsRef.current = 600;
+      setTickets((current) => {
+        const sorted = sortTickets(current);
+        const same = sorted.every((ticket, index) => ticket === current[index]);
+        return same ? current : sorted;
+      });
+    }, delay);
   };
 
-  const addMultiplier = () => {
-    for (const t of tickets) {
-      let cell = t.hits.find((c) => !(c in t.multipliers));
-      if (cell === undefined) {
-        const unhit = [0, 1, 2, 3, 4, 5].filter((c) => !t.hits.includes(c));
-        if (!unhit.length) continue;
-        cell = unhit[Math.floor(Math.random() * unhit.length)]!;
-        t.hits.push(cell);
-      }
-      t.multipliers[cell] =
-        MULTIPLIER_VALUES[
-          Math.floor(Math.random() * MULTIPLIER_VALUES.length)
-        ]!;
+  const clearDraws = () => {
+    if (shuffleTimerRef.current) window.clearTimeout(shuffleTimerRef.current);
+    for (const ticket of tickets) {
+      ticket.hits = [];
+      ticket.multipliers = {};
+      ticket.win = "";
+      ticket.disabled = false;
     }
-    refreshStates();
-  };
-
-  const clearStates = () => {
-    for (const t of tickets) {
-      t.hits = [];
-      t.multipliers = {};
-    }
+    drawnBallsRef.current = [];
+    setDrawRound(0);
+    setLastDraw("");
+    domPoolRef.current?.clearMotion();
+    shuffleMsRef.current = 400;
+    setTickets((current) =>
+      [...current].sort((a, b) => Number(a.no) - Number(b.no)),
+    );
     refreshStates();
   };
 
@@ -508,34 +631,50 @@ export function Catalog() {
       <header className="toolbar">
         <h1>Cell atlas canvas POC</h1>
         <p className="toolbar__hint">
-          Scrolling shows the canvas. Live cards return when scrolling stops.
-          Up to {MAX_TICKETS} tickets.
+          +1 and +5 play the catalog appear gesture, then scroll to the bottom.
+          +25 and +100 only scroll. Live rows stay DOM. Canvas paints the rows
+          that have scrolled away. Up to {MAX_TICKETS} tickets.
           {" · "}
           <a href="/compare">DOM↔Canvas compare</a>
         </p>
         <div className="toolbar__row">
-          <button
-            type="button"
-            onClick={addHundred}
-            disabled={tickets.length >= MAX_TICKETS}
-          >
-            +100 tickets
-          </button>
+          <div className="ticketAdds">
+            {([1, 5, 25, 100] as const).map((count) => (
+              <button
+                key={count}
+                type="button"
+                className="ticketAdds__btn"
+                onClick={() => addCount(count)}
+                disabled={tickets.length >= MAX_TICKETS}
+              >
+                +{count}
+              </button>
+            ))}
+          </div>
           <button type="button" className="btn-ghost" onClick={reset}>
             Reset
           </button>
           <button type="button" className="btn-ghost" onClick={rebuildAtlas}>
             Rebuild atlas
           </button>
-          <button type="button" className="btn-ghost" onClick={addDab}>
-            + Dab
+          <button
+            type="button"
+            className="btn-ghost"
+            onClick={drawBall}
+            disabled={tickets.length === 0 || drawRound >= DRAW_ROUND_COUNT}
+          >
+            {drawRound >= DRAW_ROUND_COUNT
+              ? "6/6 drawn"
+              : `Draw ${drawRound + 1}/6${
+                  DRAW_ROUNDS[drawRound]!.multiplier > 0
+                    ? ` · ${DRAW_ROUNDS[drawRound]!.multiplier}×`
+                    : ""
+                }`}
           </button>
-          <button type="button" className="btn-ghost" onClick={addMultiplier}>
-            + Multiplier
+          <button type="button" className="btn-ghost" onClick={clearDraws}>
+            Clear draws
           </button>
-          <button type="button" className="btn-ghost" onClick={clearStates}>
-            Clear states
-          </button>
+          {lastDraw ? <span className="stat">last ball {lastDraw}</span> : null}
           <label className="stat">
             <input
               type="checkbox"
@@ -577,8 +716,8 @@ export function Catalog() {
             {atlasReady >= 65 ? " ✓" : "…"}
           </span>
           <span className="stat">
-            digits <strong>{idReady}</strong>/20
-            {idReady >= 20 ? " ✓" : "…"}
+            digits <strong>{idReady}</strong>/30
+            {idReady >= 30 ? " ✓" : "…"}
           </span>
           <span className="stat">
             dom <strong>{domCount}</strong>/{DOM_POOL_SIZE}
@@ -587,25 +726,22 @@ export function Catalog() {
       </header>
 
       <div
-        ref={scrollRef}
-        className="catalog"
-        style={{
-          height: CATALOG_VIEWPORT_HEIGHT,
-          flex: "0 0 auto",
-          minHeight: CATALOG_VIEWPORT_HEIGHT,
-        }}
+        className="catalogFrame"
+        style={{ width: frame.width, height: frame.height }}
       >
-        <div
-          ref={contentRef}
-          className="catalog__content"
-          style={{
-            width: `${width}px`,
-            height: `${height}px`,
-            minHeight: height > 0 ? undefined : 80,
-          }}
-        >
-          <div ref={canvasHostRef} className="catalog__canvas" aria-hidden />
-          <div ref={domHostRef} className="catalog__dom" />
+        <div ref={scrollRef} className="catalog">
+          <div
+            ref={contentRef}
+            className="catalog__content"
+            style={{
+              width: `${width}px`,
+              height: `${height + spacerPx}px`,
+              minHeight: height > 0 ? undefined : 80,
+            }}
+          >
+            <div ref={canvasHostRef} className="catalog__canvas" aria-hidden />
+            <div ref={domHostRef} className="catalog__dom" />
+          </div>
         </div>
       </div>
       <div ref={atlasHostRef} className="catalog__captureHost" />

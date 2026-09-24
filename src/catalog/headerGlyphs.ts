@@ -17,7 +17,7 @@ import { type Ticket } from "./tickets";
 
 const DIGITS = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"] as const;
 
-export type IdColor = "idNormal" | "idGold";
+export type IdColor = "idNormal" | "idGold" | "idDisabled";
 
 type Glyph = { canvas: HTMLCanvasElement };
 
@@ -59,7 +59,7 @@ function setElementText(el: HTMLElement, text: string): void {
   }
 }
 
-function blankTicket(no: string, win: boolean, amount: string): Ticket {
+function blankTicket(no: string, win: boolean, amount: string, disabled = false): Ticket {
   return {
     id: "header-glyph-src",
     no,
@@ -67,6 +67,7 @@ function blankTicket(no: string, win: boolean, amount: string): Ticket {
     hits: win ? [0, 1] : [],
     multipliers: {},
     win: amount,
+    disabled,
   };
 }
 
@@ -86,7 +87,13 @@ async function withCard(
   }
 }
 
-/** Ten digits in both id colors. Idempotent per layout and pixel ratio. */
+const ID_FACES: readonly { color: IdColor; win: boolean; disabled: boolean }[] = [
+  { color: "idNormal", win: false, disabled: false },
+  { color: "idGold", win: true, disabled: false },
+  { color: "idDisabled", win: false, disabled: true },
+];
+
+/** Ten digits in the plain, gold, and green-ticket colors. Idempotent per layout and pixel ratio. */
 export function warmIdDigits(host: HTMLElement): Promise<void> {
   const key = styleKey();
   if (digitKey === key && digitsHave(key)) return Promise.resolve();
@@ -100,7 +107,7 @@ export function warmIdDigits(host: HTMLElement): Promise<void> {
 }
 
 function digitsHave(key: string): boolean {
-  return digits.has(`${key}|idNormal|0`) && digits.has(`${key}|idGold|0`);
+  return ID_FACES.every((face) => digits.has(`${key}|${face.color}|0`));
 }
 
 async function captureDigits(host: HTMLElement, key: string): Promise<void> {
@@ -109,12 +116,11 @@ async function captureDigits(host: HTMLElement, key: string): Promise<void> {
   await withCard(host, async (card) => {
     const idEl = card.dom.querySelector(".ticketCard__id");
     if (!(idEl instanceof HTMLElement)) throw new Error("id glyph source missing");
-    for (const gold of [false, true]) {
-      const color: IdColor = gold ? "idGold" : "idNormal";
+    for (const face of ID_FACES) {
       for (const ch of DIGITS) {
-        const cacheId = `${key}|${color}|${ch}`;
+        const cacheId = `${key}|${face.color}|${ch}`;
         if (digits.has(cacheId)) continue;
-        card.bind(blankTicket(ch, gold, ""));
+        card.bind(blankTicket(ch, face.win, "", face.disabled));
         shrinkToInk(idEl);
         setElementText(idEl, ch);
         const canvas = await rasterizeTicketSvg(idEl, dpr);
@@ -151,8 +157,9 @@ export function idDigitCount(): number {
   const key = styleKey();
   let n = 0;
   for (const ch of DIGITS) {
-    if (digits.has(`${key}|idNormal|${ch}`)) n += 1;
-    if (digits.has(`${key}|idGold|${ch}`)) n += 1;
+    for (const face of ID_FACES) {
+      if (digits.has(`${key}|${face.color}|${ch}`)) n += 1;
+    }
   }
   return n;
 }

@@ -35,6 +35,8 @@ import {
   type HeaderTextEntry,
 } from "./idDigitAtlas";
 import { headerSlice, ticketChrome, warmCellBitmaps } from "./cellBitmaps";
+import { catalogCellBoxes, paintCatalogTicket } from "./catalogPaint";
+import { warmIdDigits } from "./headerGlyphs";
 import { TicketCard } from "./ticketCardElement";
 import { rasterizeTicketSvg } from "./ticketSvgRaster";
 import {
@@ -47,6 +49,17 @@ import {
   type Ticket,
   type TicketSlot,
 } from "./tickets";
+
+/** Green ticket: one multiplier, not enough hits to win. Numbers stay visible. */
+const DISABLED_COMPARE_TICKET: Ticket = {
+  id: "cmp-disabled",
+  no: "2408",
+  balls: [7, 19, 23, 31, 44, 58],
+  hits: [3],
+  multipliers: { 3: 3 },
+  win: "",
+  disabled: true,
+};
 
 /** Fixture A — id only (no hits / win). Varied digit widths. */
 function makeIdTicket(): Ticket {
@@ -873,6 +886,120 @@ function CellBitmapStack({
   );
 }
 
+/** Catalog paint of a green ticket, difference-blended on the live card. */
+function DisabledTicketStack({
+  cardWidth,
+  cardHeight,
+  canvasOpacity,
+  blend,
+  nudgeX,
+  nudgeY,
+  showDom,
+  showCanvas,
+  paintGen,
+}: Omit<StackProps, "ticket" | "label" | "headerOverlay" | "badgeOverlay">) {
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const plainRef = useRef<HTMLCanvasElement>(null);
+  const cardRef = useRef<TicketCard | null>(null);
+  const [note, setNote] = useState("capturing the green ticket…");
+  const ticket = DISABLED_COMPARE_TICKET;
+
+  useLayoutEffect(() => {
+    const wrap = wrapRef.current;
+    if (!wrap) return;
+    let card = cardRef.current;
+    if (!card) {
+      card = new TicketCard();
+      cardRef.current = card;
+      wrap.appendChild(card.dom);
+    }
+    card.bind(ticket, 0, 0);
+    card.dom.style.visibility = showDom ? "visible" : "hidden";
+    card.dom.style.zIndex = "1";
+  }, [ticket, showDom, cardWidth, cardHeight, paintGen]);
+
+  useEffect(() => {
+    const overlay = canvasRef.current;
+    const plain = plainRef.current;
+    const host = document.querySelector(".catalog__captureHost");
+    if (!overlay || !plain || !host || paintGen < 1) return;
+    let cancelled = false;
+    const dpr = activeDpr();
+    void (async () => {
+      setNote("capturing green numbers, dab, and multipliers…");
+      await warmCellBitmaps(host as HTMLElement);
+      await ticketChrome(host as HTMLElement, false, true);
+      await warmIdDigits(host as HTMLElement);
+      if (cancelled) return;
+      const boxes = catalogCellBoxes(dpr);
+      const bw = Math.round(cardWidth * dpr);
+      const bh = Math.round(cardHeight * dpr);
+      const paint = (c: HTMLCanvasElement) => {
+        if (c.width !== bw || c.height !== bh) {
+          c.width = bw;
+          c.height = bh;
+        }
+        c.style.width = `${cardWidth}px`;
+        c.style.height = `${cardHeight}px`;
+        const ctx = c.getContext("2d");
+        if (!ctx) return;
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.imageSmoothingEnabled = false;
+        ctx.clearRect(0, 0, bw, bh);
+        paintCatalogTicket(ctx, ticket, 0, 0, cardWidth, dpr, boxes);
+      };
+      paint(overlay);
+      paint(plain);
+      setNote("green face, disabled id, numbers, and 3× — difference on the live card");
+    })().catch((err: unknown) => {
+      if (!cancelled) setNote(err instanceof Error ? err.message : "capture failed");
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [cardWidth, cardHeight, paintGen]);
+
+  return (
+    <section className="compare__fullSnap">
+      <h2 className="compare__caseTitle">
+        Disabled · 3× on 31 · #{ticket.no}
+      </h2>
+      <p className="compare__snapNote">{note}</p>
+      <div className="compare__cellRow">
+        <div>
+          <p className="compare__snapNote">difference</p>
+          <div
+            ref={wrapRef}
+            className="compare__stack"
+            style={{ width: cardWidth, height: cardHeight }}
+          >
+            <canvas
+              ref={canvasRef}
+              className="compare__canvas"
+              style={{
+                opacity: showCanvas && paintGen > 0 ? canvasOpacity : 0,
+                mixBlendMode: blend,
+                transform: `translate(${nudgeX}px, ${nudgeY}px)`,
+              }}
+            />
+          </div>
+        </div>
+        <div>
+          <p className="compare__snapNote">canvas</p>
+          <div className="compare__stack" style={{ width: cardWidth, height: cardHeight }}>
+            <canvas
+              ref={plainRef}
+              className="compare__canvas compare__canvas_plain"
+              style={{ opacity: paintGen > 0 ? 1 : 0 }}
+            />
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export function Compare() {
   const cssHostRef = useRef<HTMLDivElement>(null);
   const atlasHostRef = useRef<HTMLDivElement>(null);
@@ -1168,6 +1295,18 @@ export function Compare() {
           />
           </Fragment>
         ))}
+
+      <DisabledTicketStack
+        cardWidth={layout.cardWidth}
+        cardHeight={layout.cardHeight}
+        canvasOpacity={canvasOpacity}
+        blend={blend}
+        nudgeX={nudgeX}
+        nudgeY={nudgeY}
+        showDom={showDom}
+        showCanvas={showCanvas}
+        paintGen={paintGen}
+      />
 
       <div ref={atlasHostRef} className="catalog__captureHost" />
       <div ref={badgeHostRef} className="catalog__captureHost" />

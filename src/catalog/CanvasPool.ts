@@ -21,6 +21,12 @@ import {
 import { BALLS_PER_TICKET, canvasTileTickets } from "./layout";
 import { isWinTicket, type Ticket, type TicketSlot } from "./tickets";
 
+function sameIds(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const id of a) if (!b.has(id)) return false;
+  return true;
+}
+
 type Tile = {
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
@@ -42,6 +48,8 @@ export class CanvasPool {
   private ready = false;
   private slots: TicketSlot[] = [];
   private ticketsById: Map<string, Ticket> = new Map();
+  /** Tickets the live DOM is showing. Those slots stay blank on the canvas. */
+  private skipIds: Set<string> = new Set();
   private readonly host: HTMLElement;
   private paintGen = 0;
   private paused = false;
@@ -70,7 +78,7 @@ export class CanvasPool {
   resume(): void {
     if (!this.paused) return;
     this.paused = false;
-    void this.paintDirtyTiles();
+    this.paintNow();
   }
 
   get isReady(): boolean {
@@ -92,19 +100,56 @@ export class CanvasPool {
   setCatalog(
     slots: readonly TicketSlot[],
     ticketsById: Map<string, Ticket>,
+    skipIds: ReadonlySet<string> = this.skipIds,
   ): void {
     if (!this.ready) return;
     this.slots = slots.slice();
     this.ticketsById = ticketsById;
+    this.skipIds = new Set(skipIds);
     this.syncTiles();
+    for (const tile of this.tiles) tile.dirty = true;
+    this.blankTiles();
     void this.paintDirtyTiles();
   }
 
-  /** Atlas sprites arrived — mark all dirty and repaint. */
+  /** Live DOM band changed. Repaint so those slots are empty, or filled again. */
+  setSkip(skipIds: ReadonlySet<string>): void {
+    if (sameIds(this.skipIds, skipIds)) return;
+    const prev = this.skipIds;
+    this.skipIds = new Set(skipIds);
+    for (const tile of this.tiles) {
+      for (let i = tile.start; i < tile.end; i++) {
+        const id = this.slots[i]?.id;
+        if (!id) continue;
+        if (prev.has(id) !== this.skipIds.has(id)) {
+          tile.dirty = true;
+          break;
+        }
+      }
+    }
+    this.paintNow();
+  }
+
+  /** Paint every dirty tile before the next frame. Used when the DOM band flips. */
+  paintNow(): void {
+    if (!this.ready) return;
+    this.paintGen += 1;
+    for (const tile of this.tiles) {
+      if (!tile.dirty) continue;
+      this.paintTile(tile);
+      tile.dirty = false;
+    }
+  }
+
+  /**
+   * State changed (a draw, a shuffle). Paint every tile now, before the
+   * browser can scroll over a tile that still shows the previous frame.
+   */
   refresh(): void {
     if (!this.ready) return;
     for (const t of this.tiles) t.dirty = true;
-    void this.paintDirtyTiles();
+    if (this.paused) return;
+    this.paintNow();
   }
 
   clear(): void {
@@ -170,6 +215,13 @@ export class CanvasPool {
     }
   }
 
+  private blankTiles(): void {
+    for (const tile of this.tiles) {
+      tile.ctx.setTransform(1, 0, 0, 1, 0, 0);
+      tile.ctx.clearRect(0, 0, tile.canvas.width, tile.canvas.height);
+    }
+  }
+
   private async paintDirtyTiles(): Promise<void> {
     if (this.paused) return; // scrolling — dirty tiles flush on resume()
     const gen = ++this.paintGen;
@@ -190,32 +242,43 @@ export class CanvasPool {
     const layout = getActiveLayout();
     const { cardWidth } = layout;
     const cssW = contentWidth(layout);
-    const cssH = tile.cssH;
     const dpr = activeDpr();
-    const bw = Math.round(cssW * dpr);
-    const bh = Math.round(cssH * dpr);
+    // Size the buffer to the device pixels this tile actually covers.
+    // round(css * dpr) and that span disagree when the tile top is fractional,
+    // and the browser then scales the bitmap. A tall tile turns that into a
+    // visible multiplier shift. Compare never hits it: its canvas is the card.
+    const minY = Math.round(tile.minY * dpr) / dpr;
+    const parent = this.host.getBoundingClientRect();
+    const screenTop = parent.top + minY;
+    const screenLeft = parent.left;
+    const y0 = Math.round(screenTop * dpr);
+    const x0 = Math.round(screenLeft * dpr);
+    const bw = Math.max(1, Math.round((screenLeft + cssW) * dpr) - x0);
+    const bh = Math.max(1, Math.round((screenTop + tile.cssH) * dpr) - y0);
 
     if (c.width !== bw || c.height !== bh) {
       c.width = bw;
       c.height = bh;
     }
-    // Snap tile origin to device pixels.
-    const minY = Math.round(tile.minY * dpr) / dpr;
-    c.style.width = `${cssW}px`;
-    c.style.height = `${cssH}px`;
+    c.style.width = `${bw / dpr}px`;
+    c.style.height = `${bh / dpr}px`;
     c.style.transform = `translate3d(0, ${minY}px, 0)`;
 
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, cssW, cssH);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, bw, bh);
 
     const boxes = catalogCellBoxes(dpr);
 
     for (let i = tile.start; i < tile.end; i++) {
       const slot = this.slots[i]!;
       const ticket = this.ticketsById.get(slot.id);
-      if (!ticket) continue;
-      paintCatalogTicket(ctx, slot, ticket, cardWidth, dpr, tile.minY, boxes);
+      if (!ticket || this.skipIds.has(slot.id)) continue;
+      const sx = Math.round(slot.x * dpr) / dpr;
+      const sy = Math.round(slot.y * dpr) / dpr;
+      const originX = Math.round((screenLeft + sx) * dpr) - x0;
+      const originY = Math.round((parent.top + sy) * dpr) - y0;
+      paintCatalogTicket(ctx, ticket, originX, originY, cardWidth, dpr, boxes);
     }
   }
 }
