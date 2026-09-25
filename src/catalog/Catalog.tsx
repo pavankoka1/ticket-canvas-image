@@ -41,7 +41,7 @@ import {
 import { ticketChrome, warmCellBitmaps } from "./cellBitmaps";
 import { idDigitCount, warmAmounts, warmIdDigits } from "./headerGlyphs";
 import { DomPool } from "./DomPool";
-import { DOM_POOL_SIZE, MAX_TICKETS, ROW_BUFFER } from "./layout";
+import { MAX_TICKETS, ROW_BUFFER, SCROLL_BAND_SETTLE_MS, domPoolSize } from "./layout";
 import {
   applyDrawnBall,
   buildSlots,
@@ -90,6 +90,8 @@ export function Catalog() {
   const ticketsByIdRef = useRef<Map<string, Ticket>>(new Map());
   const atlasGenRef = useRef(0);
   const prevLayoutKeyRef = useRef("");
+  /** Scrollport clientHeight — measured at mount / resize, never on scroll. */
+  const clientHeightRef = useRef(0);
 
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [atlasReady, setAtlasReady] = useState(0);
@@ -115,6 +117,7 @@ export function Catalog() {
       ? resolvePresetFromViewport(viewport.w, viewport.h)
       : getPreset(presetMode);
   const isMobile = metrics.id.startsWith("mobile");
+  const poolSize = domPoolSize(isMobile);
   const isLandscape = viewport.w > viewport.h;
   const frame = useMemo(
     () => resolveTicketFrame(viewport.w, viewport.h),
@@ -172,43 +175,51 @@ export function Catalog() {
   const knownIdsRef = useRef(new Set<string>());
   const scrollTimerRef = useRef(0);
 
-  const domIds = useCallback((): Set<string> => {
+  /** Refresh clientHeight + canvas host origin (mount / resize / settle only). */
+  const measureScrollGeometry = useCallback(() => {
     const container = scrollRef.current;
-    if (!container) return new Set();
-    const { dom: domSlots } = computeDomBand(
-      slotsRef.current,
-      container.scrollTop,
-      container.clientHeight,
-      ROW_BUFFER,
-    );
-    return new Set(domSlots.map((slot) => slot.id));
+    if (!container) return;
+    clientHeightRef.current = container.clientHeight;
+    canvasPoolRef.current?.measureViewport(container);
   }, []);
 
-  const syncDom = useCallback(() => {
+  const bandForScroll = useCallback((scrollTop: number) => {
+    return computeDomBand(
+      slotsRef.current,
+      scrollTop,
+      clientHeightRef.current,
+      ROW_BUFFER,
+      poolSize,
+    );
+  }, [poolSize]);
+
+  const syncDom = useCallback((domSlots?: readonly TicketSlot[]) => {
     const container = scrollRef.current;
     const dom = domPoolRef.current;
     if (!container || !dom?.isReady) return;
 
-    const { dom: domSlots } = computeDomBand(
-      slotsRef.current,
-      container.scrollTop,
-      container.clientHeight,
-      ROW_BUFFER,
-    );
+    const slots =
+      domSlots ??
+      bandForScroll(container.scrollTop).dom;
     const fresh = freshIdsRef.current;
     freshIdsRef.current = new Set();
-    dom.rebind(domSlots, ticketsByIdRef.current, fresh);
+    dom.rebind(slots, ticketsByIdRef.current, fresh);
     for (const id of fresh) knownIdsRef.current.add(id);
-    setDomCount(domSlots.length);
-  }, []);
+    setDomCount(slots.length);
+  }, [bandForScroll]);
 
   /** Paint every ticket that is not on a live DOM card. */
   const syncCanvas = useCallback(() => {
     const canvas = canvasPoolRef.current;
+    const container = scrollRef.current;
     if (!canvas?.isReady) return;
-    canvas.setCatalog(slotsRef.current, ticketsByIdRef.current, domIds());
+    if (container) {
+      canvas.setScroll(container.scrollTop, container.scrollLeft);
+    }
+    const ids = new Set(bandForScroll(container?.scrollTop ?? 0).dom.map((s) => s.id));
+    canvas.setCatalog(slotsRef.current, ticketsByIdRef.current, ids);
     setTileCount(canvas.tileCount);
-  }, [domIds]);
+  }, [bandForScroll]);
 
   const revealCanvas = useCallback(() => {
     const host = canvasHostRef.current;
@@ -324,29 +335,32 @@ export function Catalog() {
     if (settleTimerRef.current) window.clearTimeout(settleTimerRef.current);
     settleTimerRef.current = window.setTimeout(() => {
       settleTimerRef.current = 0;
+      measureScrollGeometry();
       startAtlasWarm(); // warms cell + id, then syncCanvas + revealCanvas
     }, SETTLE_MS);
-  }, [hideCanvas, startAtlasWarm]);
+  }, [hideCanvas, startAtlasWarm, measureScrollGeometry]);
 
   useEffect(() => {
     const domHost = domHostRef.current;
     const canvasHost = canvasHostRef.current;
     if (!domHost || !canvasHost) return;
-    const dom = new DomPool(domHost);
+    const dom = new DomPool(domHost, poolSize);
     const canvas = new CanvasPool(canvasHost);
     dom.mount();
     canvas.mount();
     domPoolRef.current = dom;
     canvasPoolRef.current = canvas;
+    measureScrollGeometry();
     syncCanvas();
     syncDom();
     return () => {
       canvas.clear();
+      domHost.replaceChildren();
       domPoolRef.current = null;
       canvasPoolRef.current = null;
       if (settleTimerRef.current) window.clearTimeout(settleTimerRef.current);
     };
-  }, [syncCanvas, syncDom]);
+  }, [syncCanvas, syncDom, poolSize, measureScrollGeometry]);
 
   useEffect(() => {
     const onShift = () => {
@@ -370,6 +384,7 @@ export function Catalog() {
     const key = layoutCacheKey(layout);
     if (key === prevLayoutKeyRef.current) {
       domPoolRef.current?.refreshLayout();
+      measureScrollGeometry();
       syncCanvas();
       syncDom();
       return;
@@ -378,11 +393,13 @@ export function Catalog() {
     prevLayoutKeyRef.current = key;
     // DOM reflows immediately (it covers the viewport); canvas waits for settle.
     domPoolRef.current?.refreshLayout();
+    measureScrollGeometry();
     syncDom();
 
     if (firstBuild) {
       // Initial size — no stale canvas to tear down; warm right away.
       const t = window.setTimeout(() => {
+        measureScrollGeometry();
         startAtlasWarm();
         syncCanvas();
         syncDom();
@@ -392,7 +409,7 @@ export function Catalog() {
     // A real size change (resize / orientation / preset) — drop the old canvas
     // now and rebuild SETTLE_MS after the viewport goes still.
     tearDownAndScheduleRebuild();
-  }, [layout, startAtlasWarm, syncCanvas, syncDom, tearDownAndScheduleRebuild]);
+  }, [layout, startAtlasWarm, syncCanvas, syncDom, tearDownAndScheduleRebuild, measureScrollGeometry]);
 
   useLayoutEffect(() => {
     if (tickets.length === 0) {
@@ -434,26 +451,54 @@ export function Catalog() {
     };
   }, []);
 
-  // Off-screen tickets stay painted. Scroll only moves the holes so a
-  // live card, including one that is animating, never has canvas under it.
+  // Freeze DOM band + canvas skip during scroll. Native overflow carries the
+  // content (and existing canvas holes) for free. Resync once after settle —
+  // scrollend when available, else a short debounce (not SETTLE_MS).
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
-    let idle = 0;
+    let settleTimer = 0;
+
+    const resyncBand = () => {
+      settleTimer = 0;
+      const scrollTop = container.scrollTop;
+      const scrollLeft = container.scrollLeft;
+      const { dom } = bandForScroll(scrollTop);
+      const ids = new Set(dom.map((s) => s.id));
+      canvasPoolRef.current?.setScroll(scrollTop, scrollLeft);
+      syncDom(dom);
+      canvasPoolRef.current?.setSkip(ids);
+    };
+
+    const supportsScrollEnd = "onscrollend" in window;
+    if (supportsScrollEnd) {
+      container.addEventListener("scrollend", resyncBand, { passive: true });
+      return () => {
+        container.removeEventListener("scrollend", resyncBand);
+      };
+    }
+
     const onScroll = () => {
-      if (idle) return;
-      idle = window.requestAnimationFrame(() => {
-        idle = 0;
-        syncDom();
-        canvasPoolRef.current?.setSkip(domIds());
-      });
+      if (settleTimer) window.clearTimeout(settleTimer);
+      settleTimer = window.setTimeout(resyncBand, SCROLL_BAND_SETTLE_MS);
     };
     container.addEventListener("scroll", onScroll, { passive: true });
     return () => {
       container.removeEventListener("scroll", onScroll);
-      if (idle) window.cancelAnimationFrame(idle);
+      if (settleTimer) window.clearTimeout(settleTimer);
     };
-  }, [syncDom, domIds]);
+  }, [syncDom, bandForScroll]);
+
+  // clientHeight / host origin only change on resize (incl. mobile keyboard).
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      measureScrollGeometry();
+    });
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, [measureScrollGeometry]);
 
   const addCount = (count: number) => {
     shuffleMsRef.current = 400;
@@ -511,7 +556,11 @@ export function Catalog() {
   const drawBall = () => {
     if (tickets.length === 0 || drawRound >= DRAW_ROUND_COUNT) return;
     const spec = DRAW_ROUNDS[drawRound]!;
-    const ball = pickDrawBall(tickets, drawnBallsRef.current, domIds());
+    const ball = pickDrawBall(
+      tickets,
+      drawnBallsRef.current,
+      new Set(bandForScroll(scrollRef.current?.scrollTop ?? 0).dom.map((s) => s.id)),
+    );
     if (ball == null) return;
     drawnBallsRef.current.push(ball);
     const nextRound = drawRound + 1;
@@ -720,7 +769,7 @@ export function Catalog() {
             {idReady >= 30 ? " ✓" : "…"}
           </span>
           <span className="stat">
-            dom <strong>{domCount}</strong>/{DOM_POOL_SIZE}
+            dom <strong>{domCount}</strong>/{poolSize}
           </span>
         </div>
       </header>

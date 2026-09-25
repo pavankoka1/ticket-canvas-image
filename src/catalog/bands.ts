@@ -14,7 +14,8 @@ export function computeDomBand(
   slots: readonly TicketSlot[],
   scrollTop: number,
   viewportH: number,
-  bufferRows: number
+  bufferRows: number,
+  poolSize: number = DOM_POOL_SIZE,
 ): DomBand {
   if (slots.length === 0) return { dom: [] };
 
@@ -34,10 +35,10 @@ export function computeDomBand(
   }
 
   // Never ask for more DOM cards than the pool.
-  if (domEnd - domStart > DOM_POOL_SIZE) {
+  if (domEnd - domStart > poolSize) {
     const mid = Math.floor((domStart + domEnd) / 2);
-    domStart = Math.max(0, mid - Math.floor(DOM_POOL_SIZE / 2));
-    domEnd = Math.min(slots.length, domStart + DOM_POOL_SIZE);
+    domStart = Math.max(0, mid - Math.floor(poolSize / 2));
+    domEnd = Math.min(slots.length, domStart + poolSize);
   }
 
   return { dom: slots.slice(domStart, domEnd) as TicketSlot[] };

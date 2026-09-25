@@ -7,6 +7,8 @@
  * translate. The `transform` property stays `none` for the gesture: a scale
  * on top of `translate3d` orbits the card instead of shrinking in place.
  */
+import type { TicketCard } from "./ticketCardElement";
+
 export const APPEAR_MS = 310;
 export const APPEAR_MAX_TICKETS = 25;
 export const TICKET_ANIMATED_COUNT = 12;
@@ -99,7 +101,7 @@ export function prefersReducedMotion(): boolean {
 
 /** One card of `animateNewTickets`. `x`/`y` are the snapped slot, in CSS pixels. */
 export function playTicketAppear(
-  el: HTMLElement,
+  card: TicketCard,
   x: number,
   y: number,
   cardWidth: number,
@@ -112,7 +114,10 @@ export function playTicketAppear(
   const scales = resolveAppearScales(cardWidth, gap, cellWidth, font);
   if (!Number.isFinite(scales.start) || !Number.isFinite(scales.overshoot)) return;
 
-  el.getAnimations().forEach((animation) => animation.cancel());
+  const el = card.dom;
+  // Cancel prior motion without an unconditional getAnimations flush.
+  card.cancelMotion();
+  const token = card.beginMotion();
   el.classList.add("ticketCard_appear");
   el.style.zIndex = "3";
   const anim = el.animate(buildAppearKeyframes(scales, x, y), {
@@ -128,7 +133,10 @@ export function playTicketAppear(
       el.style.removeProperty("opacity");
       el.style.removeProperty("translate");
       el.style.removeProperty("scale");
+      card.endMotion(token);
     },
-    () => undefined,
+    () => {
+      card.endMotion(token);
+    },
   );
 }

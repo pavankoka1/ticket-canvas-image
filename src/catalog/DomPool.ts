@@ -12,14 +12,16 @@ export class DomPool {
   private free: number[] = [];
   private ready = false;
   private readonly host: HTMLElement;
+  readonly size: number;
 
-  constructor(host: HTMLElement) {
+  constructor(host: HTMLElement, size: number = DOM_POOL_SIZE) {
     this.host = host;
+    this.size = size;
   }
 
   mount(): void {
     if (this.ready) return;
-    for (let i = 0; i < DOM_POOL_SIZE; i++) {
+    for (let i = 0; i < this.size; i++) {
       const card = attachTicketCard(new TicketCard());
       this.host.appendChild(card.dom);
       this.cards.push(card);
@@ -59,8 +61,10 @@ export class DomPool {
         this.byId.set(slot.id, idx);
       }
       const card = this.cards[idx]!;
+      // Unchanged band members keep their DOM as-is — bind only new/moved/updated.
+      if (!isNew && card.shows(ticket, slot.x, slot.y)) continue;
       card.bind(ticket, slot.x, slot.y);
-      if (isNew && appearIds?.has(slot.id)) playAppear(card.dom, slot.x, slot.y);
+      if (isNew && appearIds?.has(slot.id)) playAppear(card, slot.x, slot.y);
     }
   }
 
@@ -68,7 +72,7 @@ export class DomPool {
   clearMotion(): void {
     if (!this.ready) return;
     for (const card of this.cards) {
-      card.dom.getAnimations({ subtree: true }).forEach((animation) => animation.cancel());
+      card.cancelMotion();
       card.hideShine();
     }
   }
@@ -95,7 +99,10 @@ export class DomPool {
       const dx = was.x - now.x;
       const dy = was.y - now.y;
       if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
-      const el = this.cards[idx]!.dom;
+      const card = this.cards[idx]!;
+      const el = card.dom;
+      card.cancelMotion();
+      const token = card.beginMotion();
       const anim = el.animate(
         [{ translate: `${dx}px ${dy}px` }, { translate: "0px 0px" }],
         { duration: durationMs, easing: "cubic-bezier(0.65, 0, 0.35, 1)", fill: "forwards" },
@@ -104,8 +111,11 @@ export class DomPool {
         () => {
           anim.cancel();
           el.style.removeProperty("translate");
+          card.endMotion(token);
         },
-        () => undefined,
+        () => {
+          card.endMotion(token);
+        },
       );
     }
   }
@@ -131,11 +141,11 @@ export class DomPool {
   }
 }
 
-function playAppear(el: HTMLElement, x: number, y: number): void {
+function playAppear(card: TicketCard, x: number, y: number): void {
   const layout = getActiveLayout();
   const slot = snapSlot(x, y);
   playTicketAppear(
-    el,
+    card,
     slot.x,
     slot.y,
     layout.cardWidth,

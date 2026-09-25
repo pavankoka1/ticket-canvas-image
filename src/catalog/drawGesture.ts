@@ -58,12 +58,11 @@ function play(
   keyframes: Keyframe[],
   opts: KeyframeAnimationOptions,
   clearTransform = false,
-): void {
+): Animation {
   const anim = el.animate(keyframes, { ...opts, fill: "forwards" });
   void anim.finished.then(
     () => {
       anim.cancel();
-      if (el.getAnimations().length > 0) return;
       el.style.removeProperty("opacity");
       el.style.removeProperty("scale");
       el.style.removeProperty("translate");
@@ -71,6 +70,7 @@ function play(
     },
     () => undefined,
   );
+  return anim;
 }
 
 function dipKeyframes(at: string, multiplier: boolean): Keyframe[] {
@@ -122,15 +122,17 @@ export function playTicketDraw(
   const hasWin = root.classList.contains("ticketCard_win");
   const playShine = kind === "win" || (isMult && hasWin);
 
-  root.getAnimations().forEach((animation) => animation.cancel());
-  play(root, dipKeyframes(at, isMult), {
+  // One subtree cancel only when prior motion was marked — no unconditional flush.
+  card.cancelMotion();
+  const token = card.beginMotion();
+
+  const dip = play(root, dipKeyframes(at, isMult), {
     duration: isMult ? MULT_TEXT_END : DIP_END,
     easing: "linear",
   });
 
   const host = card.badgeHostAt(cell);
   if (host) {
-    host.getAnimations().forEach((animation) => animation.cancel());
     play(
       host,
       isMult
@@ -149,7 +151,6 @@ export function playTicketDraw(
   if (isMult) {
     const label = card.badgeLabelAt(cell);
     if (label) {
-      label.getAnimations().forEach((animation) => animation.cancel());
       const end = MULT_TEXT_END;
       play(
         label,
@@ -176,14 +177,22 @@ export function playTicketDraw(
     }
   }
 
-  if (!playShine) return;
+  const settle = () => {
+    card.hideShine();
+    card.endMotion(token);
+  };
+
+  if (!playShine) {
+    void dip.finished.then(settle, settle);
+    return;
+  }
+
   const band = card.shineBand(cardWidth, cardHeight, isMult);
   const size = shineSize(cardWidth, cardHeight, isMult);
   band.style.width = `${size.width}px`;
   band.style.height = `${size.height}px`;
   const delay = isMult ? MULT_SHINE_DELAY : SHINE_DELAY;
   const duration = isMult ? MULT_SHINE_MS : SHINE_MS;
-  band.getAnimations().forEach((animation) => animation.cancel());
   const shine = band.animate(
     [
       { transform: shineTransform(cardWidth, cardHeight, 0, isMult) },
@@ -191,17 +200,13 @@ export function playTicketDraw(
     ],
     { duration, delay, easing: isMult ? "linear" : EASE_IN_OUT, fill: "both" },
   );
-  void shine.finished.then(
-    () => card.hideShine(),
-    () => card.hideShine(),
-  );
+  void shine.finished.then(settle, settle);
 
   if (!isMult) return;
   const sparks = card.sparkles();
   sparks.forEach((spark, index) => {
     const left = SPARKLE_LEFT[index] ?? 50;
     spark.style.left = `${left}%`;
-    spark.getAnimations().forEach((animation) => animation.cancel());
     // Peaks stagger across the 600ms multiplier shine (drawPhase sparkle windows).
     const progress = [0.28, 0.55, 0.85][index] ?? 0.5;
     const peakAt = delay + progress * duration;

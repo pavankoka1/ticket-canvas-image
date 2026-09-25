@@ -89,6 +89,14 @@ type CellBadge = {
   label: MultiplierLabelNode | null;
 };
 
+function ticketContentKey(ticket: Ticket): string {
+  const mult = Object.keys(ticket.multipliers)
+    .sort((a, b) => Number(a) - Number(b))
+    .map((k) => `${k}:${ticket.multipliers[Number(k)]}`)
+    .join(",");
+  return `${ticket.no}\0${ticket.win}\0${ticket.disabled ? 1 : 0}\0${ticket.hits.join(",")}\0${ticket.balls.join(",")}\0${mult}`;
+}
+
 /**
  * Fortunamania-aligned pooled ticket.
  * DOM + CSS identical to atlas snapshot source, including dab/multiplier/win.
@@ -106,6 +114,22 @@ export class TicketCard {
   private shineHost: HTMLElement | null = null;
   private shineBandEl: HTMLElement | null = null;
   private sparkleEls: HTMLElement[] | null = null;
+  /**
+   * Non-zero while appear / draw / FLIP WAAPI is running. hide() and
+   * cancelMotion() only call getAnimations when this is set — the scroll
+   * eviction path must not force a document-wide style flush for static cards.
+   */
+  private motionGen = 0;
+  private boundId: string | null = null;
+  private contentKey = "";
+  private slotX = Number.NaN;
+  private slotY = Number.NaN;
+  private shown = false;
+  /** Per-cell `${hit}:${mult}:${layoutKey}` — skip badge style writes when unchanged. */
+  private readonly cellBadgeKey: string[] = Array.from(
+    { length: BALLS_PER_TICKET },
+    () => "",
+  );
 
   constructor() {
     const parts = createTicketDom();
@@ -135,6 +159,8 @@ export class TicketCard {
     const key = `${layout.metrics.id}|${cardWidth}|${layout.cardHeight}|${model.cellW}x${model.cellH}`;
     if (!force && this.layoutKey === key) return;
     this.layoutKey = key;
+    // Layout change invalidates badge geometry keys so the next bind re-places.
+    this.cellBadgeKey.fill("");
 
     applyTicketCellLayout(this.dom, this.cellEls, model);
   }
@@ -168,6 +194,10 @@ export class TicketCard {
   }
 
   private applyCellBadge(i: number, hit: boolean, multiplier: number): void {
+    const key = `${hit ? 1 : 0}:${multiplier}:${this.layoutKey ?? ""}`;
+    if (this.cellBadgeKey[i] === key) return;
+    this.cellBadgeKey[i] = key;
+
     const existing = this.badges[i];
     if (!hit) {
       if (existing) existing.host.style.display = "none";
@@ -193,8 +223,22 @@ export class TicketCard {
     }
   }
 
+  /**
+   * True when this pool card already shows `ticket` at the snapped slot.
+   * DomPool skips bind for unchanged band members.
+   */
+  shows(ticket: Ticket, x: number, y: number): boolean {
+    if (!this.shown || this.boundId !== ticket.id) return false;
+    if (this.contentKey !== ticketContentKey(ticket)) return false;
+    const { x: sx, y: sy } = snapSlot(x, y);
+    return sx === this.slotX && sy === this.slotY;
+  }
+
   bind(ticket: Ticket, x?: number, y?: number): void {
     this.applyCardWidth(getActiveLayout().cardWidth);
+    this.boundId = ticket.id;
+    this.contentKey = ticketContentKey(ticket);
+
     if (this.idText.data !== ticket.no) this.idText.data = ticket.no;
     // Win amount shows only in the win state (mirrors canvas paintHeaderText).
     const winStr = isWinTicket(ticket) ? ticket.win : "";
@@ -222,9 +266,16 @@ export class TicketCard {
 
     if (x !== undefined && y !== undefined) {
       const { x: sx, y: sy } = snapSlot(x, y);
-      this.dom.style.transform = `translate3d(${sx}px, ${sy}px, 0)`;
+      if (sx !== this.slotX || sy !== this.slotY) {
+        this.slotX = sx;
+        this.slotY = sy;
+        this.dom.style.transform = `translate3d(${sx}px, ${sy}px, 0)`;
+      }
     }
-    this.dom.style.visibility = "visible";
+    if (!this.shown) {
+      this.shown = true;
+      this.dom.style.visibility = "visible";
+    }
   }
 
   badgeHostAt(cell: number): HTMLElement | null {
@@ -233,6 +284,29 @@ export class TicketCard {
 
   badgeLabelAt(cell: number): HTMLElement | null {
     return this.badges[cell]?.label?.dom ?? null;
+  }
+
+  /**
+   * Mark that WAAPI is about to run on this card. Pass the returned token to
+   * endMotion when that gesture finishes (or is superseded by a newer begin).
+   */
+  beginMotion(): number {
+    this.motionGen += 1;
+    return this.motionGen;
+  }
+
+  endMotion(token: number): void {
+    if (token === this.motionGen) this.motionGen = 0;
+  }
+
+  /**
+   * Cancel running WAAPI only if this card was marked as animating.
+   * No-op for the common scroll-eviction case (static card leaving the band).
+   */
+  cancelMotion(): void {
+    if (this.motionGen === 0) return;
+    this.dom.getAnimations({ subtree: true }).forEach((animation) => animation.cancel());
+    this.motionGen = 0;
   }
 
   /** Shine band, parked off the card until the draw gesture starts it. */
@@ -256,10 +330,10 @@ export class TicketCard {
     return this.shineBandEl;
   }
 
+  /** Park the shine layer. Does not call getAnimations — cancel via cancelMotion. */
   hideShine(): void {
     if (!this.shineHost || !this.shineBandEl) return;
     this.shineHost.style.display = "none";
-    this.shineBandEl.getAnimations().forEach((animation) => animation.cancel());
     this.shineBandEl.style.removeProperty("transform");
   }
 
@@ -285,7 +359,7 @@ export class TicketCard {
   }
 
   hide(): void {
-    this.dom.getAnimations({ subtree: true }).forEach((animation) => animation.cancel());
+    this.cancelMotion();
     this.hideShine();
     this.dom.classList.remove("ticketCard_appear");
     this.dom.style.visibility = "hidden";
@@ -293,6 +367,12 @@ export class TicketCard {
     this.dom.style.removeProperty("opacity");
     this.dom.style.removeProperty("translate");
     this.dom.style.removeProperty("scale");
+    this.boundId = null;
+    this.contentKey = "";
+    this.slotX = Number.NaN;
+    this.slotY = Number.NaN;
+    this.shown = false;
+    this.cellBadgeKey.fill("");
   }
 }
 

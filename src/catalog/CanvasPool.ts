@@ -21,6 +21,14 @@ import {
 import { BALLS_PER_TICKET, canvasTileTickets } from "./layout";
 import { isWinTicket, type Ticket, type TicketSlot } from "./tickets";
 
+/** Prefer a cooperative yield over a flat setTimeout(0) floor. */
+function yieldToMain(): Promise<void> {
+  const sched = (globalThis as { scheduler?: { yield?: () => Promise<void> } })
+    .scheduler;
+  if (sched?.yield) return sched.yield();
+  return new Promise((r) => setTimeout(r, 0));
+}
+
 function sameIds(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   if (a.size !== b.size) return false;
   for (const id of a) if (!b.has(id)) return false;
@@ -37,6 +45,20 @@ type Tile = {
   minY: number;
   cssH: number;
   dirty: boolean;
+  /**
+   * Device-pixel snap from the last full paintTile. Skip paints reuse this so
+   * they never resize the buffer (canvas.width/height assignment clears it).
+   */
+  snap: {
+    x0: number;
+    y0: number;
+    hostTop: number;
+    screenLeft: number;
+    dpr: number;
+    minY: number;
+    cardWidth: number;
+    cardHeight: number;
+  } | null;
 };
 
 /**
@@ -53,6 +75,17 @@ export class CanvasPool {
   private readonly host: HTMLElement;
   private paintGen = 0;
   private paused = false;
+  /**
+   * Scrollport geometry cached at mount / resize / settle. Scroll paints use
+   * arithmetic only — never getBoundingClientRect (forced reflow).
+   * screenTop = containerTop - scrollTop + hostOffsetTop + tileMinY
+   */
+  private containerTop = 0;
+  private containerLeft = 0;
+  private hostOffsetTop = 0;
+  private hostOffsetLeft = 0;
+  private scrollTop = 0;
+  private scrollLeft = 0;
 
   constructor(host: HTMLElement) {
     this.host = host;
@@ -62,6 +95,27 @@ export class CanvasPool {
 
   mount(): void {
     this.ready = true;
+  }
+
+  /**
+   * Measure scrollport + host offsets once. Call at mount and on resize/settle
+   * — not on every scroll tick.
+   */
+  measureViewport(container: HTMLElement): void {
+    const cRect = container.getBoundingClientRect();
+    const hRect = this.host.getBoundingClientRect();
+    this.containerTop = cRect.top;
+    this.containerLeft = cRect.left;
+    this.hostOffsetTop = hRect.top - cRect.top + container.scrollTop;
+    this.hostOffsetLeft = hRect.left - cRect.left + container.scrollLeft;
+    this.scrollTop = container.scrollTop;
+    this.scrollLeft = container.scrollLeft;
+  }
+
+  /** Update scroll offset from the scroll event (no DOM geometry reads). */
+  setScroll(scrollTop: number, scrollLeft = 0): void {
+    this.scrollTop = scrollTop;
+    this.scrollLeft = scrollLeft;
   }
 
   /**
@@ -96,6 +150,14 @@ export class CanvasPool {
   /**
    * Ensure tiles cover every slot and paint dirty ones.
    * Call when the ticket list / layout changes — not on every scroll.
+   *
+   * Adding tickets only ever changes the last (short) row's x offsets
+   * (`buildSlots`'s centering) and appends new indices; every earlier slot
+   * keeps the same id/x/y. So instead of blanket-dirtying every tile on every
+   * add (an O(whole catalog) repaint for a "+1"), we diff the previous
+   * slots/skip set per tile and only dirty the ones whose painted content —
+   * id, position, or skip (DOM-band) membership — actually changed.
+   * `syncTiles()` still dirties a tile whose own range/geometry moved.
    */
   setCatalog(
     slots: readonly TicketSlot[],
@@ -103,31 +165,55 @@ export class CanvasPool {
     skipIds: ReadonlySet<string> = this.skipIds,
   ): void {
     if (!this.ready) return;
+    const prevSlots = this.slots;
+    const prevSkipIds = this.skipIds;
     this.slots = slots.slice();
     this.ticketsById = ticketsById;
     this.skipIds = new Set(skipIds);
     this.syncTiles();
-    for (const tile of this.tiles) tile.dirty = true;
+    this.markContentDirty(prevSlots, prevSkipIds);
     this.blankTiles();
     void this.paintDirtyTiles();
   }
 
-  /** Live DOM band changed. Repaint so those slots are empty, or filled again. */
-  setSkip(skipIds: ReadonlySet<string>): void {
-    if (sameIds(this.skipIds, skipIds)) return;
-    const prev = this.skipIds;
-    this.skipIds = new Set(skipIds);
+  /** Dirty a tile only if a slot it covers changed id, position, or skip state. */
+  private markContentDirty(
+    prevSlots: readonly TicketSlot[],
+    prevSkipIds: ReadonlySet<string>,
+  ): void {
     for (const tile of this.tiles) {
+      if (tile.dirty) continue;
       for (let i = tile.start; i < tile.end; i++) {
-        const id = this.slots[i]?.id;
-        if (!id) continue;
-        if (prev.has(id) !== this.skipIds.has(id)) {
+        const next = this.slots[i];
+        if (!next) continue;
+        const prev = prevSlots[i];
+        if (!prev || prev.id !== next.id || prev.x !== next.x || prev.y !== next.y) {
+          tile.dirty = true;
+          break;
+        }
+        if (prevSkipIds.has(next.id) !== this.skipIds.has(next.id)) {
           tile.dirty = true;
           break;
         }
       }
     }
-    this.paintNow();
+  }
+
+  /** Live DOM band changed. Clear/fill only the slots that flipped — not the tile. */
+  setSkip(skipIds: ReadonlySet<string>): void {
+    if (sameIds(this.skipIds, skipIds)) return;
+    const prev = this.skipIds;
+    this.skipIds = new Set(skipIds);
+    for (const tile of this.tiles) {
+      const changed: number[] = [];
+      for (let i = tile.start; i < tile.end; i++) {
+        const id = this.slots[i]?.id;
+        if (!id) continue;
+        if (prev.has(id) !== this.skipIds.has(id)) changed.push(i);
+      }
+      if (changed.length === 0) continue;
+      this.paintSkipSlots(tile, changed);
+    }
   }
 
   /** Paint every dirty tile before the next frame. Used when the DOM band flips. */
@@ -199,7 +285,7 @@ export class CanvasPool {
         const ctx = canvas.getContext("2d");
         if (!ctx) continue;
         this.host.appendChild(canvas);
-        tile = { canvas, ctx, start, end, minY, cssH, dirty: true };
+        tile = { canvas, ctx, start, end, minY, cssH, dirty: true, snap: null };
         this.tiles[i] = tile;
       }
 
@@ -209,14 +295,19 @@ export class CanvasPool {
       tile.end = end;
       tile.minY = minY;
       tile.cssH = cssH;
-      if (rangeChanged || geomChanged) tile.dirty = true;
+      if (rangeChanged || geomChanged) {
+        tile.dirty = true;
+        tile.snap = null;
+      }
 
       tile.canvas.style.transform = `translate3d(0, ${minY}px, 0)`;
     }
   }
 
+  /** Blank only dirty tiles so a stale frame never shows while they await paint. */
   private blankTiles(): void {
     for (const tile of this.tiles) {
+      if (!tile.dirty) continue;
       tile.ctx.setTransform(1, 0, 0, 1, 0, 0);
       tile.ctx.clearRect(0, 0, tile.canvas.width, tile.canvas.height);
     }
@@ -232,7 +323,7 @@ export class CanvasPool {
       this.paintTile(tile);
       tile.dirty = false;
       // Yield between tiles so adding hundreds doesn't freeze the main thread.
-      await new Promise<void>((r) => setTimeout(r, 0));
+      await yieldToMain();
     }
   }
 
@@ -240,17 +331,21 @@ export class CanvasPool {
     const c = tile.canvas;
     const ctx = tile.ctx;
     const layout = getActiveLayout();
-    const { cardWidth } = layout;
+    const { cardWidth, cardHeight } = layout;
     const cssW = contentWidth(layout);
     const dpr = activeDpr();
     // Size the buffer to the device pixels this tile actually covers.
     // round(css * dpr) and that span disagree when the tile top is fractional,
     // and the browser then scales the bitmap. A tall tile turns that into a
     // visible multiplier shift. Compare never hits it: its canvas is the card.
+    // Host screen position from cached scrollport math — no getBoundingClientRect.
     const minY = Math.round(tile.minY * dpr) / dpr;
-    const parent = this.host.getBoundingClientRect();
-    const screenTop = parent.top + minY;
-    const screenLeft = parent.left;
+    const hostTop =
+      this.containerTop - this.scrollTop + this.hostOffsetTop;
+    const hostLeft =
+      this.containerLeft - this.scrollLeft + this.hostOffsetLeft;
+    const screenTop = hostTop + minY;
+    const screenLeft = hostLeft;
     const y0 = Math.round(screenTop * dpr);
     const x0 = Math.round(screenLeft * dpr);
     const bw = Math.max(1, Math.round((screenLeft + cssW) * dpr) - x0);
@@ -268,6 +363,17 @@ export class CanvasPool {
     ctx.imageSmoothingEnabled = false;
     ctx.clearRect(0, 0, bw, bh);
 
+    tile.snap = {
+      x0,
+      y0,
+      hostTop,
+      screenLeft,
+      dpr,
+      minY,
+      cardWidth,
+      cardHeight,
+    };
+
     const boxes = catalogCellBoxes(dpr);
 
     for (let i = tile.start; i < tile.end; i++) {
@@ -277,7 +383,41 @@ export class CanvasPool {
       const sx = Math.round(slot.x * dpr) / dpr;
       const sy = Math.round(slot.y * dpr) / dpr;
       const originX = Math.round((screenLeft + sx) * dpr) - x0;
-      const originY = Math.round((parent.top + sy) * dpr) - y0;
+      const originY = Math.round((hostTop + sy) * dpr) - y0;
+      paintCatalogTicket(ctx, ticket, originX, originY, cardWidth, dpr, boxes);
+    }
+  }
+
+  /**
+   * Skip-band update: clear/redraw only the flipped tickets in an existing
+   * buffer. Never assigns canvas.width/height (that clears the whole tile).
+   */
+  private paintSkipSlots(tile: Tile, indices: readonly number[]): void {
+    if (!tile.snap || tile.canvas.width === 0) {
+      this.paintTile(tile);
+      tile.dirty = false;
+      return;
+    }
+    const { x0, y0, hostTop, screenLeft, dpr, cardWidth, cardHeight } = tile.snap;
+    const ctx = tile.ctx;
+    const boxes = catalogCellBoxes(dpr);
+    const dw = Math.max(1, Math.round(cardWidth * dpr));
+    const dh = Math.max(1, Math.round(cardHeight * dpr));
+
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+
+    for (const i of indices) {
+      const slot = this.slots[i];
+      if (!slot) continue;
+      const sx = Math.round(slot.x * dpr) / dpr;
+      const sy = Math.round(slot.y * dpr) / dpr;
+      const originX = Math.round((screenLeft + sx) * dpr) - x0;
+      const originY = Math.round((hostTop + sy) * dpr) - y0;
+      ctx.clearRect(originX, originY, dw, dh);
+      if (this.skipIds.has(slot.id)) continue;
+      const ticket = this.ticketsById.get(slot.id);
+      if (!ticket) continue;
       paintCatalogTicket(ctx, ticket, originX, originY, cardWidth, dpr, boxes);
     }
   }
