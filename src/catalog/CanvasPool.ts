@@ -75,17 +75,6 @@ export class CanvasPool {
   private readonly host: HTMLElement;
   private paintGen = 0;
   private paused = false;
-  /**
-   * Scrollport geometry cached at mount / resize / settle. Scroll paints use
-   * arithmetic only — never getBoundingClientRect (forced reflow).
-   * screenTop = containerTop - scrollTop + hostOffsetTop + tileMinY
-   */
-  private containerTop = 0;
-  private containerLeft = 0;
-  private hostOffsetTop = 0;
-  private hostOffsetLeft = 0;
-  private scrollTop = 0;
-  private scrollLeft = 0;
 
   constructor(host: HTMLElement) {
     this.host = host;
@@ -95,27 +84,6 @@ export class CanvasPool {
 
   mount(): void {
     this.ready = true;
-  }
-
-  /**
-   * Measure scrollport + host offsets once. Call at mount and on resize/settle
-   * — not on every scroll tick.
-   */
-  measureViewport(container: HTMLElement): void {
-    const cRect = container.getBoundingClientRect();
-    const hRect = this.host.getBoundingClientRect();
-    this.containerTop = cRect.top;
-    this.containerLeft = cRect.left;
-    this.hostOffsetTop = hRect.top - cRect.top + container.scrollTop;
-    this.hostOffsetLeft = hRect.left - cRect.left + container.scrollLeft;
-    this.scrollTop = container.scrollTop;
-    this.scrollLeft = container.scrollLeft;
-  }
-
-  /** Update scroll offset from the scroll event (no DOM geometry reads). */
-  setScroll(scrollTop: number, scrollLeft = 0): void {
-    this.scrollTop = scrollTop;
-    this.scrollLeft = scrollLeft;
   }
 
   /**
@@ -199,21 +167,22 @@ export class CanvasPool {
     }
   }
 
-  /** Live DOM band changed. Clear/fill only the slots that flipped — not the tile. */
+  /** Live DOM band changed — repaint affected tiles (full paintTile, scroll-safe). */
   setSkip(skipIds: ReadonlySet<string>): void {
     if (sameIds(this.skipIds, skipIds)) return;
     const prev = this.skipIds;
     this.skipIds = new Set(skipIds);
     for (const tile of this.tiles) {
-      const changed: number[] = [];
       for (let i = tile.start; i < tile.end; i++) {
         const id = this.slots[i]?.id;
         if (!id) continue;
-        if (prev.has(id) !== this.skipIds.has(id)) changed.push(i);
+        if (prev.has(id) !== this.skipIds.has(id)) {
+          tile.dirty = true;
+          break;
+        }
       }
-      if (changed.length === 0) continue;
-      this.paintSkipSlots(tile, changed);
     }
+    this.paintNow();
   }
 
   /** Paint every dirty tile before the next frame. Used when the DOM band flips. */
@@ -338,14 +307,10 @@ export class CanvasPool {
     // round(css * dpr) and that span disagree when the tile top is fractional,
     // and the browser then scales the bitmap. A tall tile turns that into a
     // visible multiplier shift. Compare never hits it: its canvas is the card.
-    // Host screen position from cached scrollport math — no getBoundingClientRect.
     const minY = Math.round(tile.minY * dpr) / dpr;
-    const hostTop =
-      this.containerTop - this.scrollTop + this.hostOffsetTop;
-    const hostLeft =
-      this.containerLeft - this.scrollLeft + this.hostOffsetLeft;
-    const screenTop = hostTop + minY;
-    const screenLeft = hostLeft;
+    const parent = this.host.getBoundingClientRect();
+    const screenTop = parent.top + minY;
+    const screenLeft = parent.left;
     const y0 = Math.round(screenTop * dpr);
     const x0 = Math.round(screenLeft * dpr);
     const bw = Math.max(1, Math.round((screenLeft + cssW) * dpr) - x0);
@@ -366,7 +331,7 @@ export class CanvasPool {
     tile.snap = {
       x0,
       y0,
-      hostTop,
+      hostTop: parent.top,
       screenLeft,
       dpr,
       minY,
@@ -382,42 +347,9 @@ export class CanvasPool {
       if (!ticket || this.skipIds.has(slot.id)) continue;
       const sx = Math.round(slot.x * dpr) / dpr;
       const sy = Math.round(slot.y * dpr) / dpr;
-      const originX = Math.round((screenLeft + sx) * dpr) - x0;
-      const originY = Math.round((hostTop + sy) * dpr) - y0;
-      paintCatalogTicket(ctx, ticket, originX, originY, cardWidth, dpr, boxes);
-    }
-  }
-
-  /**
-   * Skip-band update: clear/redraw only the flipped tickets in an existing
-   * buffer. Never assigns canvas.width/height (that clears the whole tile).
-   */
-  private paintSkipSlots(tile: Tile, indices: readonly number[]): void {
-    if (!tile.snap || tile.canvas.width === 0) {
-      this.paintTile(tile);
-      tile.dirty = false;
-      return;
-    }
-    const { x0, y0, hostTop, screenLeft, dpr, cardWidth, cardHeight } = tile.snap;
-    const ctx = tile.ctx;
-    const boxes = catalogCellBoxes(dpr);
-    const dw = Math.max(1, Math.round(cardWidth * dpr));
-    const dh = Math.max(1, Math.round(cardHeight * dpr));
-
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.imageSmoothingEnabled = false;
-
-    for (const i of indices) {
-      const slot = this.slots[i];
-      if (!slot) continue;
-      const sx = Math.round(slot.x * dpr) / dpr;
-      const sy = Math.round(slot.y * dpr) / dpr;
-      const originX = Math.round((screenLeft + sx) * dpr) - x0;
-      const originY = Math.round((hostTop + sy) * dpr) - y0;
-      ctx.clearRect(originX, originY, dw, dh);
-      if (this.skipIds.has(slot.id)) continue;
-      const ticket = this.ticketsById.get(slot.id);
-      if (!ticket) continue;
+      // Content-relative — does not depend on viewport scroll (tile scrolls with catalog).
+      const originX = Math.round(sx * dpr);
+      const originY = Math.round((sy - minY) * dpr);
       paintCatalogTicket(ctx, ticket, originX, originY, cardWidth, dpr, boxes);
     }
   }

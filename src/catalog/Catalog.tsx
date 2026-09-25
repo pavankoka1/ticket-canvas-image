@@ -39,7 +39,12 @@ import {
   resolveLiveCellBoxModel,
 } from "./cellAtlas";
 import { ticketChrome, warmCellBitmaps } from "./cellBitmaps";
-import { idDigitCount, warmAmounts, warmIdDigits } from "./headerGlyphs";
+import {
+  idDigitCount,
+  warmAmounts,
+  warmIdDigits,
+  warmTicketIds,
+} from "./headerGlyphs";
 import { DomPool } from "./DomPool";
 import { MAX_TICKETS, ROW_BUFFER, SCROLL_BAND_SETTLE_MS, domPoolSize } from "./layout";
 import {
@@ -180,7 +185,6 @@ export function Catalog() {
     const container = scrollRef.current;
     if (!container) return;
     clientHeightRef.current = container.clientHeight;
-    canvasPoolRef.current?.measureViewport(container);
   }, []);
 
   const bandForScroll = useCallback((scrollTop: number) => {
@@ -213,9 +217,6 @@ export function Catalog() {
     const canvas = canvasPoolRef.current;
     const container = scrollRef.current;
     if (!canvas?.isReady) return;
-    if (container) {
-      canvas.setScroll(container.scrollTop, container.scrollLeft);
-    }
     const ids = new Set(bandForScroll(container?.scrollTop ?? 0).dom.map((s) => s.id));
     canvas.setCatalog(slotsRef.current, ticketsByIdRef.current, ids);
     setTileCount(canvas.tileCount);
@@ -312,6 +313,8 @@ export function Catalog() {
       await ticketChrome(host, false, true);
       if (gen !== atlasGenRef.current) return;
       await warmIdDigits(host);
+      if (gen !== atlasGenRef.current) return;
+      await warmTicketIds(host, [...ticketsByIdRef.current.values()]);
       if (gen !== atlasGenRef.current) return;
       setIdReady(idDigitCount());
       const amounts = [
@@ -480,11 +483,8 @@ export function Catalog() {
 
     const resyncBand = () => {
       settleTimer = 0;
-      const scrollTop = container.scrollTop;
-      const scrollLeft = container.scrollLeft;
-      const { dom } = bandForScroll(scrollTop);
+      const { dom } = bandForScroll(container.scrollTop);
       const ids = new Set(dom.map((s) => s.id));
-      canvasPoolRef.current?.setScroll(scrollTop, scrollLeft);
       syncDom(dom);
       canvasPoolRef.current?.setSkip(ids);
     };
@@ -557,7 +557,10 @@ export function Catalog() {
     if (!host || tickets.length === 0) return;
     let cancelled = false;
     const amounts = [...new Set(tickets.map((t) => t.win).filter(Boolean))];
-    void warmAmounts(host, amounts).then(() => {
+    void Promise.all([
+      warmTicketIds(host, tickets),
+      warmAmounts(host, amounts),
+    ]).then(() => {
       if (cancelled) return;
       canvasPoolRef.current?.refresh();
       syncCanvas();
@@ -596,10 +599,12 @@ export function Catalog() {
     const host = atlasHostRef.current;
     if (host) {
       const amounts = [...new Set(tickets.map((ticket) => ticket.win).filter(Boolean))];
-      void warmAmounts(host, amounts).then(() => {
-        canvasPoolRef.current?.refresh();
-        syncCanvas();
-      });
+      void Promise.all([warmTicketIds(host, tickets), warmAmounts(host, amounts)]).then(
+        () => {
+          canvasPoolRef.current?.refresh();
+          syncCanvas();
+        },
+      );
     }
     if (shuffleTimerRef.current) window.clearTimeout(shuffleTimerRef.current);
     const delay = shuffleDelayMs(hits, tickets);

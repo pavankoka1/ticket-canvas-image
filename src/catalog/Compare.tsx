@@ -30,9 +30,9 @@ import {
 } from "./cellAtlas";
 import {
   getHeaderSpriteDataUrl,
+  headerEntriesForTickets as headerEntries,
   warmIdGlyphs,
   type GlyphColor,
-  type HeaderTextEntry,
 } from "./idDigitAtlas";
 import { headerSlice, ticketChrome, warmCellBitmaps } from "./cellBitmaps";
 import { catalogCellBoxes, paintCatalogTicket } from "./catalogPaint";
@@ -107,16 +107,6 @@ function buildFixtures(): { label: string; ticket: Ticket }[] {
       ticket: dabT,
     },
   ];
-}
-
-function headerEntries(tickets: readonly Ticket[]): HeaderTextEntry[] {
-  const out: HeaderTextEntry[] = [];
-  for (const t of tickets) {
-    const idColor: GlyphColor = isWinTicket(t) ? "idGold" : "idNormal";
-    out.push({ text: t.no, color: idColor });
-    if (isWinTicket(t) && t.win) out.push({ text: t.win, color: "win" });
-  }
-  return out;
 }
 
 type StackProps = {

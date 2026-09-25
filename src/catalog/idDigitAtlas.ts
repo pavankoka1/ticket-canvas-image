@@ -7,6 +7,7 @@ import { fontIdentity } from "./cellAtlas";
 import { applyTicketCssVars, type TicketMetrics } from "./ticketPresets";
 import { ensureTicketFont } from "./ticketFont";
 import { createTicketDom } from "./ticketCardElement";
+import { isWinTicket, type Ticket } from "./tickets";
 
 /**
  * Header text (ticket ID + win amount) as **full-header** SnapDOM sprites.
@@ -24,6 +25,20 @@ const SKIP_ID_IDB = true;
 export type GlyphColor = "idNormal" | "idGold" | "win";
 
 export type HeaderTextEntry = { text: string; color: GlyphColor };
+
+/** Ticket nos (and wins) to warm — same set /compare uses for header sprites. */
+export function headerEntriesForTickets(
+  tickets: readonly Ticket[],
+): HeaderTextEntry[] {
+  const out: HeaderTextEntry[] = [];
+  for (const t of tickets) {
+    if (t.disabled) continue;
+    const idColor: GlyphColor = isWinTicket(t) ? "idGold" : "idNormal";
+    out.push({ text: t.no, color: idColor });
+    if (isWinTicket(t) && t.win) out.push({ text: t.win, color: "win" });
+  }
+  return out;
+}
 
 type Rgb = { r: number; g: number; b: number };
 
