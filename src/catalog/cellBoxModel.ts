@@ -86,6 +86,7 @@ export function applyCellBoxCssVars(
   model: CellBoxModel,
   m: TicketMetrics,
 ): void {
+  el.style.setProperty("--ticket-card-width", `${model.cardWidth}px`);
   el.style.setProperty("--ticket-cell-width", `${model.cellW}px`);
   el.style.setProperty("--ticket-cell-height", `${model.cellH}px`);
   el.style.setProperty("--ticket-body-pad-x", `${model.padX}px`);

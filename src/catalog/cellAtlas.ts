@@ -20,7 +20,7 @@ import {
 } from "./cellBoxModel";
 import { normalizeBatch } from "./normalizeClient";
 import { applyTicketCssVars, type TicketMetrics } from "./ticketPresets";
-import { applyTicketCellLayout, createTicketDom } from "./ticketCardElement";
+import { createTicketDom } from "./ticketCardElement";
 import { ensureTicketFont } from "./ticketFont";
 
 export type { CellBox };
@@ -418,7 +418,6 @@ async function buildAtlas(
   ticket.root.style.visibility = "visible";
   ticket.root.style.filter = "none";
   ticket.root.style.boxShadow = "none";
-  applyTicketCellLayout(ticket.root, ticket.cellEls, model);
   ticket.idText.data = "0001";
   // Fill siblings so flex/margin layout matches a live 6-cell row.
   for (let i = 0; i < ticket.cellTexts.length; i++) {
@@ -543,7 +542,6 @@ async function buildAtlas(
     t.root.style.background = "#FFFFFF";
     t.root.style.boxShadow = "none";
     t.root.style.filter = "none";
-    applyTicketCellLayout(t.root, t.cellEls, model);
     for (let c = 0; c < t.cellTexts.length; c++) {
       t.cellTexts[c]!.data = String(c + 1);
     }

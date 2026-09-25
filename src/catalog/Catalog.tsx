@@ -231,6 +231,17 @@ export function Catalog() {
     if (host) host.style.visibility = "hidden";
   }, []);
 
+  /** Push the current live cell box model onto hosts that size pooled DOM cards. */
+  const syncCellBoxCssVarsOnHosts = useCallback(() => {
+    const model = getLiveCellBoxModel();
+    if (!model) return;
+    const metrics = getActiveLayout().metrics;
+    const app = cssHostRef.current;
+    if (app) applyCellBoxCssVars(app, model, metrics);
+    const atlas = atlasHostRef.current;
+    if (atlas) applyCellBoxCssVars(atlas, model, metrics);
+  }, []);
+
   const warmLayoutBitmaps = useCallback(async (
     host: HTMLElement,
     layout: ReturnType<typeof getActiveLayout>,
@@ -252,9 +263,10 @@ export function Catalog() {
     } finally {
       setActiveLayout(prev);
       if (prevModel) setLiveCellBoxModel(prevModel);
+      syncCellBoxCssVarsOnHosts();
       canvasPoolRef.current?.resume();
     }
-  }, []);
+  }, [syncCellBoxCssVarsOnHosts]);
 
   const scheduleLandscapePrewarm = useCallback(() => {
     const host = prewarmHostRef.current;
@@ -309,13 +321,20 @@ export function Catalog() {
       ];
       await warmAmounts(host, amounts);
       if (gen !== atlasGenRef.current) return;
+      syncCellBoxCssVarsOnHosts();
       canvasPoolRef.current?.refresh();
       syncCanvas();
       syncDom();
       revealCanvas();
       scheduleLandscapePrewarm();
     })();
-  }, [syncCanvas, syncDom, revealCanvas, scheduleLandscapePrewarm]);
+  }, [
+    syncCanvas,
+    syncDom,
+    revealCanvas,
+    scheduleLandscapePrewarm,
+    syncCellBoxCssVarsOnHosts,
+  ]);
 
   /**
    * Resize / orientation teardown. The canvas underlay is built for one exact

@@ -456,17 +456,18 @@ export function paintTicket(
     const byDev = Math.round((slot.y + box.y) * dpr);
 
     const mult = ticket.multipliers[k] ?? 0;
-    const isMult = ticket.hits.includes(k) && mult > 0;
+    const hit = ticket.hits.includes(k);
+    const isMult = hit && mult > 0;
 
-    // Multiplier disc covers the digit. Skip the number under it.
-    const bmp = useSprites && !isMult ? getCellBitmap(n) : undefined;
+    // Dab / multiplier cover the digit once the cell is hit.
+    const bmp = useSprites && !hit ? getCellBitmap(n) : undefined;
     if (bmp) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);
       ctx.drawImage(bmp, bxDev, byDev - tileYDev);
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     }
 
-    if (ticket.hits.includes(k)) {
+    if (hit) {
       const originX = Math.round(slot.x * dpr);
       const originY = slotYDev - tileYDev;
       const host = badgeHostDevice(box, metrics.dabSize, dpr);

@@ -115,7 +115,10 @@ export function playTicketDraw(
   cardWidth: number,
   cardHeight: number,
 ): void {
-  if (reduced()) return;
+  if (reduced()) {
+    card.clearCellDigit(cell);
+    return;
+  }
   const root = card.dom;
   const at = slotTranslate(root);
   const isMult = kind === "mult";
@@ -178,6 +181,7 @@ export function playTicketDraw(
   }
 
   const settle = () => {
+    card.clearCellDigit(cell);
     card.hideShine();
     card.endMotion(token);
   };

@@ -1,12 +1,11 @@
 import {
   activeDpr,
   applyBadgeChrome,
-  applyCellBoxCssVars,
   badgeHostDevice,
   getLiveCellBoxModel,
   resolveCellBoxModel,
   setLiveCellBoxModel,
-  type CellBoxModel,
+  snapCss,
 } from "./cellBoxModel";
 import { getActiveLayout } from "./catalogLayout";
 import { BALLS_PER_TICKET } from "./layout";
@@ -60,27 +59,6 @@ export function createTicketDom(): TicketDomParts {
 
   root.append(header, body);
   return { root, idText, winText, cellEls, cellTexts };
-}
-
-/** Apply (ticketWidth − 6) / 6 fixed cell boxes — same as atlas. */
-export function applyTicketCellLayout(
-  root: HTMLElement,
-  cellEls: HTMLElement[],
-  model: CellBoxModel,
-): void {
-  const layout = getActiveLayout();
-  root.style.width = `${model.cardWidth}px`;
-  root.style.height = `${layout.cardHeight}px`;
-  applyCellBoxCssVars(root, model, layout.metrics);
-
-  for (const cell of cellEls) {
-    cell.style.boxSizing = "border-box";
-    cell.style.width = `${model.cellW}px`;
-    cell.style.height = `${model.cellH}px`;
-    cell.style.flex = `0 0 ${model.cellW}px`;
-    // Keep CSS margin-left (separator gap) — do not zero margins.
-    cell.style.removeProperty("margin");
-  }
 }
 
 /** Per-cell dab/multiplier badge, built lazily like fortunamania. */
@@ -161,8 +139,6 @@ export class TicketCard {
     this.layoutKey = key;
     // Layout change invalidates badge geometry keys so the next bind re-places.
     this.cellBadgeKey.fill("");
-
-    applyTicketCellLayout(this.dom, this.cellEls, model);
   }
 
   private ensureBadge(i: number): CellBadge {
@@ -247,8 +223,12 @@ export class TicketCard {
     for (let i = 0; i < BALLS_PER_TICKET; i++) {
       const hit = ticket.hits.includes(i);
       const mult = ticket.multipliers[i] ?? 0;
-      // Multiplier covers the cell — no digit under badge (matches canvas).
-      const next = mult > 0 ? "" : String(ticket.balls[i] ?? "");
+      const ball = String(ticket.balls[i] ?? "");
+      // Multiplier clears immediately. Plain dab keeps the digit until draw
+      // settle() clears it after the pop animation (sticky once cleared).
+      let next = ball;
+      if (mult > 0) next = "";
+      else if (hit && this.cellTexts[i]!.data === "") next = "";
       if (this.cellTexts[i]!.data !== next) this.cellTexts[i]!.data = next;
       this.applyCellBadge(i, hit, mult);
     }
@@ -284,6 +264,12 @@ export class TicketCard {
 
   badgeLabelAt(cell: number): HTMLElement | null {
     return this.badges[cell]?.label?.dom ?? null;
+  }
+
+  /** Hide the ball digit after dab / multiplier draw motion finishes. */
+  clearCellDigit(cell: number): void {
+    const text = this.cellTexts[cell];
+    if (text && text.data !== "") text.data = "";
   }
 
   /**
@@ -379,10 +365,41 @@ export class TicketCard {
 /** Device-snapped slot origin. Same rounding the resting `translate3d` uses. */
 export function snapSlot(x: number, y: number): { x: number; y: number } {
   const dpr = activeDpr();
-  return {
-    x: Math.round(x * dpr) / dpr,
-    y: Math.round(y * dpr) / dpr,
-  };
+  return { x: snapCss(x, dpr), y: snapCss(y, dpr) };
+}
+
+let slotDriftLogged = false;
+
+/**
+ * One-shot fractional-DPR probe: compare snapped slot origin vs compositor paint.
+ * Log `[SLOTDRIFT]` on a Windows 150% machine before declaring placement fixed.
+ */
+export function probeSlotPlacementDrift(
+  card: HTMLElement,
+  scrollHost: HTMLElement,
+  slotX: number,
+  slotY: number,
+): void {
+  if (slotDriftLogged) return;
+  const dpr = window.devicePixelRatio || 1;
+  if (Math.abs(dpr - Math.round(dpr)) < 0.01) return;
+  slotDriftLogged = true;
+  const hostR = scrollHost.getBoundingClientRect();
+  const cardR = card.getBoundingClientRect();
+  const measuredX = cardR.left - hostR.left + scrollHost.scrollLeft;
+  const measuredY = cardR.top - hostR.top + scrollHost.scrollTop;
+  const { x: snappedX, y: snappedY } = snapSlot(slotX, slotY);
+  console.log("[SLOTDRIFT]", {
+    dpr,
+    rawX: slotX,
+    rawY: slotY,
+    snappedX,
+    snappedY,
+    measuredX,
+    measuredY,
+    deltaXDev: (measuredX - snappedX) * dpr,
+    deltaYDev: (measuredY - snappedY) * dpr,
+  });
 }
 
 export function attachTicketCard(card: TicketCard): TicketCard {

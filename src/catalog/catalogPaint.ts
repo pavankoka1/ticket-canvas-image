@@ -49,6 +49,7 @@ export function paintCatalogTicket(
     const x = originX + Math.round(cell.x * dpr);
     const y = originY + Math.round(cell.y * dpr);
     const mult = ticket.multipliers[i] ?? 0;
+    const hit = ticket.hits.includes(i);
     const badge = badgeHostDevice(cell, metrics.dabSize, dpr);
     const padX = (padCss: number) => originX + badge.x - Math.round(padCss * dpr);
     const padY = (padCss: number) => originY + badge.y - Math.round(padCss * dpr);
@@ -59,12 +60,14 @@ export function paintCatalogTicket(
       if (bmp) ctx.drawImage(bmp.canvas, padX(bmp.padCss), padY(bmp.padCss));
       continue;
     }
-    const ball = ticket.balls[i] ?? 0;
-    const number = ticket.disabled
-      ? (set.disabledNumbers[ball] ?? set.numbers[ball])
-      : set.numbers[ball];
-    if (number) ctx.drawImage(number, x, y);
-    if (ticket.hits.includes(i)) {
+    if (!hit) {
+      const ball = ticket.balls[i] ?? 0;
+      const number = ticket.disabled
+        ? (set.disabledNumbers[ball] ?? set.numbers[ball])
+        : set.numbers[ball];
+      if (number) ctx.drawImage(number, x, y);
+    }
+    if (hit) {
       const dab = ticket.disabled ? set.disabledDab : set.dab;
       ctx.drawImage(dab.canvas, padX(dab.padCss), padY(dab.padCss));
     }

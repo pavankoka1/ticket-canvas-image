@@ -1,3 +1,5 @@
+import { activeDpr, snapCss } from "./cellBoxModel";
+
 export type Ticket = {
   id: string;
   /** Ticket number shown in the header — plain 1-based index, NO zero-pad. */
@@ -214,6 +216,7 @@ export function buildSlots(
   rowGap: number,
 ): TicketSlot[] {
   const count = tickets.length;
+  const dpr = activeDpr();
   const fullRow = columns * cardW + Math.max(0, columns - 1) * colGap;
   const rows = Math.ceil(count / columns);
   return tickets.map((t, index) => {
@@ -224,11 +227,13 @@ export function buildSlots(
     // Flex `justify-content: center`: a short row sits in the middle,
     // so the next ticket shifts the ones already in that row to the left.
     const offset = (fullRow - rowWidth) / 2;
+    const x = offset + col * (cardW + colGap);
+    const y = row * (cardH + rowGap);
     return {
       id: t.id,
       index,
-      x: offset + col * (cardW + colGap),
-      y: row * (cardH + rowGap),
+      x: snapCss(x, dpr),
+      y: snapCss(y, dpr),
     };
   });
 }

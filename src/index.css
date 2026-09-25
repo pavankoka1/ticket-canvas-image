@@ -172,6 +172,7 @@ button:disabled {
   display: flex;
   top: 0;
   left: 0;
+  width: var(--ticket-card-width, 201px);
   height: var(--ticket-card-height, 43px);
   font-family: MB-Onest, Onest, system-ui, sans-serif;
   border-radius: var(--ticket-radius, 5px);
