@@ -38,12 +38,13 @@ import {
   getTicketGeometry,
   resolveLiveCellBoxModel,
 } from "./cellAtlas";
-import { ticketChrome, warmCellBitmaps } from "./cellBitmaps";
 import {
-  ticketIdWarmProgress,
-  warmAmounts,
-  warmIdDigits,
-} from "./headerGlyphs";
+  cancelCatalogAtlasWarm,
+  warmCatalogAtlasAmounts,
+  warmCatalogAtlasPhase1,
+  warmCatalogAtlasPhase2,
+} from "./catalogAtlasPack";
+import { ticketIdWarmProgress } from "./headerGlyphs";
 import { DomPool } from "./DomPool";
 import { MAX_TICKETS, ROW_BUFFER, SCROLL_BAND_SETTLE_MS, domPoolSize } from "./layout";
 import {
@@ -255,12 +256,8 @@ export function Catalog() {
     applyTicketCssVars(host, layout.metrics);
     applyCellBoxCssVars(host, model, layout.metrics);
     try {
-      await Promise.all([warmCellBitmaps(host), warmIdDigits(host)]);
-      await Promise.all([
-        ticketChrome(host, false),
-        ticketChrome(host, true),
-        ticketChrome(host, false, true),
-      ]);
+      await warmCatalogAtlasPhase1(host);
+      await warmCatalogAtlasPhase2(host);
     } finally {
       setActiveLayout(prev);
       if (prevModel) setLiveCellBoxModel(prevModel);
@@ -305,29 +302,36 @@ export function Catalog() {
     applyCellBoxCssVars(host, model, layoutNow.metrics);
     const gen = ++atlasGenRef.current;
     void (async () => {
-      await Promise.all([warmCellBitmaps(host), warmIdDigits(host)]);
+      await warmCatalogAtlasPhase1(host);
       if (gen !== atlasGenRef.current) return;
       setAtlasReady(65);
-      await Promise.all([
-        ticketChrome(host, false),
-        ticketChrome(host, true),
-        ticketChrome(host, false, true),
-      ]);
-      if (gen !== atlasGenRef.current) return;
       setIdWarm(ticketIdWarmProgress([]));
+      syncCellBoxCssVarsOnHosts();
+      syncCanvas();
+      syncDom();
+      revealCanvas();
+      scheduleLandscapePrewarm();
+
+      const runPhase2 = () => {
+        void warmCatalogAtlasPhase2(host).then(() => {
+          if (gen !== atlasGenRef.current) return;
+          canvasPoolRef.current?.refresh();
+          syncCanvas();
+        });
+      };
+      if (window.requestIdleCallback) window.requestIdleCallback(runPhase2);
+      else window.setTimeout(runPhase2, 1);
+
       const amounts = [
         ...new Set(
           [...ticketsByIdRef.current.values()].map((t) => t.win).filter(Boolean),
         ),
       ];
-      await warmAmounts(host, amounts);
-      if (gen !== atlasGenRef.current) return;
-      syncCellBoxCssVarsOnHosts();
-      canvasPoolRef.current?.refresh();
-      syncCanvas();
-      syncDom();
-      revealCanvas();
-      scheduleLandscapePrewarm();
+      void warmCatalogAtlasAmounts(host, amounts).then(() => {
+        if (gen !== atlasGenRef.current) return;
+        canvasPoolRef.current?.refresh();
+        syncCanvas();
+      });
     })();
   }, [
     syncCanvas,
@@ -352,6 +356,7 @@ export function Catalog() {
     setIdWarm({ ready: 0, total: 0 });
     atlasGenRef.current += 1; // invalidate the warm-progress generation
     cancelCellWarm(); // abandon the half-built old-size atlas (cache kept)
+    cancelCatalogAtlasWarm();
     if (settleTimerRef.current) window.clearTimeout(settleTimerRef.current);
     settleTimerRef.current = window.setTimeout(() => {
       settleTimerRef.current = 0;
@@ -555,7 +560,7 @@ export function Catalog() {
     if (!host || tickets.length === 0) return;
     let cancelled = false;
     const amounts = [...new Set(tickets.map((t) => t.win).filter(Boolean))];
-    void warmAmounts(host, amounts).then(() => {
+    void warmCatalogAtlasAmounts(host, amounts).then(() => {
       if (cancelled) return;
       canvasPoolRef.current?.refresh();
       syncCanvas();
@@ -594,7 +599,7 @@ export function Catalog() {
     const host = atlasHostRef.current;
     if (host) {
       const amounts = [...new Set(tickets.map((ticket) => ticket.win).filter(Boolean))];
-      void warmAmounts(host, amounts).then(() => {
+      void warmCatalogAtlasAmounts(host, amounts).then(() => {
         canvasPoolRef.current?.refresh();
         syncCanvas();
       });

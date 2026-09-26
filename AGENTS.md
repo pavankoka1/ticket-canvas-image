@@ -29,10 +29,8 @@ Catalog shows live DOM for the visible rows and canvas for everything scrolled a
 
 Sprites come from SnapDOM of real ticket DOM, keyed by layout / font / dpr, RAM + IndexedDB (`atlasStore.ts`):
 
-- Ball numbers → `cellAtlas.ts`
-- Header id and win amount → `idDigitAtlas.ts` (whole-string sprites). `fillText` is only the warm-up fallback inside `paintHeaderText`.
-- Multiplier badges → `badgeAtlas.ts`. Disc and plain dab share one device-pixel contain rect. The N× label is a SnapDOM sprite shifted onto the live label.
-- Live DOM cards → `TicketCard` in `ticketCardElement.ts`
+- **Catalog** — one layout pack (`catalogAtlasPack.ts`): cells, digits, chrome, amounts as PNG sections; phased decode before `revealCanvas`. Paint: `cellBitmaps.ts` + `headerGlyphs.ts` (per-digit ids, whole-string win amounts).
+- **Compare** — `cellAtlas.ts`, `idDigitAtlas.ts`, `badgeAtlas.ts` (unchanged). Live DOM cards → `TicketCard` in `ticketCardElement.ts`
 
 ## DPR
 

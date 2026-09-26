@@ -48,14 +48,31 @@ type StoredDigitMeta = {
   entries: { color: IdColor; digit: string }[];
 };
 
-function styleKey(): string {
+export function headerStyleKey(): string {
   const layout = getActiveLayout();
   const m = layout.metrics;
   return `${m.id}|${layout.cardWidth}|${activeDpr()}|meta=${m.metaFontSize}`;
 }
 
-function digitPackKey(): string {
+function styleKey(): string {
+  return headerStyleKey();
+}
+
+/** Fixed digit order for catalog atlas pack (10 × 3 colors). */
+export function catalogDigitPackEntries(): { color: IdColor; digit: string }[] {
+  const entries: { color: IdColor; digit: string }[] = [];
+  for (const face of ID_FACES) {
+    for (const ch of DIGITS) entries.push({ color: face.color, digit: ch });
+  }
+  return entries;
+}
+
+export function idDigitPackIdbKey(): string {
   return `${TICKET_ID_DIGIT_PACK}|${styleKey()}`;
+}
+
+function digitPackKey(): string {
+  return idDigitPackIdbKey();
 }
 
 function digitCacheKey(color: IdColor, ch: string): string {
@@ -115,6 +132,86 @@ function parseDigitCacheKey(
     return { color: face.color, digit };
   }
   return null;
+}
+
+export function resetDigitHydration(): void {
+  hydratedDigitLayoutKey = "";
+  digits.clear();
+  digitExportBlobs.clear();
+}
+
+export function installDigitsFromPack(
+  entries: readonly { color: IdColor; digit: string }[],
+  canvases: readonly (HTMLCanvasElement | null)[],
+  blobs: readonly Blob[],
+): void {
+  const layoutKey = styleKey();
+  hydratedDigitLayoutKey = layoutKey;
+  digits.clear();
+  digitExportBlobs.clear();
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]!;
+    const canvas = canvases[i];
+    const blob = blobs[i];
+    if (!canvas || !blob) continue;
+    const cacheId = `${layoutKey}|${entry.color}|${entry.digit}`;
+    digits.set(cacheId, { canvas });
+    digitExportBlobs.set(cacheId, blob);
+  }
+}
+
+export async function captureDigitPackPngs(
+  host: HTMLElement,
+): Promise<{ entries: { color: IdColor; digit: string }[]; blobs: Blob[] }> {
+  await captureMissingDigits(host);
+  const layoutKey = styleKey();
+  const entries = catalogDigitPackEntries();
+  const blobs: Blob[] = [];
+  for (const entry of entries) {
+    const cacheId = `${layoutKey}|${entry.color}|${entry.digit}`;
+    const blob = digitExportBlobs.get(cacheId);
+    if (!blob) throw new Error("digit pack capture incomplete");
+    blobs.push(blob);
+  }
+  return { entries, blobs };
+}
+
+export function amountPackSection(): { entries: string[]; blobs: Blob[] } {
+  const layoutKey = styleKey();
+  const prefix = `${layoutKey}|win|`;
+  const entries: string[] = [];
+  const blobs: Blob[] = [];
+  for (const [cacheId, canvas] of amounts) {
+    if (!cacheId.startsWith(prefix)) continue;
+    const text = cacheId.slice(prefix.length);
+    entries.push(text);
+    const exportBlob = rasterSvgBlob(canvas);
+    if (!exportBlob) continue;
+    blobs.push(exportBlob); // caller may convert to PNG when saving pack
+  }
+  return { entries, blobs };
+}
+
+export async function hydrateAmountsFromPack(
+  entries: readonly string[],
+  blobs: readonly Blob[],
+): Promise<void> {
+  if (entries.length !== blobs.length) return;
+  const pngLike = blobs[0]?.type.includes("png");
+  for (let i = 0; i < entries.length; i++) {
+    const text = entries[i]!;
+    const blob = blobs[i]!;
+    const cacheId = amountCacheKey(text);
+    if (amounts.has(cacheId)) continue;
+    const canvas = pngLike
+      ? (await decodePngBlobsToCanvases([blob]))[0]
+      : await decodeSvgBlobToCanvas(blob).catch(() => null);
+    if (canvas) amounts.set(cacheId, canvas);
+  }
+}
+
+export function rememberAmountCanvas(text: string, canvas: HTMLCanvasElement): void {
+  amounts.set(amountCacheKey(text), canvas);
 }
 
 async function hydrateDigitsFromIdb(): Promise<void> {
@@ -306,9 +403,21 @@ export async function warmAmounts(
       card.bind(blankTicket("1", true, text));
       shrinkToInk(winEl);
       setElementText(winEl, text);
-      amounts.set(cacheId, await rasterizeTicketSvg(winEl, dpr));
+      const canvas = await rasterizeTicketSvg(winEl, dpr);
+      amounts.set(cacheId, canvas);
     }
   });
+}
+
+/** PNG blobs for amounts currently in RAM (for catalog atlas pack). */
+export async function exportAmountPngBlobs(): Promise<{
+  entries: string[];
+  blobs: Blob[];
+}> {
+  const { entries, blobs: svgBlobs } = amountPackSection();
+  if (entries.length === 0) return { entries: [], blobs: [] };
+  const blobs = await Promise.all(svgBlobs.map((b) => svgBlobToPngBlob(b)));
+  return { entries, blobs };
 }
 
 /** Right-aligned id, bottom of header — 5032e76 anchor (layout cardWidth). */

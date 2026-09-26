@@ -201,6 +201,33 @@ export function rasterSvgBlob(canvas: HTMLCanvasElement): Blob | undefined {
   return rasterSvgBlobs.get(canvas);
 }
 
+/** Untainted PNG for atlas IDB — prefers captured SVG bytes, else canvas encode. */
+export async function bitmapSpriteToPngBlob(
+  sprite: HTMLCanvasElement | ImageBitmap,
+): Promise<Blob> {
+  if (sprite instanceof ImageBitmap) {
+    const canvas = document.createElement("canvas");
+    canvas.width = sprite.width;
+    canvas.height = sprite.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("2d context unavailable");
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(sprite, 0, 0);
+    const png = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/png"),
+    );
+    if (!png) throw new Error("png encode failed");
+    return png;
+  }
+  const svg = rasterSvgBlob(sprite);
+  if (svg) return svgBlobToPngBlob(svg);
+  const png = await new Promise<Blob | null>((resolve) =>
+    sprite.toBlob(resolve, "image/png"),
+  );
+  if (!png) throw new Error("png encode failed");
+  return png;
+}
+
 function isSvgBlob(blob: Blob): boolean {
   const t = blob.type;
   return t.includes("svg") || t.includes("xml");

@@ -11,6 +11,7 @@ import { getActiveLayout } from "./catalogLayout";
 import { BALLS_PER_TICKET } from "./layout";
 import { decodePngBlobsToBitmaps } from "./spriteDecodeClient";
 import {
+  bitmapSpriteToPngBlob,
   decodeStoredSpriteBlob,
   rasterizeTicketSvg,
   rasterSvgBlob,
@@ -40,14 +41,19 @@ export type CellBitmaps = {
 /** Room for the rotated N×, which sticks out of the badge box. */
 const BADGE_PAD_CSS = 16;
 
-const CELL_BLOB_COUNT = NUMBER_COUNT + 1 + MULTIPLIER_VALUES.length;
+export const CELL_BLOB_COUNT = NUMBER_COUNT + 1 + MULTIPLIER_VALUES.length;
+export const CELL_BADGE_PAD_CSS = BADGE_PAD_CSS;
 
 const sets = new Map<string, CellBitmaps>();
 const pending = new Map<string, Promise<CellBitmaps>>();
 
-function bitmapKey(): string {
+export function cellBitmapCacheKey(): string {
   const layout = getActiveLayout();
   return `bmp-png|${layout.metrics.id}|${layout.cardWidth}|${activeDpr()}`;
+}
+
+function bitmapKey(): string {
+  return cellBitmapCacheKey();
 }
 
 const BMP_LEGACY_KEY = (): string => {
@@ -108,6 +114,10 @@ async function spritesFromStoredBlobs(blobs: Blob[]): Promise<(BitmapSprite | nu
   );
 }
 
+export async function cellBitmapsFromActiveBlobs(blobs: Blob[]): Promise<CellBitmaps | null> {
+  return fromBlobs(blobs);
+}
+
 async function fromBlobs(blobs: Blob[]): Promise<CellBitmaps | null> {
   const sprites = await spritesFromStoredBlobs(blobs);
   const numbers: BitmapSprite[] = [];
@@ -134,52 +144,122 @@ async function fromBlobs(blobs: Blob[]): Promise<CellBitmaps | null> {
   };
 }
 
-function exportSvgBlob(sprite: BitmapSprite): Blob | undefined {
-  return sprite instanceof HTMLCanvasElement ? rasterSvgBlob(sprite) : undefined;
-}
-
-async function svgBlobsToPngPack(svgBlobs: Blob[]): Promise<Blob[] | null> {
+async function spriteToPngBlob(sprite: BitmapSprite): Promise<Blob | null> {
   try {
-    return await Promise.all(svgBlobs.map((b) => svgBlobToPngBlob(b)));
+    if (sprite instanceof HTMLCanvasElement || sprite instanceof ImageBitmap) {
+      return await bitmapSpriteToPngBlob(sprite);
+    }
+    return null;
   } catch {
     return null;
   }
 }
 
 async function blobsOf(set: CellBitmaps): Promise<Blob[] | null> {
-  const svgBlobs: Blob[] = [];
+  const out: Blob[] = [];
   for (let n = 1; n <= NUMBER_COUNT; n++) {
-    const blob = exportSvgBlob(set.numbers[n]!);
-    if (!blob) return null;
-    svgBlobs.push(blob);
+    const sprite = set.numbers[n];
+    if (!sprite) return null;
+    const png = await spriteToPngBlob(sprite);
+    if (!png) return null;
+    out.push(png);
   }
-  const dab = exportSvgBlob(set.dab.canvas);
-  if (!dab) return null;
-  svgBlobs.push(dab);
+  const dabPng = await spriteToPngBlob(set.dab.canvas);
+  if (!dabPng) return null;
+  out.push(dabPng);
   for (const value of MULTIPLIER_VALUES) {
-    const blob = exportSvgBlob(set.multipliers.get(value)!.canvas);
-    if (!blob) return null;
-    svgBlobs.push(blob);
+    const sprite = set.multipliers.get(value)?.canvas;
+    if (!sprite) return null;
+    const png = await spriteToPngBlob(sprite);
+    if (!png) return null;
+    out.push(png);
   }
-  return svgBlobsToPngPack(svgBlobs);
+  return out;
 }
 
 async function disabledBlobsOf(set: CellBitmaps): Promise<Blob[] | null> {
-  const svgBlobs: Blob[] = [];
+  const out: Blob[] = [];
   for (let n = 1; n <= NUMBER_COUNT; n++) {
-    const blob = exportSvgBlob(set.disabledNumbers[n]!);
-    if (!blob) return null;
-    svgBlobs.push(blob);
+    const sprite = set.disabledNumbers[n];
+    if (!sprite) return null;
+    const png = await spriteToPngBlob(sprite);
+    if (!png) return null;
+    out.push(png);
   }
-  const dab = exportSvgBlob(set.disabledDab.canvas);
-  if (!dab) return null;
-  svgBlobs.push(dab);
+  const dabPng = await spriteToPngBlob(set.disabledDab.canvas);
+  if (!dabPng) return null;
+  out.push(dabPng);
   for (const value of MULTIPLIER_VALUES) {
-    const blob = exportSvgBlob(set.disabledMultipliers.get(value)!.canvas);
-    if (!blob) return null;
-    svgBlobs.push(blob);
+    const sprite = set.disabledMultipliers.get(value)?.canvas;
+    if (!sprite) return null;
+    const png = await spriteToPngBlob(sprite);
+    if (!png) return null;
+    out.push(png);
   }
-  return svgBlobsToPngPack(svgBlobs);
+  return out;
+}
+
+export async function applyDisabledCellBlobs(
+  set: CellBitmaps,
+  blobs: Blob[],
+): Promise<boolean> {
+  const disabled = await disabledFromBlobs(blobs);
+  if (!disabled) return false;
+  set.disabledNumbers = disabled.disabledNumbers;
+  set.disabledDab = disabled.disabledDab;
+  set.disabledMultipliers = disabled.disabledMultipliers;
+  return true;
+}
+
+export function cacheCellBitmaps(set: CellBitmaps): void {
+  sets.set(bitmapKey(), set);
+}
+
+export async function exportActiveCellPngBlobs(set: CellBitmaps): Promise<Blob[] | null> {
+  return blobsOf(set);
+}
+
+export async function exportDisabledCellPngBlobs(set: CellBitmaps): Promise<Blob[] | null> {
+  return disabledBlobsOf(set);
+}
+
+export async function captureActiveCellSet(host: HTMLElement): Promise<CellBitmaps> {
+  return captureSet(host);
+}
+
+export async function captureDisabledCellSet(
+  host: HTMLElement,
+): Promise<Pick<CellBitmaps, "disabledNumbers" | "disabledDab" | "disabledMultipliers">> {
+  const part = await captureDisabledBadges(host);
+  return {
+    disabledNumbers: part.numbers,
+    disabledDab: part.dab,
+    disabledMultipliers: part.multipliers,
+  };
+}
+
+export function cacheTicketChrome(
+  win: boolean,
+  disabled: boolean,
+  sprite: BitmapSprite,
+): void {
+  chromeCache.set(chromeRamKey(win, disabled), sprite);
+}
+
+export async function captureTicketChromeBitmap(
+  host: HTMLElement,
+  win: boolean,
+  disabled = false,
+): Promise<HTMLCanvasElement> {
+  return captureChrome(host, win, disabled);
+}
+
+export async function chromePngBlobFromCanvas(
+  canvas: HTMLCanvasElement,
+): Promise<Blob | null> {
+  const svg = rasterSvgBlob(canvas);
+  if (!svg) return null;
+  return svgBlobToPngBlob(svg);
 }
 
 async function disabledFromBlobs(
