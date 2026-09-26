@@ -40,10 +40,9 @@ import {
 } from "./cellAtlas";
 import { ticketChrome, warmCellBitmaps } from "./cellBitmaps";
 import {
-  idDigitCount,
+  ticketIdWarmProgress,
   warmAmounts,
   warmIdDigits,
-  warmTicketIds,
 } from "./headerGlyphs";
 import { DomPool } from "./DomPool";
 import { MAX_TICKETS, ROW_BUFFER, SCROLL_BAND_SETTLE_MS, domPoolSize } from "./layout";
@@ -100,7 +99,7 @@ export function Catalog() {
 
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [atlasReady, setAtlasReady] = useState(0);
-  const [idReady, setIdReady] = useState(0);
+  const [idWarm, setIdWarm] = useState({ ready: 0, total: 0 });
   const [domCount, setDomCount] = useState(0);
   const [tileCount, setTileCount] = useState(0);
   const [presetMode, setPresetMode] = useState<PresetMode>("auto");
@@ -256,11 +255,12 @@ export function Catalog() {
     applyTicketCssVars(host, layout.metrics);
     applyCellBoxCssVars(host, model, layout.metrics);
     try {
-      await warmCellBitmaps(host);
-      await ticketChrome(host, false);
-      await ticketChrome(host, true);
-      await ticketChrome(host, false, true);
-      await warmIdDigits(host);
+      await Promise.all([warmCellBitmaps(host), warmIdDigits(host)]);
+      await Promise.all([
+        ticketChrome(host, false),
+        ticketChrome(host, true),
+        ticketChrome(host, false, true),
+      ]);
     } finally {
       setActiveLayout(prev);
       if (prevModel) setLiveCellBoxModel(prevModel);
@@ -305,18 +305,16 @@ export function Catalog() {
     applyCellBoxCssVars(host, model, layoutNow.metrics);
     const gen = ++atlasGenRef.current;
     void (async () => {
-      await warmCellBitmaps(host);
+      await Promise.all([warmCellBitmaps(host), warmIdDigits(host)]);
       if (gen !== atlasGenRef.current) return;
       setAtlasReady(65);
-      await ticketChrome(host, false);
-      await ticketChrome(host, true);
-      await ticketChrome(host, false, true);
+      await Promise.all([
+        ticketChrome(host, false),
+        ticketChrome(host, true),
+        ticketChrome(host, false, true),
+      ]);
       if (gen !== atlasGenRef.current) return;
-      await warmIdDigits(host);
-      if (gen !== atlasGenRef.current) return;
-      await warmTicketIds(host, [...ticketsByIdRef.current.values()]);
-      if (gen !== atlasGenRef.current) return;
-      setIdReady(idDigitCount());
+      setIdWarm(ticketIdWarmProgress([]));
       const amounts = [
         ...new Set(
           [...ticketsByIdRef.current.values()].map((t) => t.win).filter(Boolean),
@@ -351,7 +349,7 @@ export function Catalog() {
     hideCanvas();
     canvasPoolRef.current?.clear();
     setTileCount(0);
-    setIdReady(0);
+    setIdWarm({ ready: 0, total: 0 });
     atlasGenRef.current += 1; // invalidate the warm-progress generation
     cancelCellWarm(); // abandon the half-built old-size atlas (cache kept)
     if (settleTimerRef.current) window.clearTimeout(settleTimerRef.current);
@@ -547,7 +545,7 @@ export function Catalog() {
     clearCellAtlas();
     prevLayoutKeyRef.current = "";
     setAtlasReady(0);
-    setIdReady(0);
+    setIdWarm({ ready: 0, total: 0 });
     startAtlasWarm();
   };
 
@@ -557,10 +555,7 @@ export function Catalog() {
     if (!host || tickets.length === 0) return;
     let cancelled = false;
     const amounts = [...new Set(tickets.map((t) => t.win).filter(Boolean))];
-    void Promise.all([
-      warmTicketIds(host, tickets),
-      warmAmounts(host, amounts),
-    ]).then(() => {
+    void warmAmounts(host, amounts).then(() => {
       if (cancelled) return;
       canvasPoolRef.current?.refresh();
       syncCanvas();
@@ -599,12 +594,10 @@ export function Catalog() {
     const host = atlasHostRef.current;
     if (host) {
       const amounts = [...new Set(tickets.map((ticket) => ticket.win).filter(Boolean))];
-      void Promise.all([warmTicketIds(host, tickets), warmAmounts(host, amounts)]).then(
-        () => {
-          canvasPoolRef.current?.refresh();
-          syncCanvas();
-        },
-      );
+      void warmAmounts(host, amounts).then(() => {
+        canvasPoolRef.current?.refresh();
+        syncCanvas();
+      });
     }
     if (shuffleTimerRef.current) window.clearTimeout(shuffleTimerRef.current);
     const delay = shuffleDelayMs(hits, tickets);
@@ -789,8 +782,9 @@ export function Catalog() {
             {atlasReady >= 65 ? " ✓" : "…"}
           </span>
           <span className="stat">
-            digits <strong>{idReady}</strong>/30
-            {idReady >= 30 ? " ✓" : "…"}
+            ids{" "}
+            <strong>{idWarm.ready}</strong>/{idWarm.total || "—"}
+            {idWarm.total > 0 && idWarm.ready >= idWarm.total ? " ✓" : "…"}
           </span>
           <span className="stat">
             dom <strong>{domCount}</strong>/{poolSize}

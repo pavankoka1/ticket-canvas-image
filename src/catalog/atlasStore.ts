@@ -130,27 +130,39 @@ export type StoredSprites = {
 };
 
 export async function loadSprites(key: string): Promise<StoredSprites | null> {
+  const [row] = await loadSpritesMany([key]);
+  return row;
+}
+
+/** One IDB transaction for multiple sprite packs (fewer open/close round-trips). */
+export async function loadSpritesMany(
+  keys: readonly string[],
+): Promise<(StoredSprites | null)[]> {
+  if (keys.length === 0) return [];
   try {
     const db = await openDb();
     try {
       return await new Promise((resolve, reject) => {
         const tx = db.transaction(STORE, "readonly");
-        const req = tx.objectStore(STORE).get(key);
-        req.onsuccess = () => {
-          const row = req.result as StoredSprites | undefined;
-          if (!row?.blobs || row.blobs.length === 0) {
-            resolve(null);
-            return;
-          }
-          resolve(row);
-        };
-        req.onerror = () => reject(req.error);
+        const store = tx.objectStore(STORE);
+        const out: (StoredSprites | null)[] = keys.map(() => null);
+        let left = keys.length;
+        keys.forEach((key, i) => {
+          const req = store.get(key);
+          req.onsuccess = () => {
+            const row = req.result as StoredSprites | undefined;
+            if (row?.blobs?.length) out[i] = row;
+            left -= 1;
+            if (left === 0) resolve(out);
+          };
+          req.onerror = () => reject(req.error);
+        });
       });
     } finally {
       db.close();
     }
   } catch {
-    return null;
+    return keys.map(() => null);
   }
 }
 

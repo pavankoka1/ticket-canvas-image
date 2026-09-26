@@ -5,25 +5,34 @@
  * the dab or a multiplier. Header amount and ticket id are painted separately.
  */
 
-import { loadSprites, saveSprites } from "./atlasStore";
+import { loadSpritesMany, saveSprites } from "./atlasStore";
 import { activeDpr } from "./cellBoxModel";
 import { getActiveLayout } from "./catalogLayout";
 import { BALLS_PER_TICKET } from "./layout";
-import { rasterizeTicketSvg, rasterSvgBlob } from "./ticketSvgRaster";
+import { decodePngBlobsToBitmaps } from "./spriteDecodeClient";
+import {
+  decodeStoredSpriteBlob,
+  rasterizeTicketSvg,
+  rasterSvgBlob,
+  svgBlobToPngBlob,
+} from "./ticketSvgRaster";
 import { TicketCard } from "./ticketCardElement";
 import { ensureTicketFont } from "./ticketFont";
 import { MULTIPLIER_VALUES, type Ticket } from "./tickets";
 
 const NUMBER_COUNT = 60;
 
-export type PlacedBitmap = { canvas: HTMLCanvasElement; padCss: number };
+/** Decoded IDB sprites skip the extra canvas blit; fresh captures stay as canvas. */
+export type BitmapSprite = HTMLCanvasElement | ImageBitmap;
+
+export type PlacedBitmap = { canvas: BitmapSprite; padCss: number };
 
 export type CellBitmaps = {
-  numbers: HTMLCanvasElement[];
+  numbers: BitmapSprite[];
   dab: PlacedBitmap;
   multipliers: Map<number, PlacedBitmap>;
   /** Green-ticket cells and badges. Captured with the set, not from the 65-blob record. */
-  disabledNumbers: HTMLCanvasElement[];
+  disabledNumbers: BitmapSprite[];
   disabledDab: PlacedBitmap;
   disabledMultipliers: Map<number, PlacedBitmap>;
 };
@@ -38,11 +47,22 @@ const pending = new Map<string, Promise<CellBitmaps>>();
 
 function bitmapKey(): string {
   const layout = getActiveLayout();
-  return `bmp|${layout.metrics.id}|${layout.cardWidth}|${activeDpr()}`;
+  return `bmp-png|${layout.metrics.id}|${layout.cardWidth}|${activeDpr()}`;
 }
 
-const chromeCache = new Map<string, HTMLCanvasElement>();
-const chromePending = new Map<string, Promise<HTMLCanvasElement>>();
+const BMP_LEGACY_KEY = (): string => {
+  const layout = getActiveLayout();
+  return `bmp|${layout.metrics.id}|${layout.cardWidth}|${activeDpr()}`;
+};
+
+function disabledBitmapKey(): string {
+  return `${bitmapKey()}|disabled`;
+}
+
+const CHROME_IDB = "chrome-v2-png";
+
+const chromeCache = new Map<string, BitmapSprite>();
+const chromePending = new Map<string, Promise<BitmapSprite>>();
 const headerCache = new Map<string, HTMLCanvasElement>();
 
 export function warmCellBitmaps(host: HTMLElement): Promise<CellBitmaps> {
@@ -70,41 +90,39 @@ export function getCellBitmaps(): CellBitmaps | null {
   return sets.get(bitmapKey()) ?? null;
 }
 
-async function canvasFromSvg(blob: Blob): Promise<HTMLCanvasElement | null> {
-  try {
-    const bmp = await createImageBitmap(blob);
-    const canvas = document.createElement("canvas");
-    canvas.width = bmp.width;
-    canvas.height = bmp.height;
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      bmp.close();
-      return null;
+function isPngPack(blobs: readonly Blob[]): boolean {
+  const t = blobs[0]?.type ?? "";
+  return t.includes("png");
+}
+
+async function spritesFromStoredBlobs(blobs: Blob[]): Promise<(BitmapSprite | null)[]> {
+  if (isPngPack(blobs)) {
+    try {
+      return await decodePngBlobsToBitmaps(blobs);
+    } catch {
+      return blobs.map(() => null);
     }
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(bmp, 0, 0);
-    bmp.close();
-    return canvas;
-  } catch {
-    return null;
   }
+  return Promise.all(
+    blobs.map((b) => decodeStoredSpriteBlob(b).catch(() => null)),
+  );
 }
 
 async function fromBlobs(blobs: Blob[]): Promise<CellBitmaps | null> {
-  const canvases = await Promise.all(blobs.map(canvasFromSvg));
-  const numbers: HTMLCanvasElement[] = [];
+  const sprites = await spritesFromStoredBlobs(blobs);
+  const numbers: BitmapSprite[] = [];
   for (let n = 1; n <= NUMBER_COUNT; n++) {
-    const canvas = canvases[n - 1];
-    if (!canvas) return null;
-    numbers[n] = canvas;
+    const sprite = sprites[n - 1];
+    if (!sprite) return null;
+    numbers[n] = sprite;
   }
-  const dabCanvas = canvases[NUMBER_COUNT];
+  const dabCanvas = sprites[NUMBER_COUNT];
   if (!dabCanvas) return null;
   const multipliers = new Map<number, PlacedBitmap>();
   for (let i = 0; i < MULTIPLIER_VALUES.length; i++) {
-    const canvas = canvases[NUMBER_COUNT + 1 + i];
-    if (!canvas) return null;
-    multipliers.set(MULTIPLIER_VALUES[i]!, { canvas, padCss: BADGE_PAD_CSS });
+    const sprite = sprites[NUMBER_COUNT + 1 + i];
+    if (!sprite) return null;
+    multipliers.set(MULTIPLIER_VALUES[i]!, { canvas: sprite, padCss: BADGE_PAD_CSS });
   }
   return {
     numbers,
@@ -116,48 +134,120 @@ async function fromBlobs(blobs: Blob[]): Promise<CellBitmaps | null> {
   };
 }
 
-function blobsOf(set: CellBitmaps): Blob[] | null {
-  const blobs: Blob[] = [];
+function exportSvgBlob(sprite: BitmapSprite): Blob | undefined {
+  return sprite instanceof HTMLCanvasElement ? rasterSvgBlob(sprite) : undefined;
+}
+
+async function svgBlobsToPngPack(svgBlobs: Blob[]): Promise<Blob[] | null> {
+  try {
+    return await Promise.all(svgBlobs.map((b) => svgBlobToPngBlob(b)));
+  } catch {
+    return null;
+  }
+}
+
+async function blobsOf(set: CellBitmaps): Promise<Blob[] | null> {
+  const svgBlobs: Blob[] = [];
   for (let n = 1; n <= NUMBER_COUNT; n++) {
-    const blob = rasterSvgBlob(set.numbers[n]!);
+    const blob = exportSvgBlob(set.numbers[n]!);
     if (!blob) return null;
-    blobs.push(blob);
+    svgBlobs.push(blob);
   }
-  const dab = rasterSvgBlob(set.dab.canvas);
+  const dab = exportSvgBlob(set.dab.canvas);
   if (!dab) return null;
-  blobs.push(dab);
+  svgBlobs.push(dab);
   for (const value of MULTIPLIER_VALUES) {
-    const blob = rasterSvgBlob(set.multipliers.get(value)!.canvas);
+    const blob = exportSvgBlob(set.multipliers.get(value)!.canvas);
     if (!blob) return null;
-    blobs.push(blob);
+    svgBlobs.push(blob);
   }
-  return blobs;
+  return svgBlobsToPngPack(svgBlobs);
+}
+
+async function disabledBlobsOf(set: CellBitmaps): Promise<Blob[] | null> {
+  const svgBlobs: Blob[] = [];
+  for (let n = 1; n <= NUMBER_COUNT; n++) {
+    const blob = exportSvgBlob(set.disabledNumbers[n]!);
+    if (!blob) return null;
+    svgBlobs.push(blob);
+  }
+  const dab = exportSvgBlob(set.disabledDab.canvas);
+  if (!dab) return null;
+  svgBlobs.push(dab);
+  for (const value of MULTIPLIER_VALUES) {
+    const blob = exportSvgBlob(set.disabledMultipliers.get(value)!.canvas);
+    if (!blob) return null;
+    svgBlobs.push(blob);
+  }
+  return svgBlobsToPngPack(svgBlobs);
+}
+
+async function disabledFromBlobs(
+  blobs: Blob[],
+): Promise<Pick<CellBitmaps, "disabledNumbers" | "disabledDab" | "disabledMultipliers"> | null> {
+  const full = await fromBlobs(blobs);
+  if (!full) return null;
+  return {
+    disabledNumbers: full.numbers,
+    disabledDab: full.dab,
+    disabledMultipliers: full.multipliers,
+  };
 }
 
 async function loadOrCapture(host: HTMLElement, key: string): Promise<CellBitmaps> {
-  const stored = await loadSprites(key);
+  const dKey = disabledBitmapKey();
+  const legacyKey = BMP_LEGACY_KEY();
+  const legacyDKey = `${legacyKey}|disabled`;
+  let [stored, dStored] = await loadSpritesMany([key, dKey]);
+  if (!stored?.blobs?.length) {
+    [stored, dStored] = await loadSpritesMany([legacyKey, legacyDKey]);
+  }
   let set: CellBitmaps | null = null;
   if (stored && stored.blobs.length === CELL_BLOB_COUNT) {
     set = await fromBlobs(stored.blobs);
   }
   if (!set) {
     set = await captureSet(host);
-    const blobs = blobsOf(set);
-    if (blobs) void saveSprites({ key, meta: { padCss: BADGE_PAD_CSS }, blobs });
+    const blobs = await blobsOf(set);
+    if (blobs) void saveSprites({ key, meta: { padCss: BADGE_PAD_CSS, format: "png" }, blobs });
   }
+
+  if (dStored && dStored.blobs.length === CELL_BLOB_COUNT) {
+    const disabled = await disabledFromBlobs(dStored.blobs);
+    if (disabled) {
+      set.disabledNumbers = disabled.disabledNumbers;
+      set.disabledDab = disabled.disabledDab;
+      set.disabledMultipliers = disabled.disabledMultipliers;
+      if (!isPngPack(dStored.blobs)) {
+        const migrated = await disabledBlobsOf(set);
+        if (migrated) void saveSprites({ key: dKey, meta: { padCss: BADGE_PAD_CSS, format: "png" }, blobs: migrated });
+      }
+      return set;
+    }
+  }
+
   const disabled = await captureDisabledBadges(host);
   set.disabledNumbers = disabled.numbers;
   set.disabledDab = disabled.dab;
   set.disabledMultipliers = disabled.multipliers;
+  const dBlobs = await disabledBlobsOf(set);
+  if (dBlobs) void saveSprites({ key: dKey, meta: { padCss: BADGE_PAD_CSS, format: "png" }, blobs: dBlobs });
   return set;
 }
 
-/** Already-captured card face, or null while the chrome raster is still warming. */
-export function peekTicketChrome(win: boolean, disabled = false): HTMLCanvasElement | null {
+function chromeRamKey(win: boolean, disabled: boolean): string {
   const layout = getActiveLayout();
   const face = disabled ? "disabled" : win ? "win" : "plain";
-  const key = `${layout.metrics.id}|${layout.cardWidth}|${activeDpr()}|${face}`;
-  return chromeCache.get(key) ?? null;
+  return `${layout.metrics.id}|${layout.cardWidth}|${activeDpr()}|${face}`;
+}
+
+function chromeIdbKey(win: boolean, disabled: boolean): string {
+  return `${CHROME_IDB}|${chromeRamKey(win, disabled)}`;
+}
+
+/** Already-captured card face, or null while the chrome raster is still warming. */
+export function peekTicketChrome(win: boolean, disabled = false): BitmapSprite | null {
+  return chromeCache.get(chromeRamKey(win, disabled)) ?? null;
 }
 
 /**
@@ -168,25 +258,41 @@ export function ticketChrome(
   host: HTMLElement,
   win: boolean,
   disabled = false,
-): Promise<HTMLCanvasElement> {
-  const layout = getActiveLayout();
-  const face = disabled ? "disabled" : win ? "win" : "plain";
-  const key = `${layout.metrics.id}|${layout.cardWidth}|${activeDpr()}|${face}`;
+): Promise<BitmapSprite> {
+  const key = chromeRamKey(win, disabled);
   const hit = chromeCache.get(key);
   if (hit) return Promise.resolve(hit);
   const inflight = chromePending.get(key);
   if (inflight) return inflight;
-  const run = captureChrome(host, win, disabled).then(
-    (canvas) => {
-      chromeCache.set(key, canvas);
-      if (chromePending.get(key) === run) chromePending.delete(key);
-      return canvas;
-    },
-    (err: unknown) => {
-      if (chromePending.get(key) === run) chromePending.delete(key);
-      throw err;
-    },
-  );
+  const run = (async () => {
+    const idbKey = chromeIdbKey(win, disabled);
+    const legacyIdb = `chrome-v1|${key}`;
+    let stored = (await loadSpritesMany([idbKey]))[0];
+    if (!stored?.blobs[0]) stored = (await loadSpritesMany([legacyIdb]))[0] ?? null;
+    if (stored?.blobs[0]) {
+      const sprites = await spritesFromStoredBlobs(stored.blobs);
+      const sprite = sprites[0];
+      if (sprite) {
+        chromeCache.set(key, sprite);
+        if (!isPngPack(stored.blobs) && stored.blobs[0]) {
+          void svgBlobToPngBlob(stored.blobs[0]).then((png) =>
+            saveSprites({ key: idbKey, meta: { face: key, format: "png" }, blobs: [png] }),
+          );
+        }
+        return sprite;
+      }
+    }
+    const canvas = await captureChrome(host, win, disabled);
+    const svg = rasterSvgBlob(canvas);
+    if (svg) {
+      const png = await svgBlobToPngBlob(svg);
+      void saveSprites({ key: idbKey, meta: { face: key, format: "png" }, blobs: [png] });
+    }
+    chromeCache.set(key, canvas);
+    return canvas;
+  })().finally(() => {
+    if (chromePending.get(key) === run) chromePending.delete(key);
+  });
   chromePending.set(key, run);
   return run;
 }
@@ -250,7 +356,7 @@ function chromeTicket(win: boolean, disabled = false): Ticket {
 }
 
 async function captureDisabledBadges(host: HTMLElement): Promise<{
-  numbers: HTMLCanvasElement[];
+  numbers: BitmapSprite[];
   dab: PlacedBitmap;
   multipliers: Map<number, PlacedBitmap>;
 }> {
@@ -262,7 +368,7 @@ async function captureDisabledBadges(host: HTMLElement): Promise<{
   card.dom.style.top = "0";
   host.appendChild(card.dom);
   try {
-    const numbers: HTMLCanvasElement[] = [];
+    const numbers: BitmapSprite[] = [];
     for (let n = 1; n <= NUMBER_COUNT; n++) {
       card.bind(sourceTicket(n, false, 0, true));
       numbers[n] = await captureCell(card, dpr);
@@ -326,7 +432,7 @@ async function captureSet(host: HTMLElement): Promise<CellBitmaps> {
   host.appendChild(card.dom);
 
   try {
-    const numbers: HTMLCanvasElement[] = [];
+    const numbers: BitmapSprite[] = [];
     for (let n = 1; n <= NUMBER_COUNT; n++) {
       card.bind(sourceTicket(n, false, 0));
       numbers[n] = await captureCell(card, dpr);

@@ -200,3 +200,58 @@ const rasterSvgBlobs = new WeakMap<HTMLCanvasElement, Blob>();
 export function rasterSvgBlob(canvas: HTMLCanvasElement): Blob | undefined {
   return rasterSvgBlobs.get(canvas);
 }
+
+function isSvgBlob(blob: Blob): boolean {
+  const t = blob.type;
+  return t.includes("svg") || t.includes("xml");
+}
+
+/** Image + decode — reliable for our foreignObject SVG packs (createImageBitmap often fails). */
+export async function decodeSvgBlobToCanvas(blob: Blob): Promise<HTMLCanvasElement> {
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = new Image();
+    img.decoding = "sync";
+    img.src = url;
+    try {
+      await img.decode();
+    } catch {
+      await new Promise<void>((resolve, reject) => {
+        img.onload = () => resolve();
+        img.onerror = () => reject(new Error("svg blob decode failed"));
+      });
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("2d context unavailable");
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(img, 0, 0);
+    return canvas;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** Hydrate a stored atlas blob for canvas paint (SVG → canvas; PNG → ImageBitmap). */
+export async function decodeStoredSpriteBlob(
+  blob: Blob,
+): Promise<HTMLCanvasElement | ImageBitmap> {
+  if (isSvgBlob(blob)) return decodeSvgBlobToCanvas(blob);
+  try {
+    return await createImageBitmap(blob);
+  } catch {
+    return decodeSvgBlobToCanvas(blob);
+  }
+}
+
+/** Untainted PNG for IDB — from the captured SVG pack bytes. */
+export async function svgBlobToPngBlob(svg: Blob): Promise<Blob> {
+  const canvas = await decodeSvgBlobToCanvas(svg);
+  const png = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, "image/png"),
+  );
+  if (!png) throw new Error("png encode failed");
+  return png;
+}

@@ -1,14 +1,21 @@
 /**
  * Header text for the catalog canvas.
  *
- * Ticket ids and win amounts are whole-string bitmaps (same shrink-wrapped
- * foreignObject capture as the live `.ticketCard__id` / `__win` nodes).
- * Per-digit stacking drifts spacing and weight vs one DOM text run.
+ * Ticket ids: ten digit bitmaps per face color, pre-warmed at atlas time (IDB).
+ * Paint stacks them right-to-left — same model as the 5032e76 catalog path.
+ * Win amounts: whole-string bitmaps when that payout string first appears.
  */
 
+import { loadSprites, saveSprites } from "./atlasStore";
 import { activeDpr } from "./cellBoxModel";
 import { getActiveLayout } from "./catalogLayout";
-import { rasterizeTicketSvg } from "./ticketSvgRaster";
+import { decodePngBlobsToCanvases } from "./spriteDecodeClient";
+import {
+  decodeSvgBlobToCanvas,
+  rasterizeTicketSvg,
+  rasterSvgBlob,
+  svgBlobToPngBlob,
+} from "./ticketSvgRaster";
 import { TicketCard } from "./ticketCardElement";
 import { ensureTicketFont } from "./ticketFont";
 import { isWinTicket, type Ticket } from "./tickets";
@@ -17,10 +24,29 @@ const DIGITS = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9"] as const;
 
 export type IdColor = "idNormal" | "idGold" | "idDisabled";
 
-const idStrings = new Map<string, HTMLCanvasElement>();
+const ID_FACES: readonly { color: IdColor; win: boolean; disabled: boolean }[] = [
+  { color: "idNormal", win: false, disabled: false },
+  { color: "idGold", win: true, disabled: false },
+  { color: "idDisabled", win: false, disabled: true },
+];
+
+const TICKET_ID_DIGIT_PACK = "ticket-id-digits-v2-png";
+const TICKET_ID_DIGIT_PACK_LEGACY = "ticket-id-digits-v1";
+const DIGIT_WARM_TOTAL = DIGITS.length * ID_FACES.length;
+
+type Glyph = { canvas: HTMLCanvasElement };
+
+const digits = new Map<string, Glyph>();
+/** SVG blobs for IDB — never export tainted digit canvases. */
+const digitExportBlobs = new Map<string, Blob>();
 const amounts = new Map<string, HTMLCanvasElement>();
 let digitPromise: Promise<void> | null = null;
-let digitKey = "";
+let digitRunKey: string | null = null;
+let hydratedDigitLayoutKey = "";
+
+type StoredDigitMeta = {
+  entries: { color: IdColor; digit: string }[];
+};
 
 function styleKey(): string {
   const layout = getActiveLayout();
@@ -28,12 +54,127 @@ function styleKey(): string {
   return `${m.id}|${layout.cardWidth}|${activeDpr()}|meta=${m.metaFontSize}`;
 }
 
-function idStringCacheKey(color: IdColor, text: string): string {
-  return `${styleKey()}|${color}|${text}`;
+function digitPackKey(): string {
+  return `${TICKET_ID_DIGIT_PACK}|${styleKey()}`;
+}
+
+function digitCacheKey(color: IdColor, ch: string): string {
+  return `${styleKey()}|${color}|${ch}`;
 }
 
 function amountCacheKey(text: string): string {
   return `${styleKey()}|win|${text}`;
+}
+
+export function idColorFor(ticket: Ticket): IdColor {
+  if (ticket.disabled) return "idDisabled";
+  return isWinTicket(ticket) ? "idGold" : "idNormal";
+}
+
+function digitGlyphsReady(): boolean {
+  const key = styleKey();
+  return ID_FACES.every((face) => digits.has(`${key}|${face.color}|0`));
+}
+
+export function isTicketIdReady(ticket: Ticket): boolean {
+  if (!ticket.no) return true;
+  if (!digitGlyphsReady()) return false;
+  const color = idColorFor(ticket);
+  for (const ch of ticket.no) {
+    if (!digits.has(digitCacheKey(color, ch))) return false;
+  }
+  return true;
+}
+
+/** Fixed digit atlas: 10 digits × 3 header colors (independent of ticket count). */
+export function ticketIdWarmProgress(_tickets: readonly Ticket[]): {
+  ready: number;
+  total: number;
+} {
+  const key = styleKey();
+  let ready = 0;
+  for (const face of ID_FACES) {
+    for (const ch of DIGITS) {
+      if (digits.has(`${key}|${face.color}|${ch}`)) ready += 1;
+    }
+  }
+  return { ready, total: DIGIT_WARM_TOTAL };
+}
+
+function parseDigitCacheKey(
+  cacheKey: string,
+  layoutKey: string,
+): { color: IdColor; digit: string } | null {
+  if (!cacheKey.startsWith(`${layoutKey}|`)) return null;
+  for (const face of ID_FACES) {
+    const needle = `|${face.color}|`;
+    const idx = cacheKey.indexOf(needle, layoutKey.length);
+    if (idx !== layoutKey.length) continue;
+    const digit = cacheKey.slice(idx + needle.length);
+    if (digit.length !== 1) return null;
+    return { color: face.color, digit };
+  }
+  return null;
+}
+
+async function hydrateDigitsFromIdb(): Promise<void> {
+  const layoutKey = styleKey();
+  if (hydratedDigitLayoutKey === layoutKey) return;
+  hydratedDigitLayoutKey = layoutKey;
+  digits.clear();
+  digitExportBlobs.clear();
+
+  let stored = await loadSprites(digitPackKey());
+  let legacySvg = false;
+  if (!stored?.blobs?.length) {
+    stored = await loadSprites(`${TICKET_ID_DIGIT_PACK_LEGACY}|${layoutKey}`);
+    legacySvg = !!stored?.blobs?.length;
+  }
+  if (!stored?.meta || !stored.blobs.length) return;
+  const meta = stored.meta as StoredDigitMeta;
+  if (!meta.entries || meta.entries.length !== stored.blobs.length) return;
+
+  const canvases = legacySvg
+    ? await Promise.all(
+        stored.blobs.map((b) => decodeSvgBlobToCanvas(b).catch(() => null)),
+      )
+    : await decodePngBlobsToCanvases(stored.blobs);
+
+  for (let i = 0; i < meta.entries.length; i++) {
+    const entry = meta.entries[i]!;
+    const cacheId = `${layoutKey}|${entry.color}|${entry.digit}`;
+    const blob = stored.blobs[i]!;
+    const canvas = canvases[i];
+    if (!canvas) continue;
+    digitExportBlobs.set(cacheId, blob);
+    digits.set(cacheId, { canvas });
+  }
+
+  if (legacySvg && digitGlyphsReady()) {
+    void persistDigitsToIdb();
+  }
+}
+
+async function persistDigitsToIdb(): Promise<void> {
+  const layoutKey = styleKey();
+  const prefix = `${layoutKey}|`;
+  const entries: { color: IdColor; digit: string }[] = [];
+  const blobs: Blob[] = [];
+  for (const cacheId of digits.keys()) {
+    if (!cacheId.startsWith(prefix)) continue;
+    const parsed = parseDigitCacheKey(cacheId, layoutKey);
+    if (!parsed) continue;
+    let blob = digitExportBlobs.get(cacheId);
+    if (!blob) continue;
+    if (blob.type.includes("svg") || blob.type.includes("xml")) {
+      blob = await svgBlobToPngBlob(blob);
+      digitExportBlobs.set(cacheId, blob);
+    }
+    entries.push(parsed);
+    blobs.push(blob);
+  }
+  if (entries.length === 0) return;
+  await saveSprites({ key: digitPackKey(), meta: { entries }, blobs });
 }
 
 function shrinkToInk(el: HTMLElement): void {
@@ -83,89 +224,68 @@ async function withCard(
   }
 }
 
-const ID_FACES: readonly { color: IdColor; win: boolean; disabled: boolean }[] = [
-  { color: "idNormal", win: false, disabled: false },
-  { color: "idGold", win: true, disabled: false },
-  { color: "idDisabled", win: false, disabled: true },
-];
-
-/** Ten digits in the plain, gold, and green-ticket colors. Idempotent per layout and pixel ratio. */
-export function warmIdDigits(host: HTMLElement): Promise<void> {
-  const key = styleKey();
-  if (digitKey === key && idSeedsReady(key)) return Promise.resolve();
-  if (digitPromise && digitKey === key) return digitPromise;
-  digitKey = key;
-  idStrings.clear();
-  const run = captureIdSeeds(host, key).finally(() => {
-    if (digitPromise === run) digitPromise = null;
-  });
-  digitPromise = run;
-  return run;
-}
-
-function idSeedsReady(key: string): boolean {
-  return ID_FACES.every((face) => idStrings.has(`${key}|${face.color}|0`));
-}
-
-/** Seed 0–9 per id color (layout / dpr change). */
-async function captureIdSeeds(host: HTMLElement, key: string): Promise<void> {
+async function captureMissingDigits(host: HTMLElement): Promise<void> {
   await ensureTicketFont(getActiveLayout().metrics.metaFontSize);
   const dpr = activeDpr();
+  let captured = 0;
+
   await withCard(host, async (card) => {
     const idEl = card.dom.querySelector(".ticketCard__id");
     if (!(idEl instanceof HTMLElement)) throw new Error("id glyph source missing");
     for (const face of ID_FACES) {
       for (const ch of DIGITS) {
-        const cacheId = `${key}|${face.color}|${ch}`;
-        if (idStrings.has(cacheId)) continue;
+        const cacheId = digitCacheKey(face.color, ch);
+        if (digits.has(cacheId)) continue;
         card.bind(blankTicket(ch, face.win, "", face.disabled));
         shrinkToInk(idEl);
         setElementText(idEl, ch);
-        idStrings.set(cacheId, await rasterizeTicketSvg(idEl, dpr));
+        const canvas = await rasterizeTicketSvg(idEl, dpr);
+        digits.set(cacheId, { canvas });
+        const exportBlob = rasterSvgBlob(canvas);
+        if (exportBlob) {
+          digitExportBlobs.set(cacheId, await svgBlobToPngBlob(exportBlob));
+        }
+        captured += 1;
       }
     }
   });
+
+  if (captured > 0) await persistDigitsToIdb();
 }
 
-/** Whole ticket numbers — same capture path as win amounts (correct spacing). */
-export async function warmTicketIds(
-  host: HTMLElement,
-  tickets: readonly Ticket[],
-): Promise<void> {
-  const key = styleKey();
-  const missing = tickets.filter((t) => {
-    if (!t.no) return false;
-    const color: IdColor = t.disabled
-      ? "idDisabled"
-      : isWinTicket(t)
-        ? "idGold"
-        : "idNormal";
-    return !idStrings.has(idStringCacheKey(color, t.no));
-  });
-  if (missing.length === 0) return;
-  await ensureTicketFont(getActiveLayout().metrics.metaFontSize);
-  const dpr = activeDpr();
-  const seen = new Set<string>();
-  await withCard(host, async (card) => {
-    const idEl = card.dom.querySelector(".ticketCard__id");
-    if (!(idEl instanceof HTMLElement)) throw new Error("id glyph source missing");
-    for (const ticket of missing) {
-      const color: IdColor = ticket.disabled
-        ? "idDisabled"
-        : isWinTicket(ticket)
-          ? "idGold"
-          : "idNormal";
-      const dedupe = `${color}|${ticket.no}`;
-      if (seen.has(dedupe)) continue;
-      seen.add(dedupe);
-      const cacheId = `${key}|${color}|${ticket.no}`;
-      if (idStrings.has(cacheId)) continue;
-      card.bind(ticket);
-      shrinkToInk(idEl);
-      setElementText(idEl, ticket.no);
-      idStrings.set(cacheId, await rasterizeTicketSvg(idEl, dpr));
+/**
+ * Hydrate digit sprites from IndexedDB, then SnapDOM any missing 0–9 glyphs
+ * (× normal, gold, disabled). Runs at atlas warm — not when tickets are added.
+ */
+export function warmIdDigits(host: HTMLElement): Promise<void> {
+  const layoutKey = styleKey();
+  if (digitGlyphsReady()) return Promise.resolve();
+  if (digitPromise && digitRunKey === layoutKey) return digitPromise;
+
+  digitRunKey = layoutKey;
+  const run = (async () => {
+    await hydrateDigitsFromIdb();
+    if (digitGlyphsReady()) return;
+    await captureMissingDigits(host);
+  })().finally(() => {
+    if (digitRunKey === layoutKey) {
+      digitPromise = null;
+      digitRunKey = null;
     }
   });
+  digitPromise = run;
+  return run;
+}
+
+export function idDigitCount(): number {
+  const key = styleKey();
+  let n = 0;
+  for (const face of ID_FACES) {
+    for (const ch of DIGITS) {
+      if (digits.has(`${key}|${face.color}|${ch}`)) n += 1;
+    }
+  }
+  return n;
 }
 
 /** Capture any win-amount string that is not already stored. */
@@ -191,16 +311,7 @@ export async function warmAmounts(
   });
 }
 
-export function idDigitCount(): number {
-  const prefix = `${styleKey()}|`;
-  let n = 0;
-  for (const k of idStrings.keys()) {
-    if (k.startsWith(prefix)) n += 1;
-  }
-  return n;
-}
-
-/** Right-aligned id, bottom of the header. Missing digits are skipped. */
+/** Right-aligned id, bottom of header — 5032e76 anchor (layout cardWidth). */
 export function paintIdDigits(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -212,18 +323,11 @@ export function paintIdDigits(
 ): void {
   const m = getActiveLayout().metrics;
   const bottom = originY + Math.round(m.headerHeight * dpr);
-  const right = originX + Math.round(cardWidth * dpr) - Math.round(m.headerPadX * dpr);
-  const whole = idStrings.get(idStringCacheKey(color, text));
-  if (whole) {
-    ctx.drawImage(whole, right - whole.width, bottom - whole.height);
-    return;
-  }
-  // Seed glyphs (single digits) until warmTicketIds catches up for this no.
-  let x = right;
+  let x = originX + Math.round(cardWidth * dpr) - Math.round(m.headerPadX * dpr);
   for (let i = text.length - 1; i >= 0; i--) {
-    const ch = text[i] ?? "";
-    const canvas = idStrings.get(idStringCacheKey(color, ch));
-    if (!canvas) continue;
+    const glyph = digits.get(digitCacheKey(color, text[i] ?? ""));
+    if (!glyph) continue;
+    const { canvas } = glyph;
     x -= canvas.width;
     ctx.drawImage(canvas, x, bottom - canvas.height);
   }
@@ -244,4 +348,3 @@ export function paintAmount(
   const bottom = originY + Math.round(m.headerHeight * dpr);
   ctx.drawImage(canvas, x, bottom - canvas.height);
 }
-
