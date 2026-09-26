@@ -163,7 +163,7 @@ export function installDigitsFromPack(
 export async function captureDigitPackPngs(
   host: HTMLElement,
 ): Promise<{ entries: { color: IdColor; digit: string }[]; blobs: Blob[] }> {
-  await captureMissingDigits(host);
+  await captureMissingDigits(host, false);
   const layoutKey = styleKey();
   const entries = catalogDigitPackEntries();
   const blobs: Blob[] = [];
@@ -184,10 +184,10 @@ export function amountPackSection(): { entries: string[]; blobs: Blob[] } {
   for (const [cacheId, canvas] of amounts) {
     if (!cacheId.startsWith(prefix)) continue;
     const text = cacheId.slice(prefix.length);
-    entries.push(text);
     const exportBlob = rasterSvgBlob(canvas);
     if (!exportBlob) continue;
-    blobs.push(exportBlob); // caller may convert to PNG when saving pack
+    entries.push(text);
+    blobs.push(exportBlob);
   }
   return { entries, blobs };
 }
@@ -264,8 +264,12 @@ async function persistDigitsToIdb(): Promise<void> {
     let blob = digitExportBlobs.get(cacheId);
     if (!blob) continue;
     if (blob.type.includes("svg") || blob.type.includes("xml")) {
-      blob = await svgBlobToPngBlob(blob);
-      digitExportBlobs.set(cacheId, blob);
+      try {
+        blob = await svgBlobToPngBlob(blob);
+        digitExportBlobs.set(cacheId, blob);
+      } catch {
+        // Tainted raster — keep SVG bytes for IDB (same as catalog atlas pack).
+      }
     }
     entries.push(parsed);
     blobs.push(blob);
@@ -321,7 +325,10 @@ async function withCard(
   }
 }
 
-async function captureMissingDigits(host: HTMLElement): Promise<void> {
+async function captureMissingDigits(
+  host: HTMLElement,
+  persistLegacyIdb = true,
+): Promise<void> {
   await ensureTicketFont(getActiveLayout().metrics.metaFontSize);
   const dpr = activeDpr();
   let captured = 0;
@@ -339,15 +346,13 @@ async function captureMissingDigits(host: HTMLElement): Promise<void> {
         const canvas = await rasterizeTicketSvg(idEl, dpr);
         digits.set(cacheId, { canvas });
         const exportBlob = rasterSvgBlob(canvas);
-        if (exportBlob) {
-          digitExportBlobs.set(cacheId, await svgBlobToPngBlob(exportBlob));
-        }
+        if (exportBlob) digitExportBlobs.set(cacheId, exportBlob);
         captured += 1;
       }
     }
   });
 
-  if (captured > 0) await persistDigitsToIdb();
+  if (captured > 0 && persistLegacyIdb) await persistDigitsToIdb();
 }
 
 /**
@@ -409,14 +414,21 @@ export async function warmAmounts(
   });
 }
 
-/** PNG blobs for amounts currently in RAM (for catalog atlas pack). */
-export async function exportAmountPngBlobs(): Promise<{
+/** Sprite blobs for amounts in RAM (SVG pack bytes; PNG when encode works). */
+export async function exportAmountPackBlobs(): Promise<{
   entries: string[];
   blobs: Blob[];
 }> {
   const { entries, blobs: svgBlobs } = amountPackSection();
   if (entries.length === 0) return { entries: [], blobs: [] };
-  const blobs = await Promise.all(svgBlobs.map((b) => svgBlobToPngBlob(b)));
+  const blobs: Blob[] = [];
+  for (const svg of svgBlobs) {
+    try {
+      blobs.push(await svgBlobToPngBlob(svg));
+    } catch {
+      blobs.push(svg);
+    }
+  }
   return { entries, blobs };
 }
 

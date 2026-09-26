@@ -201,6 +201,19 @@ export function rasterSvgBlob(canvas: HTMLCanvasElement): Blob | undefined {
   return rasterSvgBlobs.get(canvas);
 }
 
+/** IDB sprite bytes — PNG when `toBlob` works, else the captured SVG pack. */
+export async function packBlobFromRasterCanvas(
+  canvas: HTMLCanvasElement,
+): Promise<Blob> {
+  const svg = rasterSvgBlob(canvas);
+  if (!svg) throw new Error("missing raster svg sidecar");
+  try {
+    return await svgBlobToPngBlob(svg);
+  } catch {
+    return svg;
+  }
+}
+
 /** Untainted PNG for atlas IDB — prefers captured SVG bytes, else canvas encode. */
 export async function bitmapSpriteToPngBlob(
   sprite: HTMLCanvasElement | ImageBitmap,
@@ -276,9 +289,18 @@ export async function decodeStoredSpriteBlob(
 /** Untainted PNG for IDB — from the captured SVG pack bytes. */
 export async function svgBlobToPngBlob(svg: Blob): Promise<Blob> {
   const canvas = await decodeSvgBlobToCanvas(svg);
-  const png = await new Promise<Blob | null>((resolve) =>
-    canvas.toBlob(resolve, "image/png"),
-  );
+  let png: Blob | null = null;
+  try {
+    png = await new Promise<Blob | null>((resolve) => {
+      try {
+        canvas.toBlob(resolve, "image/png");
+      } catch {
+        resolve(null);
+      }
+    });
+  } catch {
+    png = null;
+  }
   if (!png) throw new Error("png encode failed");
   return png;
 }

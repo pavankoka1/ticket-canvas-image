@@ -15,7 +15,7 @@ import {
   cellBitmapsFromActiveBlobs,
   CELL_BADGE_PAD_CSS,
   CELL_BLOB_COUNT,
-  chromePngBlobFromCanvas,
+  chromePackBlobFromCanvas,
   exportActiveCellPngBlobs,
   exportDisabledCellPngBlobs,
   getCellBitmaps,
@@ -24,7 +24,7 @@ import { getActiveLayout } from "./catalogLayout";
 import {
   catalogDigitPackEntries,
   captureDigitPackPngs,
-  exportAmountPngBlobs,
+  exportAmountPackBlobs,
   headerStyleKey,
   hydrateAmountsFromPack,
   idDigitPackIdbKey,
@@ -34,10 +34,14 @@ import {
   type IdColor,
 } from "./headerGlyphs";
 import {
-  decodePngBlobsToBitmaps,
+  bitmapToCanvas,
   decodePngBlobsToCanvases,
 } from "./spriteDecodeClient";
-import { svgBlobToPngBlob } from "./ticketSvgRaster";
+import {
+  decodeStoredSpriteBlob,
+  decodeSvgBlobToCanvas,
+  svgBlobToPngBlob,
+} from "./ticketSvgRaster";
 
 const PACK_PREFIX = "catalog-atlas-v1";
 const CHROME_IDB = "chrome-v2-png";
@@ -235,9 +239,9 @@ async function captureFullPack(host: HTMLElement, key: string): Promise<LoadedPa
   const chromePlainCanvas = await captureTicketChromeBitmap(host, false, false);
   const chromeWinCanvas = await captureTicketChromeBitmap(host, true, false);
   const chromeDisabledCanvas = await captureTicketChromeBitmap(host, false, true);
-  const chromePlain = await chromePngBlobFromCanvas(chromePlainCanvas);
-  const chromeWin = await chromePngBlobFromCanvas(chromeWinCanvas);
-  const chromeDisabled = await chromePngBlobFromCanvas(chromeDisabledCanvas);
+  const chromePlain = await chromePackBlobFromCanvas(chromePlainCanvas);
+  const chromeWin = await chromePackBlobFromCanvas(chromeWinCanvas);
+  const chromeDisabled = await chromePackBlobFromCanvas(chromeDisabledCanvas);
   if (!chromePlain || !chromeWin || !chromeDisabled) {
     throw new Error("chrome pack encode failed");
   }
@@ -246,7 +250,7 @@ async function captureFullPack(host: HTMLElement, key: string): Promise<LoadedPa
   cacheTicketChrome(true, false, chromeWinCanvas);
   cacheTicketChrome(false, true, chromeDisabledCanvas);
 
-  const { entries: amountEntries, blobs: amountBlobs } = await exportAmountPngBlobs();
+  const { entries: amountEntries, blobs: amountBlobs } = await exportAmountPackBlobs();
 
   const meta: CatalogAtlasPackMeta = {
     packVersion: 1,
@@ -300,23 +304,51 @@ function sliceBlobs(pack: LoadedPack, start: number, count: number): Blob[] {
   return pack.blobs.slice(start, start + count);
 }
 
+async function decodePackBlobToCanvas(blob: Blob): Promise<HTMLCanvasElement | null> {
+  if (blob.type.includes("png")) {
+    return (await decodePngBlobsToCanvases([blob]))[0] ?? null;
+  }
+  try {
+    const sprite = await decodeStoredSpriteBlob(blob);
+    if (sprite instanceof HTMLCanvasElement) return sprite;
+    return bitmapToCanvas(sprite);
+  } catch {
+    return decodeSvgBlobToCanvas(blob).catch(() => null);
+  }
+}
+
+async function decodePackBlobToSprite(
+  blob: Blob,
+): Promise<HTMLCanvasElement | ImageBitmap | null> {
+  try {
+    return await decodeStoredSpriteBlob(blob);
+  } catch {
+    return decodePackBlobToCanvas(blob);
+  }
+}
+
+async function decodeDigitPackBlobs(
+  blobs: Blob[],
+): Promise<(HTMLCanvasElement | null)[]> {
+  return Promise.all(blobs.map((b) => decodePackBlobToCanvas(b)));
+}
+
 async function applyPhase1(pack: LoadedPack): Promise<void> {
   resetDigitHydration();
   const activeBlobs = sliceBlobs(pack, OFF_CELLS_ACTIVE, CELLS_ACTIVE);
   const digitBlobs = sliceBlobs(pack, OFF_DIGITS, DIGIT_COUNT);
   const chromePlainBlob = pack.blobs[OFF_CHROME_PLAIN]!;
 
-  const [setFromBlobs, digitCanvases, chromeSprites] = await Promise.all([
+  const [setFromBlobs, digitCanvases, chromePlain] = await Promise.all([
     cellBitmapsFromActiveBlobs(activeBlobs),
-    decodePngBlobsToCanvases(digitBlobs),
-    decodePngBlobsToBitmaps([chromePlainBlob]),
+    decodeDigitPackBlobs(digitBlobs),
+    decodePackBlobToSprite(chromePlainBlob),
   ]);
   if (!setFromBlobs) throw new Error("phase1 active cells decode failed");
   cacheCellBitmaps(setFromBlobs);
 
   installDigitsFromPack(pack.meta.digitEntries, digitCanvases, digitBlobs);
 
-  const chromePlain = chromeSprites[0];
   if (!chromePlain) throw new Error("phase1 chrome decode failed");
   cacheTicketChrome(false, false, chromePlain);
 }
@@ -330,9 +362,9 @@ async function applyPhase2(pack: LoadedPack): Promise<void> {
 
   const chromeWinBlob = pack.blobs[OFF_CHROME_WIN]!;
   const chromeDisabledBlob = pack.blobs[OFF_CHROME_DISABLED]!;
-  const [winSprite, disabledSprite] = await decodePngBlobsToBitmaps([
-    chromeWinBlob,
-    chromeDisabledBlob,
+  const [winSprite, disabledSprite] = await Promise.all([
+    decodePackBlobToSprite(chromeWinBlob),
+    decodePackBlobToSprite(chromeDisabledBlob),
   ]);
   if (winSprite) cacheTicketChrome(true, false, winSprite);
   if (disabledSprite) cacheTicketChrome(false, true, disabledSprite);
@@ -386,7 +418,7 @@ export async function warmCatalogAtlasAmounts(
   if (gen !== warmGen) return;
   await applyAmountsSection(pack);
   await warmAmounts(host, texts);
-  const { entries, blobs } = await exportAmountPngBlobs();
+  const { entries, blobs } = await exportAmountPackBlobs();
   const unchanged =
     entries.length === pack.meta.amountEntries.length &&
     entries.every((e, i) => e === pack.meta.amountEntries[i]);

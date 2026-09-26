@@ -13,6 +13,7 @@ import { decodePngBlobsToBitmaps } from "./spriteDecodeClient";
 import {
   bitmapSpriteToPngBlob,
   decodeStoredSpriteBlob,
+  packBlobFromRasterCanvas,
   rasterizeTicketSvg,
   rasterSvgBlob,
   svgBlobToPngBlob,
@@ -144,9 +145,12 @@ async function fromBlobs(blobs: Blob[]): Promise<CellBitmaps | null> {
   };
 }
 
-async function spriteToPngBlob(sprite: BitmapSprite): Promise<Blob | null> {
+async function spriteToPackBlob(sprite: BitmapSprite): Promise<Blob | null> {
   try {
-    if (sprite instanceof HTMLCanvasElement || sprite instanceof ImageBitmap) {
+    if (sprite instanceof HTMLCanvasElement) {
+      return await packBlobFromRasterCanvas(sprite);
+    }
+    if (sprite instanceof ImageBitmap) {
       return await bitmapSpriteToPngBlob(sprite);
     }
     return null;
@@ -160,19 +164,19 @@ async function blobsOf(set: CellBitmaps): Promise<Blob[] | null> {
   for (let n = 1; n <= NUMBER_COUNT; n++) {
     const sprite = set.numbers[n];
     if (!sprite) return null;
-    const png = await spriteToPngBlob(sprite);
-    if (!png) return null;
-    out.push(png);
+    const blob = await spriteToPackBlob(sprite);
+    if (!blob) return null;
+    out.push(blob);
   }
-  const dabPng = await spriteToPngBlob(set.dab.canvas);
-  if (!dabPng) return null;
-  out.push(dabPng);
+  const dabBlob = await spriteToPackBlob(set.dab.canvas);
+  if (!dabBlob) return null;
+  out.push(dabBlob);
   for (const value of MULTIPLIER_VALUES) {
     const sprite = set.multipliers.get(value)?.canvas;
     if (!sprite) return null;
-    const png = await spriteToPngBlob(sprite);
-    if (!png) return null;
-    out.push(png);
+    const blob = await spriteToPackBlob(sprite);
+    if (!blob) return null;
+    out.push(blob);
   }
   return out;
 }
@@ -182,19 +186,19 @@ async function disabledBlobsOf(set: CellBitmaps): Promise<Blob[] | null> {
   for (let n = 1; n <= NUMBER_COUNT; n++) {
     const sprite = set.disabledNumbers[n];
     if (!sprite) return null;
-    const png = await spriteToPngBlob(sprite);
-    if (!png) return null;
-    out.push(png);
+    const blob = await spriteToPackBlob(sprite);
+    if (!blob) return null;
+    out.push(blob);
   }
-  const dabPng = await spriteToPngBlob(set.disabledDab.canvas);
-  if (!dabPng) return null;
-  out.push(dabPng);
+  const dabBlob = await spriteToPackBlob(set.disabledDab.canvas);
+  if (!dabBlob) return null;
+  out.push(dabBlob);
   for (const value of MULTIPLIER_VALUES) {
     const sprite = set.disabledMultipliers.get(value)?.canvas;
     if (!sprite) return null;
-    const png = await spriteToPngBlob(sprite);
-    if (!png) return null;
-    out.push(png);
+    const blob = await spriteToPackBlob(sprite);
+    if (!blob) return null;
+    out.push(blob);
   }
   return out;
 }
@@ -254,12 +258,14 @@ export async function captureTicketChromeBitmap(
   return captureChrome(host, win, disabled);
 }
 
-export async function chromePngBlobFromCanvas(
+export async function chromePackBlobFromCanvas(
   canvas: HTMLCanvasElement,
 ): Promise<Blob | null> {
-  const svg = rasterSvgBlob(canvas);
-  if (!svg) return null;
-  return svgBlobToPngBlob(svg);
+  try {
+    return await packBlobFromRasterCanvas(canvas);
+  } catch {
+    return null;
+  }
 }
 
 async function disabledFromBlobs(
