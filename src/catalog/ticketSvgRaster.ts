@@ -5,6 +5,10 @@
  * painter produces the pixels, including the rotated multiplier.
  */
 
+import { nudgeSnapText } from "./fullTicketSnap";
+import { ensureTicketFontsForLayout } from "./ticketFont";
+import type { TicketMetrics } from "./ticketPresets";
+
 const FONT_URL = "/fonts/onest-700.woff2";
 
 let fontFacePromise: Promise<string> | null = null;
@@ -28,7 +32,11 @@ function fontFaceCss(): Promise<string> {
       })
       .then((buf) => {
         const b64 = bytesToBase64(new Uint8Array(buf));
-        return `@font-face{font-family:'MB-Onest';font-style:normal;font-weight:700;src:url(data:font/woff2;base64,${b64}) format('woff2');}`;
+        const src = `url(data:font/woff2;base64,${b64}) format('woff2')`;
+        return (
+          `@font-face{font-family:'MB-Onest';font-style:normal;font-weight:700;src:${src};}` +
+          `@font-face{font-family:Onest;font-style:normal;font-weight:700;src:${src};}`
+        );
       });
   }
   return fontFacePromise;
@@ -79,92 +87,241 @@ function applyComputedStyle(
   }
 }
 
-function inlineTree(src: Element, dst: HTMLElement, images: Map<string, string>): void {
-  applyComputedStyle(src, dst, images);
-  const srcKids = [...src.children];
-  const dstKids = [...dst.children];
-  for (let i = 0; i < srcKids.length; i++) {
-    const child = dstKids[i];
-    if (child instanceof HTMLElement) inlineTree(srcKids[i]!, child, images);
+function firstInkTextNode(root: HTMLElement): Text | null {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let n: Node | null;
+  while ((n = walker.nextNode())) {
+    const t = n as Text;
+    if (t.data.trim()) return t;
   }
-  const before = getComputedStyle(src, "::before");
-  const content = before.content;
-  if (content === "none" || content === "normal") return;
-  if (parseFloat(before.width) <= 0 || parseFloat(before.height) <= 0) return;
-  const span = document.createElement("span");
-  applyComputedStyle(src, span, images, true);
-  span.style.content = "none";
-  dst.appendChild(span);
+  return null;
 }
 
-export async function rasterizeTicketSvg(
-  card: HTMLElement,
+/** Live DOM ink vertical centre from the element top, device px (Range — same as Compare). */
+function domInkCentreYDevice(el: HTMLElement, dpr: number): number | null {
+  const node = firstInkTextNode(el);
+  if (!node) return null;
+  const range = document.createRange();
+  range.selectNodeContents(node);
+  const inkR = range.getBoundingClientRect();
+  const boxR = el.getBoundingClientRect();
+  if (inkR.height <= 0) return null;
+  const centreCss = inkR.top - boxR.top + inkR.height / 2;
+  return centreCss * dpr;
+}
+
+function cellHasInkText(el: HTMLElement): boolean {
+  return [...el.childNodes].some(
+    (n) => n.nodeType === Node.TEXT_NODE && (n as Text).data.trim(),
+  );
+}
+
+const svgRasterInkShiftDevice = new Map<string, number>();
+
+export function clearSvgRasterInkShiftCache(): void {
+  svgRasterInkShiftDevice.clear();
+}
+
+/**
+ * Mechanism B: blob-SVG foreignObject paints digit ink higher than native DOM.
+ * Calibrate on the same SVG path used for whole-ticket paint (warm discard included).
+ */
+function svgRasterInkShiftKey(
+  metrics: TicketMetrics,
   dpr: number,
-  padCss = 0,
-): Promise<HTMLCanvasElement> {
-  const rect = card.getBoundingClientRect();
-  const cssW = rect.width + padCss * 2;
-  const cssH = rect.height + padCss * 2;
+  probeCell: HTMLElement,
+): string {
+  const r = probeCell.getBoundingClientRect();
+  return `${metrics.id}|${dpr}|${Math.round(r.width)}x${Math.round(r.height)}`;
+}
+
+let foInkProbeHost: HTMLDivElement | null = null;
+
+function foreignObjectInkProbeHost(): HTMLDivElement {
+  if (!foInkProbeHost) {
+    foInkProbeHost = document.createElement("div");
+    foInkProbeHost.className = "catalog__captureHost";
+    foInkProbeHost.setAttribute("aria-hidden", "true");
+    foInkProbeHost.style.cssText =
+      "position:fixed;left:0;top:0;opacity:0.001;pointer-events:none;z-index:-1;overflow:hidden";
+    document.body.appendChild(foInkProbeHost);
+  }
+  return foInkProbeHost;
+}
+
+/**
+ * Measure digit ink centre inside an on-page SVG foreignObject (same markup as blob raster).
+ * Avoids tainted canvas getImageData after blob decode.
+ */
+function measureForeignObjectInkCentreYDevice(
+  liveCell: HTMLElement,
+  dpr: number,
+  assets: RasterAssets,
+  inkShiftCss: number,
+): number | null {
+  void liveCell.offsetWidth;
+  const rect = liveCell.getBoundingClientRect();
+  if (rect.width < 1 || rect.height < 1) return null;
+  const cssW = rect.width;
+  const cssH = rect.height;
   const bw = Math.round(cssW * dpr);
   const bh = Math.round(cssH * dpr);
 
-  // Blob SVG images cannot load page URLs. Every badge the clone may
-  // reference has to be inlined, including the green-ticket discs. Those
-  // two were missing, so a disabled dab/multiplier raster was empty and the
-  // original number showed through.
-  const [fontCss, dabUrl, discUrl, dabOffUrl, discOffUrl] = await Promise.all([
-    fontFaceCss(),
-    imageDataUrl("/dab-full.png"),
-    imageDataUrl("/badge-circle.png"),
-    imageDataUrl("/dab-disabled.png"),
-    imageDataUrl("/badge-circle-disabled.png"),
-  ]);
-  const images = new Map<string, string>([
-    ["/dab-full.png", dabUrl],
-    ["/badge-circle.png", discUrl],
-    ["/dab-disabled.png", dabOffUrl],
-    ["/badge-circle-disabled.png", discOffUrl],
-  ]);
-  for (const [path, data] of [...images]) {
-    images.set(`${location.origin}${path}`, data);
-  }
-
-  const clone = card.cloneNode(true) as HTMLElement;
-  inlineTree(card, clone, images);
+  const clone = liveCell.cloneNode(true) as HTMLElement;
+  inlineTree(liveCell, clone, assets.images);
   clone.style.position = "absolute";
-  // Computed `inset` / `left` can be the off-screen capture offset. Reset
-  // those before placing the clone, or the face paints outside the bitmap.
   clone.style.inset = "auto";
-  clone.style.left = `${padCss}px`;
-  clone.style.top = `${padCss}px`;
+  clone.style.left = "0";
+  clone.style.top = "0";
+  clone.style.transform = "none";
+  clone.style.margin = "0";
+  clone.style.width = `${rect.width}px`;
+  clone.style.height = `${rect.height}px`;
+  applySvgRasterInkNudge(clone, inkShiftCss);
+
+  const holder = `position:relative;margin:0;padding:0;width:${cssW}px;height:${cssH}px;zoom:${dpr}`;
+  const xhtml =
+    `<div xmlns="http://www.w3.org/1999/xhtml" style="${holder}">` +
+    `<style>${assets.fontCss}</style>` +
+    clone.outerHTML +
+    `</div>`;
+
+  const host = foreignObjectInkProbeHost();
+  host.replaceChildren();
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("width", String(bw));
+  svg.setAttribute("height", String(bh));
+  svg.setAttribute("viewBox", `0 0 ${bw} ${bh}`);
+  const fo = document.createElementNS("http://www.w3.org/2000/svg", "foreignObject");
+  fo.setAttribute("x", "0");
+  fo.setAttribute("y", "0");
+  fo.setAttribute("width", String(bw));
+  fo.setAttribute("height", String(bh));
+  const parsed = new DOMParser().parseFromString(xhtml, "application/xml");
+  const xdiv = parsed.documentElement;
+  fo.appendChild(document.importNode(xdiv, true));
+  svg.appendChild(fo);
+  host.appendChild(svg);
+  void host.offsetWidth;
+
+  const rendered =
+    host.querySelector<HTMLElement>(".ticketCard__cell") ??
+    (clone.classList.contains("ticketCard__cell") ? host.querySelector(clone.tagName) : null);
+  if (!rendered) return null;
+  return domInkCentreYDevice(rendered, dpr);
+}
+
+async function resolveSvgRasterInkShiftDevice(
+  probeCell: HTMLElement,
+  dpr: number,
+  metrics: TicketMetrics,
+  assets: RasterAssets,
+): Promise<number> {
+  const key = svgRasterInkShiftKey(metrics, dpr, probeCell);
+  const cached = svgRasterInkShiftDevice.get(key);
+  if (cached !== undefined) return cached;
+
+  const native = domInkCentreYDevice(probeCell, dpr);
+  await document.fonts.ready;
+  measureForeignObjectInkCentreYDevice(probeCell, dpr, assets, 0);
+  const foCenter = measureForeignObjectInkCentreYDevice(probeCell, dpr, assets, 0);
+  const shift = native != null && foCenter != null ? native - foCenter : 0;
+  svgRasterInkShiftDevice.set(key, shift);
+  console.log("[svgRaster] ink shiftY (device px)", {
+    layout: metrics.id,
+    dpr,
+    shift: +shift.toFixed(2),
+    foCenter: foCenter == null ? "n/a" : +foCenter.toFixed(2),
+    nativeCenter: native == null ? "n/a" : +native.toFixed(2),
+  });
+  return shift;
+}
+
+function appendTranslateNudge(el: HTMLElement, dx: number, dy: number): void {
+  if (dx === 0 && dy === 0) return;
+  const prev = el.style.transform;
+  const base = prev && prev !== "none" ? `${prev} ` : "";
+  el.style.transform = `${base}translate(${dx}px, ${dy}px)`;
+}
+
+/** Isolated cell / header glyph capture — Y only, after transform reset. */
+function applySvgRasterInkNudge(root: HTMLElement, inkShiftCss: number): void {
+  appendTranslateNudge(root, 0, inkShiftCss);
+}
+
+function prepareRasterCloneBox(
+  clone: HTMLElement,
+  rect: DOMRect,
+  padX: number,
+  padY: number,
+): { cssW: number; cssH: number } {
+  clone.style.position = "absolute";
+  clone.style.inset = "auto";
+  clone.style.left = `${padX}px`;
+  clone.style.top = `${padY}px`;
   clone.style.right = "auto";
   clone.style.bottom = "auto";
   clone.style.transform = "none";
   clone.style.margin = "0";
-  // Pad grows the foreignObject, not the element. Stretching the badge to
-  // the padded box recenters the rotated label and clips it.
   clone.style.width = `${rect.width}px`;
   clone.style.height = `${rect.height}px`;
-  if (padCss > 0) clone.style.overflow = "visible";
+  if (padX > 0 || padY > 0) clone.style.overflow = "visible";
+  return { cssW: rect.width + padX * 2, cssH: rect.height + padY * 2 };
+}
 
-  // viewBox is device pixels, and zoom paints the HTML at that resolution,
-  // so the SVG image is not scaled a second time on the way to the canvas.
-  // position:relative is the containing block for a padded absolute clone.
-  const holder =
-    padCss > 0
-      ? `position:relative;overflow:visible;margin:0;padding:0;width:${cssW}px;height:${cssH}px;zoom:${dpr}`
-      : `margin:0;padding:0;width:${cssW}px;height:${cssH}px;zoom:${dpr}`;
-  const xhtml =
-    `<div xmlns="http://www.w3.org/1999/xhtml" style="${holder}">` +
-    `<style>${fontCss}</style>` +
-    clone.outerHTML +
-    `</div>`;
-  const svg =
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${bw}" height="${bh}" viewBox="0 0 ${bw} ${bh}">` +
-    `<foreignObject x="0" y="0" width="${bw}" height="${bh}">${xhtml}</foreignObject>` +
-    `</svg>`;
+function buildFullTicketRasterClone(
+  live: HTMLElement,
+  assets: RasterAssets,
+  rect: DOMRect,
+  padX: number,
+  padY: number,
+  dpr: number,
+): HTMLElement {
+  const clone = live.cloneNode(true) as HTMLElement;
+  inlineTree(live, clone, assets.images);
+  prepareRasterCloneBox(clone, rect, padX, padY);
+  nudgeSnapText(clone, dpr);
+  return clone;
+}
 
-  const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+async function encodePreparedCloneForeignObject(
+  clone: HTMLElement,
+  dpr: number,
+  padX: number,
+  padY: number,
+  rect: DOMRect,
+  assets: RasterAssets,
+): Promise<HTMLCanvasElement> {
+  const cssW = rect.width + padX * 2;
+  const cssH = rect.height + padY * 2;
+  const bw = Math.round(cssW * dpr);
+  const bh = Math.round(cssH * dpr);
+  const holderOverflow = padX > 0 || padY > 0 ? "overflow:visible;" : "";
+  const holderStyle =
+    `position:relative;${holderOverflow}margin:0;padding:0;width:${cssW}px;height:${cssH}px;zoom:${dpr}`;
+
+  const xhtmlRoot = document.createElement("div");
+  xhtmlRoot.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
+  xhtmlRoot.style.cssText = holderStyle;
+  const styleEl = document.createElement("style");
+  styleEl.textContent = assets.fontCss;
+  xhtmlRoot.append(styleEl, clone);
+
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  svg.setAttribute("width", String(bw));
+  svg.setAttribute("height", String(bh));
+  svg.setAttribute("viewBox", `0 0 ${bw} ${bh}`);
+  const fo = document.createElementNS("http://www.w3.org/2000/svg", "foreignObject");
+  fo.setAttribute("x", "0");
+  fo.setAttribute("y", "0");
+  fo.setAttribute("width", String(bw));
+  fo.setAttribute("height", String(bh));
+  fo.appendChild(document.importNode(xhtmlRoot, true));
+  svg.appendChild(fo);
+
+  const svgMarkup = new XMLSerializer().serializeToString(svg);
+  const blob = new Blob([svgMarkup], { type: "image/svg+xml;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   let canvasOut: HTMLCanvasElement | null = null;
   try {
@@ -194,6 +351,162 @@ export async function rasterizeTicketSvg(
   }
 }
 
+async function rasterizeFullTicketForeignObject(
+  live: HTMLElement,
+  dpr: number,
+  padX: number,
+  padY: number,
+  assets: RasterAssets,
+  rect: DOMRect,
+): Promise<HTMLCanvasElement> {
+  const clone = buildFullTicketRasterClone(live, assets, rect, padX, padY, dpr);
+  return encodePreparedCloneForeignObject(clone, dpr, padX, padY, rect, assets);
+}
+
+type RasterAssets = {
+  fontCss: string;
+  images: Map<string, string>;
+};
+
+async function loadRasterAssets(): Promise<RasterAssets> {
+  const [fontCss, dabUrl, discUrl, dabOffUrl, discOffUrl] = await Promise.all([
+    fontFaceCss(),
+    imageDataUrl("/dab-full.png"),
+    imageDataUrl("/badge-circle.png"),
+    imageDataUrl("/dab-disabled.png"),
+    imageDataUrl("/badge-circle-disabled.png"),
+  ]);
+  const images = new Map<string, string>([
+    ["/dab-full.png", dabUrl],
+    ["/badge-circle.png", discUrl],
+    ["/dab-disabled.png", dabOffUrl],
+    ["/badge-circle-disabled.png", discOffUrl],
+  ]);
+  for (const [path, data] of [...images]) {
+    images.set(`${location.origin}${path}`, data);
+  }
+  return { fontCss, images };
+}
+
+type RasterizeOpts = {
+  stabilize?: boolean;
+  metrics?: TicketMetrics;
+  liveRoot?: HTMLElement;
+  /** Device px; 0 during ink calibration passes. */
+  inkShiftDevice?: number;
+  skipInkCalibration?: boolean;
+};
+
+async function rasterizeHtmlToCanvas(
+  card: HTMLElement,
+  dpr: number,
+  pad: SvgRasterPad,
+  assets: RasterAssets,
+  opts: RasterizeOpts,
+): Promise<HTMLCanvasElement> {
+  const stabilize = opts.stabilize !== false;
+  const { x: padX, y: padY } = resolveRasterPad(pad);
+  void card.offsetWidth;
+  const rect = card.getBoundingClientRect();
+  if (rect.width < 1 || rect.height < 1) {
+    throw new Error(
+      `svg raster: ticket box ${rect.width.toFixed(2)}×${rect.height.toFixed(2)} — layout not ready`,
+    );
+  }
+  const liveRoot = opts.liveRoot ?? card;
+  const isFullTicket = card.classList.contains("ticketCard");
+
+  if (isFullTicket && stabilize) {
+    return rasterizeFullTicketForeignObject(
+      liveRoot,
+      dpr,
+      padX,
+      padY,
+      assets,
+      rect,
+    );
+  }
+
+  const clone = card.cloneNode(true) as HTMLElement;
+  inlineTree(card, clone, assets.images);
+  prepareRasterCloneBox(clone, rect, padX, padY);
+
+  if (
+    stabilize &&
+    opts.metrics &&
+    !opts.skipInkCalibration &&
+    !isFullTicket
+  ) {
+    let inkShiftDevice = opts.inkShiftDevice;
+    if (inkShiftDevice === undefined) {
+      const probe =
+        [...liveRoot.querySelectorAll<HTMLElement>(".ticketCard__cell")].find((c) =>
+          cellHasInkText(c),
+        ) ??
+        (liveRoot.classList.contains("ticketCard__cell") ? liveRoot : null);
+      inkShiftDevice = probe
+        ? await resolveSvgRasterInkShiftDevice(probe, dpr, opts.metrics, assets)
+        : 0;
+    }
+    applySvgRasterInkNudge(clone, (inkShiftDevice ?? 0) / dpr);
+  }
+
+  return encodePreparedCloneForeignObject(clone, dpr, padX, padY, rect, assets);
+}
+
+function inlineTree(src: Element, dst: HTMLElement, images: Map<string, string>): void {
+  applyComputedStyle(src, dst, images);
+  const srcKids = [...src.children];
+  const dstKids = [...dst.children];
+  for (let i = 0; i < srcKids.length; i++) {
+    const child = dstKids[i];
+    if (child instanceof HTMLElement) inlineTree(srcKids[i]!, child, images);
+  }
+  const before = getComputedStyle(src, "::before");
+  const content = before.content;
+  if (content === "none" || content === "normal") return;
+  if (parseFloat(before.width) <= 0 || parseFloat(before.height) <= 0) return;
+  const span = document.createElement("span");
+  applyComputedStyle(src, span, images, true);
+  span.style.content = "none";
+  dst.appendChild(span);
+}
+
+export type SvgRasterPad = number | { x?: number; y?: number };
+
+function resolveRasterPad(pad: SvgRasterPad): { x: number; y: number } {
+  if (typeof pad === "number") return { x: pad, y: pad };
+  const x = pad.x ?? 0;
+  return { x, y: pad.y ?? x };
+}
+
+/** Minimal FO probe (e.g. 50×50 digit) — no ticket ink calibration. */
+export async function rasterizeElementSvg(
+  el: HTMLElement,
+  dpr: number,
+): Promise<HTMLCanvasElement> {
+  const assets = await loadRasterAssets();
+  return rasterizeHtmlToCanvas(el, dpr, 0, assets, {
+    stabilize: false,
+    liveRoot: el,
+  });
+}
+
+export async function rasterizeTicketSvg(
+  card: HTMLElement,
+  dpr: number,
+  pad: SvgRasterPad = 0,
+  metrics?: TicketMetrics,
+): Promise<HTMLCanvasElement> {
+  if (metrics) await ensureTicketFontsForLayout(metrics);
+  const assets = await loadRasterAssets();
+  return rasterizeHtmlToCanvas(card, dpr, pad, assets, {
+    stabilize: true,
+    metrics,
+    liveRoot: card,
+  });
+}
+
 /** SVG bytes for a raster, so the bitmap can be stored without reading pixels. */
 const rasterSvgBlobs = new WeakMap<HTMLCanvasElement, Blob>();
 
@@ -207,11 +520,8 @@ export async function packBlobFromRasterCanvas(
 ): Promise<Blob> {
   const svg = rasterSvgBlob(canvas);
   if (!svg) throw new Error("missing raster svg sidecar");
-  try {
-    return await svgBlobToPngBlob(svg);
-  } catch {
-    return svg;
-  }
+  const png = await svgBlobToPngBlob(svg);
+  return png ?? svg;
 }
 
 /** Untainted PNG for atlas IDB — prefers captured SVG bytes, else canvas encode. */
@@ -233,7 +543,11 @@ export async function bitmapSpriteToPngBlob(
     return png;
   }
   const svg = rasterSvgBlob(sprite);
-  if (svg) return svgBlobToPngBlob(svg);
+  if (svg) {
+    const png = await svgBlobToPngBlob(svg);
+    if (png) return png;
+    return svg;
+  }
   const png = await new Promise<Blob | null>((resolve) =>
     sprite.toBlob(resolve, "image/png"),
   );
@@ -286,8 +600,8 @@ export async function decodeStoredSpriteBlob(
   }
 }
 
-/** Untainted PNG for IDB — from the captured SVG pack bytes. */
-export async function svgBlobToPngBlob(svg: Blob): Promise<Blob> {
+/** Untainted PNG for IDB — from the captured SVG pack bytes; null keeps SVG in IDB. */
+export async function svgBlobToPngBlob(svg: Blob): Promise<Blob | null> {
   const canvas = await decodeSvgBlobToCanvas(svg);
   let png: Blob | null = null;
   try {
@@ -301,6 +615,5 @@ export async function svgBlobToPngBlob(svg: Blob): Promise<Blob> {
   } catch {
     png = null;
   }
-  if (!png) throw new Error("png encode failed");
   return png;
 }

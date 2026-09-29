@@ -205,6 +205,7 @@ function modelFromGeometry(
   geo: TicketGeometry,
   sep = getActiveLayout().metrics.separatorWidth,
 ): CellBoxModel {
+  const m = getActiveLayout().metrics;
   return {
     dpr: geo.dpr,
     cardWidth: geo.cardWidth,
@@ -213,6 +214,7 @@ function modelFromGeometry(
     padX: geo.cells[0]?.x ?? 0,
     bodyTop: geo.cells[0]?.y ?? 0,
     sep,
+    badgeTop: m.headerHeight,
     cells: geo.cells,
   };
 }
@@ -503,7 +505,7 @@ async function buildAtlas(
     });
     const ink8 = scanInkBBox(raw8);
     if (ink8 && nativeCentre != null) {
-      inkShift = Math.round(nativeCentre - ink8.center);
+      inkShift = nativeCentre - ink8.center;
     }
     console.log("[INK-FIX]", {
       preset: m.id,
@@ -652,6 +654,22 @@ async function buildAtlas(
  * no-op and this is just the original "any channel < 200" ink test; the general
  * form also handles straight-alpha input if the capture ever changes.
  */
+/** Vertical ink centre in device px from the canvas top (SVG cell captures). */
+export function inkCenterYDevice(canvas: HTMLCanvasElement): number | null {
+  const box = scanInkBBox(canvas);
+  return box?.center ?? null;
+}
+
+/** Native digit-ink centre from cell top, device px (live DOM pipeline). */
+export function measureCellNumberInkCentreDev(
+  host: HTMLElement,
+  m: TicketMetrics,
+  cellHcss: number,
+  dpr: number,
+): number | null {
+  return nativeInkCentreDevice(host, m, cellHcss, dpr);
+}
+
 function scanInkBBox(
   canvas: HTMLCanvasElement,
 ): { top: number; bottom: number; height: number; center: number } | null {

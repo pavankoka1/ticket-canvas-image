@@ -188,11 +188,17 @@ export class CanvasPool {
   /** Paint every dirty tile before the next frame. Used when the DOM band flips. */
   paintNow(): void {
     if (!this.ready) return;
-    this.paintGen += 1;
+    void this.flushDirtyTiles();
+  }
+
+  private async flushDirtyTiles(): Promise<void> {
+    const gen = ++this.paintGen;
     for (const tile of this.tiles) {
+      if (gen !== this.paintGen) return;
       if (!tile.dirty) continue;
-      this.paintTile(tile);
+      await this.paintTile(tile, gen);
       tile.dirty = false;
+      await yieldToMain();
     }
   }
 
@@ -283,20 +289,11 @@ export class CanvasPool {
   }
 
   private async paintDirtyTiles(): Promise<void> {
-    if (this.paused) return; // scrolling — dirty tiles flush on resume()
-    const gen = ++this.paintGen;
-    for (const tile of this.tiles) {
-      if (gen !== this.paintGen) return;
-      if (this.paused) return; // a scroll started mid-paint — stop, flush on resume
-      if (!tile.dirty) continue;
-      this.paintTile(tile);
-      tile.dirty = false;
-      // Yield between tiles so adding hundreds doesn't freeze the main thread.
-      await yieldToMain();
-    }
+    if (this.paused) return;
+    await this.flushDirtyTiles();
   }
 
-  private paintTile(tile: Tile): void {
+  private async paintTile(tile: Tile, gen: number): Promise<void> {
     const c = tile.canvas;
     const ctx = tile.ctx;
     const layout = getActiveLayout();
@@ -342,14 +339,14 @@ export class CanvasPool {
     const boxes = catalogCellBoxes(dpr);
 
     for (let i = tile.start; i < tile.end; i++) {
+      if (gen !== this.paintGen) return;
       const slot = this.slots[i]!;
       const ticket = this.ticketsById.get(slot.id);
       if (!ticket || this.skipIds.has(slot.id)) continue;
       const sx = Math.round(slot.x * dpr) / dpr;
       const sy = Math.round(slot.y * dpr) / dpr;
-      // Content-relative — does not depend on viewport scroll (tile scrolls with catalog).
-      const originX = Math.round(sx * dpr);
-      const originY = Math.round((sy - minY) * dpr);
+      const originX = Math.round((screenLeft + sx) * dpr) - x0;
+      const originY = Math.round((parent.top + sy) * dpr) - y0;
       paintCatalogTicket(ctx, ticket, originX, originY, cardWidth, dpr, boxes);
     }
   }

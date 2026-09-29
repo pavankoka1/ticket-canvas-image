@@ -19,7 +19,6 @@ import {
   activeDpr,
   applyCellBoxCssVars,
   getLiveCellBoxModel,
-  resolveCellBoxModel,
   setLiveCellBoxModel,
 } from "./cellBoxModel";
 import {
@@ -31,20 +30,10 @@ import {
   resolveTicketFrame,
   setActiveLayout,
 } from "./catalogLayout";
-import {
-  cancelCellWarm,
-  clearCellAtlas,
-  getCellSpriteDataUrl,
-  getTicketGeometry,
-  resolveLiveCellBoxModel,
-} from "./cellAtlas";
-import {
-  cancelCatalogAtlasWarm,
-  warmCatalogAtlasAmounts,
-  warmCatalogAtlasPhase1,
-  warmCatalogAtlasPhase2,
-} from "./catalogAtlasPack";
-import { ticketIdWarmProgress } from "./headerGlyphs";
+import { resolveLiveCellBoxModel } from "./cellAtlas";
+import { ensureTicketFontsForLayout } from "./ticketFont";
+import { warmCellBitmaps } from "./cellBitmaps";
+import { warmIdDigits } from "./headerGlyphs";
 import { DomPool } from "./DomPool";
 import { MAX_TICKETS, ROW_BUFFER, SCROLL_BAND_SETTLE_MS, domPoolSize } from "./layout";
 import {
@@ -99,8 +88,7 @@ export function Catalog() {
   const clientHeightRef = useRef(0);
 
   const [tickets, setTickets] = useState<Ticket[]>([]);
-  const [atlasReady, setAtlasReady] = useState(0);
-  const [idWarm, setIdWarm] = useState({ ready: 0, total: 0 });
+  const [canvasReady, setCanvasReady] = useState(false);
   const [domCount, setDomCount] = useState(0);
   const [tileCount, setTileCount] = useState(0);
   const [presetMode, setPresetMode] = useState<PresetMode>("auto");
@@ -110,8 +98,6 @@ export function Catalog() {
   const prevSlotsRef = useRef(new Map<string, { x: number; y: number }>());
   const shuffleMsRef = useRef(400);
   const shuffleTimerRef = useRef(0);
-  const [spriteOverlay, setSpriteOverlay] = useState(false);
-  const [overlayInfo, setOverlayInfo] = useState<string>("");
   const [viewport, setViewport] = useState(() => ({
     w: typeof window !== "undefined" ? window.innerWidth : 1366,
     h: typeof window !== "undefined" ? window.innerHeight : 768,
@@ -251,13 +237,14 @@ export function Catalog() {
     const prevModel = getLiveCellBoxModel();
     canvasPoolRef.current?.pause();
     setActiveLayout(layout);
-    const model = resolveCellBoxModel(layout, activeDpr());
+    const model = resolveLiveCellBoxModel(layout, activeDpr());
     setLiveCellBoxModel(model);
     applyTicketCssVars(host, layout.metrics);
     applyCellBoxCssVars(host, model, layout.metrics);
     try {
-      await warmCatalogAtlasPhase1(host);
-      await warmCatalogAtlasPhase2(host);
+      await ensureTicketFontsForLayout(layout.metrics);
+      await warmCellBitmaps(host);
+      await warmIdDigits(host);
     } finally {
       setActiveLayout(prev);
       if (prevModel) setLiveCellBoxModel(prevModel);
@@ -292,46 +279,25 @@ export function Catalog() {
     else window.setTimeout(run, 800);
   }, [warmLayoutBitmaps]);
 
-  const startAtlasWarm = useCallback(() => {
-    const host = atlasHostRef.current;
-    if (!host) return;
+  const startCanvasWarm = useCallback(() => {
     const layoutNow = getActiveLayout();
-    applyTicketCssVars(host, layoutNow.metrics);
-    const model =
-      getLiveCellBoxModel() ?? resolveCellBoxModel(layoutNow, activeDpr());
-    applyCellBoxCssVars(host, model, layoutNow.metrics);
     const gen = ++atlasGenRef.current;
     void (async () => {
-      await warmCatalogAtlasPhase1(host);
+      const host = atlasHostRef.current;
+      await ensureTicketFontsForLayout(layoutNow.metrics);
       if (gen !== atlasGenRef.current) return;
-      setAtlasReady(65);
-      setIdWarm(ticketIdWarmProgress([]));
+      if (host) {
+        await warmCellBitmaps(host);
+        if (gen !== atlasGenRef.current) return;
+        await warmIdDigits(host);
+      }
+      if (gen !== atlasGenRef.current) return;
+      setCanvasReady(true);
       syncCellBoxCssVarsOnHosts();
       syncCanvas();
       syncDom();
       revealCanvas();
       scheduleLandscapePrewarm();
-
-      const runPhase2 = () => {
-        void warmCatalogAtlasPhase2(host).then(() => {
-          if (gen !== atlasGenRef.current) return;
-          canvasPoolRef.current?.refresh();
-          syncCanvas();
-        });
-      };
-      if (window.requestIdleCallback) window.requestIdleCallback(runPhase2);
-      else window.setTimeout(runPhase2, 1);
-
-      const amounts = [
-        ...new Set(
-          [...ticketsByIdRef.current.values()].map((t) => t.win).filter(Boolean),
-        ),
-      ];
-      void warmCatalogAtlasAmounts(host, amounts).then(() => {
-        if (gen !== atlasGenRef.current) return;
-        canvasPoolRef.current?.refresh();
-        syncCanvas();
-      });
     })();
   }, [
     syncCanvas,
@@ -353,17 +319,15 @@ export function Catalog() {
     hideCanvas();
     canvasPoolRef.current?.clear();
     setTileCount(0);
-    setIdWarm({ ready: 0, total: 0 });
-    atlasGenRef.current += 1; // invalidate the warm-progress generation
-    cancelCellWarm(); // abandon the half-built old-size atlas (cache kept)
-    cancelCatalogAtlasWarm();
+    atlasGenRef.current += 1;
+    setCanvasReady(false);
     if (settleTimerRef.current) window.clearTimeout(settleTimerRef.current);
     settleTimerRef.current = window.setTimeout(() => {
       settleTimerRef.current = 0;
       measureScrollGeometry();
-      startAtlasWarm(); // warms cell + id, then syncCanvas + revealCanvas
+      startCanvasWarm();
     }, SETTLE_MS);
-  }, [hideCanvas, startAtlasWarm, measureScrollGeometry]);
+  }, [hideCanvas, startCanvasWarm, measureScrollGeometry]);
 
   useEffect(() => {
     const domHost = domHostRef.current;
@@ -425,7 +389,7 @@ export function Catalog() {
       // Initial size — no stale canvas to tear down; warm right away.
       const t = window.setTimeout(() => {
         measureScrollGeometry();
-        startAtlasWarm();
+        startCanvasWarm();
         syncCanvas();
         syncDom();
       }, 120);
@@ -434,7 +398,7 @@ export function Catalog() {
     // A real size change (resize / orientation / preset) — drop the old canvas
     // now and rebuild SETTLE_MS after the viewport goes still.
     tearDownAndScheduleRebuild();
-  }, [layout, startAtlasWarm, syncCanvas, syncDom, tearDownAndScheduleRebuild, measureScrollGeometry]);
+  }, [layout, startCanvasWarm, syncCanvas, syncDom, tearDownAndScheduleRebuild, measureScrollGeometry]);
 
   useLayoutEffect(() => {
     if (tickets.length === 0) {
@@ -546,29 +510,17 @@ export function Catalog() {
     syncDom();
   };
 
-  const rebuildAtlas = () => {
-    clearCellAtlas();
+  const rebuildCanvas = () => {
     prevLayoutKeyRef.current = "";
-    setAtlasReady(0);
-    setIdWarm({ ready: 0, total: 0 });
-    startAtlasWarm();
+    setCanvasReady(false);
+    startCanvasWarm();
   };
 
-  // —— Dab / multiplier / gold demo controls (mutate tickets in place) ——
   useEffect(() => {
-    const host = atlasHostRef.current;
-    if (!host || tickets.length === 0) return;
-    let cancelled = false;
-    const amounts = [...new Set(tickets.map((t) => t.win).filter(Boolean))];
-    void warmCatalogAtlasAmounts(host, amounts).then(() => {
-      if (cancelled) return;
-      canvasPoolRef.current?.refresh();
-      syncCanvas();
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [tickets, layout, syncCanvas]);
+    if (!canvasReady || tickets.length === 0) return;
+    canvasPoolRef.current?.refresh();
+    syncCanvas();
+  }, [tickets, layout, syncCanvas, canvasReady]);
 
   const refreshStates = useCallback(() => {
     canvasPoolRef.current?.refresh();
@@ -596,14 +548,8 @@ export function Catalog() {
     );
     refreshStates();
     domPoolRef.current?.playDraws(hits);
-    const host = atlasHostRef.current;
-    if (host) {
-      const amounts = [...new Set(tickets.map((ticket) => ticket.win).filter(Boolean))];
-      void warmCatalogAtlasAmounts(host, amounts).then(() => {
-        canvasPoolRef.current?.refresh();
-        syncCanvas();
-      });
-    }
+    canvasPoolRef.current?.refresh();
+    syncCanvas();
     if (shuffleTimerRef.current) window.clearTimeout(shuffleTimerRef.current);
     const delay = shuffleDelayMs(hits, tickets);
     shuffleTimerRef.current = window.setTimeout(() => {
@@ -636,75 +582,15 @@ export function Catalog() {
     refreshStates();
   };
 
-  // A-vs-B test: raw sprite <img> over a live DOM cell (no canvas).
-  // Aligns → placement (A). Still high → SnapDOM foreignObject raster (B).
-  useLayoutEffect(() => {
-    const host = domHostRef.current;
-    if (!host) return;
-    let img = host.querySelector(
-      "img.catalog__spriteOverlay",
-    ) as HTMLImageElement | null;
-
-    if (!spriteOverlay || atlasReady < 60) {
-      img?.remove();
-      setOverlayInfo("");
-      return;
-    }
-
-    const cell = host.querySelector(".ticketCard__cell") as HTMLElement | null;
-    if (!cell) {
-      setOverlayInfo("no live cell yet — scroll/add tickets");
-      return;
-    }
-
-    const n = Number.parseInt(cell.textContent?.trim() || "", 10);
-    if (!Number.isFinite(n) || n < 1 || n > 60) {
-      setOverlayInfo("cell text not a number");
-      return;
-    }
-
-    const url = getCellSpriteDataUrl(n);
-    const geo = getTicketGeometry();
-    if (!url || !geo) {
-      setOverlayInfo("sprite missing");
-      return;
-    }
-
-    if (!img) {
-      img = document.createElement("img");
-      img.className = "catalog__spriteOverlay";
-      img.alt = "";
-      host.appendChild(img);
-    }
-
-    const cellR = cell.getBoundingClientRect();
-    const hostR = host.getBoundingClientRect();
-    img.src = url;
-    img.style.position = "absolute";
-    img.style.left = `${cellR.left - hostR.left + host.scrollLeft}px`;
-    img.style.top = `${cellR.top - hostR.top + host.scrollTop}px`;
-    img.style.width = `${geo.cellW}px`;
-    img.style.height = `${geo.cellH}px`;
-    img.style.imageRendering = "pixelated";
-    img.style.opacity = "0.55";
-    img.style.pointerEvents = "none";
-    img.style.zIndex = "20";
-    img.style.outline = "1px solid #e11";
-    img.style.boxSizing = "border-box";
-
-    setOverlayInfo(
-      `overlay #${n} on live cell — if glyph still ↑ = SnapDOM (B); if aligned = placement (A)`,
-    );
-  }, [spriteOverlay, atlasReady, domCount, tickets.length, layout]);
-
   return (
     <div className="app" ref={cssHostRef}>
       <header className="toolbar">
-        <h1>Cell atlas canvas POC</h1>
+        <h1>Sprite canvas POC</h1>
         <p className="toolbar__hint">
           +1 and +5 play the catalog appear gesture, then scroll to the bottom.
-          +25 and +100 only scroll. Live rows stay DOM. Canvas paints the rows
-          that have scrolled away. Up to {MAX_TICKETS} tickets.
+          +25 and +100 only scroll. Live rows stay DOM. Scrolled-away rows use
+          layered sprite paint (<code>paintCatalogTicket</code>). Up to{" "}
+          {MAX_TICKETS} tickets.
           {" · "}
           <a href="/compare">DOM↔Canvas compare</a>
         </p>
@@ -725,8 +611,8 @@ export function Catalog() {
           <button type="button" className="btn-ghost" onClick={reset}>
             Reset
           </button>
-          <button type="button" className="btn-ghost" onClick={rebuildAtlas}>
-            Rebuild atlas
+          <button type="button" className="btn-ghost" onClick={rebuildCanvas}>
+            Rebuild canvas
           </button>
           <button
             type="button"
@@ -746,15 +632,6 @@ export function Catalog() {
             Clear draws
           </button>
           {lastDraw ? <span className="stat">last ball {lastDraw}</span> : null}
-          <label className="stat">
-            <input
-              type="checkbox"
-              checked={spriteOverlay}
-              onChange={(e) => setSpriteOverlay(e.target.checked)}
-            />{" "}
-            sprite-over-DOM
-          </label>
-          {overlayInfo ? <span className="stat">{overlayInfo}</span> : null}
           <label className="stat toolbar__sheet">
             size{" "}
             <select
@@ -783,13 +660,8 @@ export function Catalog() {
             tiles <strong>{tileCount}</strong>
           </span>
           <span className="stat">
-            cells <strong>{atlasReady}</strong>/65
-            {atlasReady >= 65 ? " ✓" : "…"}
-          </span>
-          <span className="stat">
-            ids{" "}
-            <strong>{idWarm.ready}</strong>/{idWarm.total || "—"}
-            {idWarm.total > 0 && idWarm.ready >= idWarm.total ? " ✓" : "…"}
+            canvas{" "}
+            <strong>{canvasReady ? "ready" : "…"}</strong>
           </span>
           <span className="stat">
             dom <strong>{domCount}</strong>/{poolSize}

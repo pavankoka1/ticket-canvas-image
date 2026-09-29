@@ -30,11 +30,71 @@ const ID_FACES: readonly { color: IdColor; win: boolean; disabled: boolean }[] =
   { color: "idDisabled", win: false, disabled: true },
 ];
 
-const TICKET_ID_DIGIT_PACK = "ticket-id-digits-v2-png";
+const TICKET_ID_DIGIT_PACK = "ticket-id-digits-v5-tight-png";
 const TICKET_ID_DIGIT_PACK_LEGACY = "ticket-id-digits-v1";
 const DIGIT_WARM_TOTAL = DIGITS.length * ID_FACES.length;
 
-type Glyph = { canvas: HTMLCanvasElement };
+type InkBBox2D = {
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+};
+
+type Glyph = {
+  canvas: HTMLCanvasElement;
+  /** Ink left vs measureText slotLeft for digit in 8{digit}8 probe (device px). */
+  inkOffsetDev: number;
+  /** Ink bottom inset from header bottom at single-char capture (device px). */
+  inkBottomInsetDev: number;
+};
+
+function scanInkBBox2D(canvas: HTMLCanvasElement): InkBBox2D | null {
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) return null;
+  let data: Uint8ClampedArray;
+  try {
+    data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+  } catch {
+    return null;
+  }
+  const w = canvas.width;
+  const h = canvas.height;
+  let left = w;
+  let right = -1;
+  let top = h;
+  let bottom = -1;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      const a = data[i + 3]! / 255;
+      if (a < 0.02) continue;
+      const r = data[i]! * a + 255 * (1 - a);
+      const g = data[i + 1]! * a + 255 * (1 - a);
+      const b = data[i + 2]! * a + 255 * (1 - a);
+      if (r < 200 || g < 200 || b < 200) {
+        if (x < left) left = x;
+        if (x > right) right = x;
+        if (y < top) top = y;
+        if (y > bottom) bottom = y;
+      }
+    }
+  }
+  if (right < left || bottom < top) return null;
+  return { left, right, top, bottom };
+}
+
+function glyphInk(canvas: HTMLCanvasElement): InkBBox2D {
+  const box = scanInkBBox2D(canvas);
+  return (
+    box ?? {
+      left: 0,
+      right: canvas.width - 1,
+      top: 0,
+      bottom: canvas.height - 1,
+    }
+  );
+}
 
 const digits = new Map<string, Glyph>();
 /** SVG blobs for IDB — never export tainted digit canvases. */
@@ -51,7 +111,7 @@ type StoredDigitMeta = {
 export function headerStyleKey(): string {
   const layout = getActiveLayout();
   const m = layout.metrics;
-  return `${m.id}|${layout.cardWidth}|${activeDpr()}|meta=${m.metaFontSize}`;
+  return `${m.id}|${layout.cardWidth}|hdr-v5|meta=${m.metaFontSize}`;
 }
 
 function styleKey(): string {
@@ -101,6 +161,11 @@ export function isTicketIdReady(ticket: Ticket): boolean {
     if (!digits.has(digitCacheKey(color, ch))) return false;
   }
   return true;
+}
+
+export function isAmountReady(text: string): boolean {
+  if (!text) return true;
+  return amounts.has(amountCacheKey(text));
 }
 
 /** Fixed digit atlas: 10 digits × 3 header colors (independent of ticket count). */
@@ -153,10 +218,10 @@ export function installDigitsFromPack(
     const entry = entries[i]!;
     const canvas = canvases[i];
     const blob = blobs[i];
-    if (!canvas || !blob) continue;
+    if (!canvas) continue;
     const cacheId = `${layoutKey}|${entry.color}|${entry.digit}`;
-    digits.set(cacheId, { canvas });
-    digitExportBlobs.set(cacheId, blob);
+    digits.set(cacheId, { canvas, inkOffsetDev: 0, inkBottomInsetDev: 0 });
+    if (blob) digitExportBlobs.set(cacheId, blob);
   }
 }
 
@@ -216,8 +281,7 @@ export function rememberAmountCanvas(text: string, canvas: HTMLCanvasElement): v
 
 async function hydrateDigitsFromIdb(): Promise<void> {
   const layoutKey = styleKey();
-  if (hydratedDigitLayoutKey === layoutKey) return;
-  hydratedDigitLayoutKey = layoutKey;
+  if (hydratedDigitLayoutKey === layoutKey && digitGlyphsReady()) return;
   digits.clear();
   digitExportBlobs.clear();
 
@@ -227,9 +291,15 @@ async function hydrateDigitsFromIdb(): Promise<void> {
     stored = await loadSprites(`${TICKET_ID_DIGIT_PACK_LEGACY}|${layoutKey}`);
     legacySvg = !!stored?.blobs?.length;
   }
-  if (!stored?.meta || !stored.blobs.length) return;
+  if (!stored?.meta || !stored.blobs.length) {
+    hydratedDigitLayoutKey = "";
+    return;
+  }
   const meta = stored.meta as StoredDigitMeta;
-  if (!meta.entries || meta.entries.length !== stored.blobs.length) return;
+  if (!meta.entries || meta.entries.length !== stored.blobs.length) {
+    hydratedDigitLayoutKey = "";
+    return;
+  }
 
   const canvases = legacySvg
     ? await Promise.all(
@@ -244,12 +314,13 @@ async function hydrateDigitsFromIdb(): Promise<void> {
     const canvas = canvases[i];
     if (!canvas) continue;
     digitExportBlobs.set(cacheId, blob);
-    digits.set(cacheId, { canvas });
+    digits.set(cacheId, { canvas, inkOffsetDev: 0, inkBottomInsetDev: 0 });
   }
 
   if (legacySvg && digitGlyphsReady()) {
     void persistDigitsToIdb();
   }
+  hydratedDigitLayoutKey = digitGlyphsReady() ? layoutKey : "";
 }
 
 async function persistDigitsToIdb(): Promise<void> {
@@ -264,11 +335,10 @@ async function persistDigitsToIdb(): Promise<void> {
     let blob = digitExportBlobs.get(cacheId);
     if (!blob) continue;
     if (blob.type.includes("svg") || blob.type.includes("xml")) {
-      try {
-        blob = await svgBlobToPngBlob(blob);
+      const png = await svgBlobToPngBlob(blob);
+      if (png) {
+        blob = png;
         digitExportBlobs.set(cacheId, blob);
-      } catch {
-        // Tainted raster — keep SVG bytes for IDB (same as catalog atlas pack).
       }
     }
     entries.push(parsed);
@@ -286,6 +356,26 @@ function shrinkToInk(el: HTMLElement): void {
   el.style.margin = "0";
   el.style.position = "static";
   el.style.whiteSpace = "nowrap";
+}
+
+function resetIdElForHeader(el: HTMLElement): void {
+  el.style.flex = "";
+  el.style.width = "";
+  el.style.height = "";
+  el.style.display = "";
+  el.style.margin = "";
+  el.style.position = "";
+  el.style.whiteSpace = "";
+}
+
+function resetWinElForHeader(el: HTMLElement): void {
+  el.style.flex = "";
+  el.style.width = "";
+  el.style.height = "";
+  el.style.display = "";
+  el.style.margin = "";
+  el.style.position = "";
+  el.style.whiteSpace = "";
 }
 
 function setElementText(el: HTMLElement, text: string): void {
@@ -330,7 +420,7 @@ async function captureMissingDigits(
   persistLegacyIdb = true,
 ): Promise<void> {
   await ensureTicketFont(getActiveLayout().metrics.metaFontSize);
-  const dpr = activeDpr();
+  const paintDpr = activeDpr();
   let captured = 0;
 
   await withCard(host, async (card) => {
@@ -341,10 +431,11 @@ async function captureMissingDigits(
         const cacheId = digitCacheKey(face.color, ch);
         if (digits.has(cacheId)) continue;
         card.bind(blankTicket(ch, face.win, "", face.disabled));
-        shrinkToInk(idEl);
+        resetIdElForHeader(idEl);
         setElementText(idEl, ch);
-        const canvas = await rasterizeTicketSvg(idEl, dpr);
-        digits.set(cacheId, { canvas });
+        shrinkToInk(idEl);
+        const canvas = await rasterizeTicketSvg(idEl, paintDpr);
+        digits.set(cacheId, { canvas, inkOffsetDev: 0, inkBottomInsetDev: 0 });
         const exportBlob = rasterSvgBlob(canvas);
         if (exportBlob) digitExportBlobs.set(cacheId, exportBlob);
         captured += 1;
@@ -367,8 +458,7 @@ export function warmIdDigits(host: HTMLElement): Promise<void> {
   digitRunKey = layoutKey;
   const run = (async () => {
     await hydrateDigitsFromIdb();
-    if (digitGlyphsReady()) return;
-    await captureMissingDigits(host);
+    if (!digitGlyphsReady()) await captureMissingDigits(host);
   })().finally(() => {
     if (digitRunKey === layoutKey) {
       digitPromise = null;
@@ -398,7 +488,7 @@ export async function warmAmounts(
   const missing = [...new Set(texts.filter((t) => t && !amounts.has(amountCacheKey(t))))];
   if (!missing.length) return;
   await ensureTicketFont(getActiveLayout().metrics.metaFontSize);
-  const dpr = activeDpr();
+  const paintDpr = activeDpr();
   await withCard(host, async (card) => {
     const winEl = card.dom.querySelector(".ticketCard__win");
     if (!(winEl instanceof HTMLElement)) throw new Error("amount source missing");
@@ -406,9 +496,9 @@ export async function warmAmounts(
       const cacheId = amountCacheKey(text);
       if (amounts.has(cacheId)) continue;
       card.bind(blankTicket("1", true, text));
-      shrinkToInk(winEl);
+      resetWinElForHeader(winEl);
       setElementText(winEl, text);
-      const canvas = await rasterizeTicketSvg(winEl, dpr);
+      const canvas = await rasterizeTicketSvg(winEl, paintDpr);
       amounts.set(cacheId, canvas);
     }
   });
@@ -423,16 +513,13 @@ export async function exportAmountPackBlobs(): Promise<{
   if (entries.length === 0) return { entries: [], blobs: [] };
   const blobs: Blob[] = [];
   for (const svg of svgBlobs) {
-    try {
-      blobs.push(await svgBlobToPngBlob(svg));
-    } catch {
-      blobs.push(svg);
-    }
+    const png = await svgBlobToPngBlob(svg);
+    blobs.push(png ?? svg);
   }
   return { entries, blobs };
 }
 
-/** Right-aligned id, bottom of header — 5032e76 anchor (layout cardWidth). */
+/** Right-aligned id, bottom of header (fix-branch stack, paint-DPR sprites). */
 export function paintIdDigits(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -440,17 +527,45 @@ export function paintIdDigits(
   originX: number,
   originY: number,
   cardWidth: number,
-  dpr: number,
+  paintDpr: number,
+  scaleX: number,
+  scaleY: number,
+  digitInkLeftsDev?: readonly number[] | null,
 ): void {
   const m = getActiveLayout().metrics;
-  const bottom = originY + Math.round(m.headerHeight * dpr);
-  let x = originX + Math.round(cardWidth * dpr) - Math.round(m.headerPadX * dpr);
+  const bottom = originY + Math.round(m.headerHeight * scaleY);
+
+  if (digitInkLeftsDev && digitInkLeftsDev.length >= text.length) {
+    for (let i = 0; i < text.length; i++) {
+      const glyph = digits.get(digitCacheKey(color, text[i] ?? ""));
+      if (!glyph) continue;
+      const ink = glyphInk(glyph.canvas);
+      const drawW = Math.round(glyph.canvas.width * scaleX / paintDpr);
+      const drawH = Math.round(glyph.canvas.height * scaleY / paintDpr);
+      const drawX =
+        digitInkLeftsDev[i]! - Math.round(ink.left * scaleX / paintDpr);
+      ctx.drawImage(
+        glyph.canvas,
+        drawX,
+        bottom - drawH,
+        drawW,
+        drawH,
+      );
+    }
+    return;
+  }
+
+  let x =
+    originX +
+    Math.round(cardWidth * scaleX) -
+    Math.round(m.headerPadX * scaleX);
   for (let i = text.length - 1; i >= 0; i--) {
     const glyph = digits.get(digitCacheKey(color, text[i] ?? ""));
     if (!glyph) continue;
-    const { canvas } = glyph;
-    x -= canvas.width;
-    ctx.drawImage(canvas, x, bottom - canvas.height);
+    const drawW = Math.round(glyph.canvas.width * scaleX / paintDpr);
+    const drawH = Math.round(glyph.canvas.height * scaleY / paintDpr);
+    x -= drawW;
+    ctx.drawImage(glyph.canvas, x, bottom - drawH, drawW, drawH);
   }
 }
 
@@ -460,12 +575,16 @@ export function paintAmount(
   text: string,
   originX: number,
   originY: number,
-  dpr: number,
+  paintDpr: number,
+  scaleX: number,
+  scaleY: number,
 ): void {
   const canvas = amounts.get(amountCacheKey(text));
   if (!canvas) return;
   const m = getActiveLayout().metrics;
-  const x = originX + Math.round(m.headerPadX * dpr);
-  const bottom = originY + Math.round(m.headerHeight * dpr);
-  ctx.drawImage(canvas, x, bottom - canvas.height);
+  const x = originX + Math.round(m.headerPadX * scaleX);
+  const bottom = originY + Math.round(m.headerHeight * scaleY);
+  const drawW = Math.round(canvas.width * scaleX / paintDpr);
+  const drawH = Math.round(canvas.height * scaleY / paintDpr);
+  ctx.drawImage(canvas, x, bottom - drawH, drawW, drawH);
 }

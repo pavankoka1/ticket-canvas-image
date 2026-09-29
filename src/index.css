@@ -247,7 +247,7 @@ button:disabled {
   background: linear-gradient(180deg, #ffffff 0%, #f3eae0 100%);
 }
 
-/* Fixed-px: width = (ticketWidth − 6px) / 6 — same as atlas + canvas. */
+/* Fixed-px: width = (ticketWidth − 5×separator) / 6 — ticketCellGeometry + canvas. */
 .ticketCard__cell {
   position: relative;
   display: flex;
@@ -334,6 +334,8 @@ button:disabled {
 }
 
 .ticketCard__multiplier {
+  transform: rotate(-15deg);
+  transform-origin: center center;
   --ticket-multiplier-suffix-scale: 0.769;
   --ticket-multiplier-stroke-gradient: linear-gradient(
     rgb(128, 26, 28),
@@ -595,6 +597,15 @@ button:disabled {
   margin: 0 auto;
 }
 
+.compare__cases_probes {
+  margin-bottom: 8px;
+}
+
+.compare__cases_probes .compare__fullSnap {
+  margin: 0;
+  flex: 0 0 auto;
+}
+
 .compare__caseTitle {
   margin: 0 0 8px;
   font-size: 0.95rem;
@@ -624,8 +635,26 @@ button:disabled {
   font-size: 0.8rem;
 }
 
+.compare__modeHint {
+  margin: -4px 0 10px;
+  color: #6a9a92;
+  font-size: 0.75rem;
+}
+
+.compare__sectionTitle {
+  margin: 28px 0 12px;
+  font-size: 1rem;
+  font-weight: 650;
+  color: #d4f0ea;
+}
+
+.compare__ticketBlock {
+  margin-top: 8px;
+}
+
 .compare__stack {
   position: relative;
+  contain: layout;
   outline: 1px solid #2a5550;
   background: #0a2421;
   overflow: visible;
@@ -645,4 +674,62 @@ button:disabled {
   top: 0;
   pointer-events: none;
   z-index: -1;
+}
+
+/* Full-ticket SnapDOM vs sprite probe (top of catalog) */
+.scanRow {
+  margin-bottom: 8px;
+  padding: 12px 0 4px;
+  border-bottom: 1px solid #2a5550;
+}
+
+.scanRow__title {
+  margin: 0 0 4px;
+  font-size: 0.95rem;
+  font-weight: 650;
+}
+
+.scanRow__hint {
+  margin: 0 0 12px;
+  color: #8fb3ad;
+  font-size: 0.8rem;
+  max-width: 52rem;
+}
+
+.scanRow__probes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px 28px;
+  align-items: flex-start;
+}
+
+.scanRow__probe {
+  flex: 0 0 auto;
+}
+
+.scanRow__probeTitle {
+  margin: 0 0 4px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #c8e6e0;
+}
+
+.scanRow__probeNote {
+  margin: 0 0 8px;
+  font-size: 0.75rem;
+  color: #6a9a92;
+  max-width: 22rem;
+}
+
+.scanRow__stack {
+  position: relative;
+  contain: layout;
+  outline: 1px solid #3d7a72;
+  background: #0a2421;
+  overflow: visible;
+}
+
+.scanRow__stack .compare__canvas {
+  position: absolute;
+  inset: 0;
 }

@@ -1,12 +1,18 @@
 /**
  * Closed set of cell bitmaps, captured once per layout and pixel ratio.
- * Each bitmap is the real cell (styles inlined, foreignObject raster), so
- * its origin is the cell origin. A ticket blits six of them. Hits swap in
+ * Each number is SnapDOM of a real ticket cell (same CSS as live DOM), un-matted
+ * to transparent ink. A ticket blits six of them. Hits swap in
  * the dab or a multiplier. Header amount and ticket id are painted separately.
  */
 
-import { loadSpritesMany, saveSprites } from "./atlasStore";
-import { activeDpr } from "./cellBoxModel";
+import { deleteSprites, loadSpritesMany, saveSprites } from "./atlasStore";
+import { captureAllCellNumbers } from "./cellNumberSnap";
+import { activeDpr, spriteRasterDpr } from "./cellBoxModel";
+import {
+  BADGE_CAPTURE_PAD_X,
+  badgeCapturePads,
+  resolveTicketCellGeometry,
+} from "./ticketCellGeometry";
 import { getActiveLayout } from "./catalogLayout";
 import { BALLS_PER_TICKET } from "./layout";
 import { decodePngBlobsToBitmaps } from "./spriteDecodeClient";
@@ -27,7 +33,13 @@ const NUMBER_COUNT = 60;
 /** Decoded IDB sprites skip the extra canvas blit; fresh captures stay as canvas. */
 export type BitmapSprite = HTMLCanvasElement | ImageBitmap;
 
-export type PlacedBitmap = { canvas: BitmapSprite; padCss: number };
+export type PlacedBitmap = {
+  canvas: BitmapSprite;
+  /** Horizontal pad baked into the badge SVG raster. */
+  padX: number;
+  /** Vertical pad (body padding Y) baked into the badge SVG raster. */
+  padY: number;
+};
 
 export type CellBitmaps = {
   numbers: BitmapSprite[];
@@ -39,18 +51,15 @@ export type CellBitmaps = {
   disabledMultipliers: Map<number, PlacedBitmap>;
 };
 
-/** Room for the rotated N×, which sticks out of the badge box. */
-const BADGE_PAD_CSS = 16;
-
 export const CELL_BLOB_COUNT = NUMBER_COUNT + 1 + MULTIPLIER_VALUES.length;
-export const CELL_BADGE_PAD_CSS = BADGE_PAD_CSS;
+export const CELL_BADGE_PAD_CSS = BADGE_CAPTURE_PAD_X;
 
 const sets = new Map<string, CellBitmaps>();
 const pending = new Map<string, Promise<CellBitmaps>>();
 
 export function cellBitmapCacheKey(): string {
   const layout = getActiveLayout();
-  return `bmp-png|${layout.metrics.id}|${layout.cardWidth}|${activeDpr()}`;
+  return `bmp-png-v11|${layout.metrics.id}|${layout.cardWidth}|plain-body`;
 }
 
 function bitmapKey(): string {
@@ -64,6 +73,178 @@ const BMP_LEGACY_KEY = (): string => {
 
 function disabledBitmapKey(): string {
   return `${bitmapKey()}|disabled`;
+}
+
+function numbersIdbKey(disabled: boolean): string {
+  const layout = getActiveLayout();
+  const suffix = disabled ? "|disabled" : "";
+  return `bmp-numbers-png-v11|${layout.metrics.id}|${layout.cardWidth}|plain-body${suffix}`;
+}
+
+function dabIdbKey(disabled: boolean): string {
+  const layout = getActiveLayout();
+  const suffix = disabled ? "|disabled" : "";
+  return `bmp-dab-png-v6|${layout.metrics.id}|${layout.cardWidth}|pdpr${suffix}`;
+}
+
+function multIdbKey(disabled: boolean): string {
+  const layout = getActiveLayout();
+  const suffix = disabled ? "|disabled" : "";
+  return `bmp-mult-png-v6|${layout.metrics.id}|${layout.cardWidth}|pdpr${suffix}`;
+}
+
+async function numbersFromStoredBlobs(blobs: Blob[]): Promise<BitmapSprite[] | null> {
+  if (blobs.length !== NUMBER_COUNT) return null;
+  const sprites = await spritesFromStoredBlobs(blobs);
+  const numbers: BitmapSprite[] = [];
+  for (let n = 1; n <= NUMBER_COUNT; n++) {
+    const sprite = sprites[n - 1];
+    if (!sprite) return null;
+    numbers[n] = sprite;
+  }
+  return numbers;
+}
+
+async function dabFromStoredBlob(blob: Blob): Promise<PlacedBitmap | null> {
+  const sprites = await spritesFromStoredBlobs([blob]);
+  const canvas = sprites[0];
+  if (!canvas) return null;
+  const { padX, padY } = badgeCapturePads();
+  return { canvas, padX, padY };
+}
+
+async function multsFromStoredBlobs(blobs: Blob[]): Promise<Map<number, PlacedBitmap> | null> {
+  if (blobs.length !== MULTIPLIER_VALUES.length) return null;
+  const sprites = await spritesFromStoredBlobs(blobs);
+  const pads = badgeCapturePads();
+  const multipliers = new Map<number, PlacedBitmap>();
+  for (let i = 0; i < MULTIPLIER_VALUES.length; i++) {
+    const sprite = sprites[i];
+    if (!sprite) return null;
+    multipliers.set(MULTIPLIER_VALUES[i]!, {
+      canvas: sprite,
+      padX: pads.padX,
+      padY: pads.padY,
+    });
+  }
+  return multipliers;
+}
+
+function placedBadge(canvas: BitmapSprite): PlacedBitmap {
+  const { padX, padY } = badgeCapturePads();
+  return { canvas, padX, padY };
+}
+
+async function numbersBlobsOf(numbers: readonly BitmapSprite[]): Promise<Blob[] | null> {
+  const out: Blob[] = [];
+  for (let n = 1; n <= NUMBER_COUNT; n++) {
+    const sprite = numbers[n];
+    if (!sprite) return null;
+    const blob = await spriteToPackBlob(sprite);
+    if (!blob) return null;
+    out.push(blob);
+  }
+  return out;
+}
+
+async function multBlobsOf(multipliers: Map<number, PlacedBitmap>): Promise<Blob[] | null> {
+  const out: Blob[] = [];
+  for (const value of MULTIPLIER_VALUES) {
+    const sprite = multipliers.get(value)?.canvas;
+    if (!sprite) return null;
+    const blob = await spriteToPackBlob(sprite);
+    if (!blob) return null;
+    out.push(blob);
+  }
+  return out;
+}
+
+async function persistActiveCellParts(set: CellBitmaps): Promise<void> {
+  const numBlobs = await numbersBlobsOf(set.numbers);
+  if (numBlobs) {
+    void saveSprites({
+      key: numbersIdbKey(false),
+      meta: { part: "numbers", padCss: BADGE_CAPTURE_PAD_X, format: "png" },
+      blobs: numBlobs,
+    });
+  }
+  const dabBlob = await spriteToPackBlob(set.dab.canvas);
+  if (dabBlob) {
+    void saveSprites({
+      key: dabIdbKey(false),
+      meta: { part: "dab", padCss: BADGE_CAPTURE_PAD_X, format: "png" },
+      blobs: [dabBlob],
+    });
+  }
+  const multBlobs = await multBlobsOf(set.multipliers);
+  if (multBlobs) {
+    void saveSprites({
+      key: multIdbKey(false),
+      meta: { part: "multipliers", padCss: BADGE_CAPTURE_PAD_X, format: "png" },
+      blobs: multBlobs,
+    });
+  }
+}
+
+async function persistDisabledCellParts(set: CellBitmaps): Promise<void> {
+  const numBlobs = await numbersBlobsOf(set.disabledNumbers);
+  if (numBlobs) {
+    void saveSprites({
+      key: numbersIdbKey(true),
+      meta: { part: "numbers", padCss: BADGE_CAPTURE_PAD_X, format: "png" },
+      blobs: numBlobs,
+    });
+  }
+  const dabBlob = await spriteToPackBlob(set.disabledDab.canvas);
+  if (dabBlob) {
+    void saveSprites({
+      key: dabIdbKey(true),
+      meta: { part: "dab", padCss: BADGE_CAPTURE_PAD_X, format: "png" },
+      blobs: [dabBlob],
+    });
+  }
+  const multBlobs = await multBlobsOf(set.disabledMultipliers);
+  if (multBlobs) {
+    void saveSprites({
+      key: multIdbKey(true),
+      meta: { part: "multipliers", padCss: BADGE_CAPTURE_PAD_X, format: "png" },
+      blobs: multBlobs,
+    });
+  }
+}
+
+async function loadActivePartsFromIdb(): Promise<{
+  numbers: BitmapSprite[];
+  dab: PlacedBitmap;
+  multipliers: Map<number, PlacedBitmap>;
+} | null> {
+  const keys = [numbersIdbKey(false), dabIdbKey(false), multIdbKey(false)];
+  const [nStored, dStored, mStored] = await loadSpritesMany(keys);
+  if (!nStored?.blobs.length || !dStored?.blobs[0] || !mStored?.blobs.length) {
+    return null;
+  }
+  const numbers = await numbersFromStoredBlobs(nStored.blobs);
+  const dab = await dabFromStoredBlob(dStored.blobs[0]!);
+  const multipliers = await multsFromStoredBlobs(mStored.blobs);
+  if (!numbers || !dab || !multipliers) return null;
+  return { numbers, dab, multipliers };
+}
+
+async function loadDisabledPartsFromIdb(): Promise<{
+  numbers: BitmapSprite[];
+  dab: PlacedBitmap;
+  multipliers: Map<number, PlacedBitmap>;
+} | null> {
+  const keys = [numbersIdbKey(true), dabIdbKey(true), multIdbKey(true)];
+  const [nStored, dStored, mStored] = await loadSpritesMany(keys);
+  if (!nStored?.blobs.length || !dStored?.blobs[0] || !mStored?.blobs.length) {
+    return null;
+  }
+  const numbers = await numbersFromStoredBlobs(nStored.blobs);
+  const dab = await dabFromStoredBlob(dStored.blobs[0]!);
+  const multipliers = await multsFromStoredBlobs(mStored.blobs);
+  if (!numbers || !dab || !multipliers) return null;
+  return { numbers, dab, multipliers };
 }
 
 const CHROME_IDB = "chrome-v2-png";
@@ -129,18 +310,24 @@ async function fromBlobs(blobs: Blob[]): Promise<CellBitmaps | null> {
   }
   const dabCanvas = sprites[NUMBER_COUNT];
   if (!dabCanvas) return null;
+  const pads = badgeCapturePads();
   const multipliers = new Map<number, PlacedBitmap>();
   for (let i = 0; i < MULTIPLIER_VALUES.length; i++) {
     const sprite = sprites[NUMBER_COUNT + 1 + i];
     if (!sprite) return null;
-    multipliers.set(MULTIPLIER_VALUES[i]!, { canvas: sprite, padCss: BADGE_PAD_CSS });
+    multipliers.set(MULTIPLIER_VALUES[i]!, {
+      canvas: sprite,
+      padX: pads.padX,
+      padY: pads.padY,
+    });
   }
+  const dab = placedBadge(dabCanvas);
   return {
     numbers,
-    dab: { canvas: dabCanvas, padCss: BADGE_PAD_CSS },
+    dab,
     multipliers,
     disabledNumbers: [],
-    disabledDab: { canvas: dabCanvas, padCss: BADGE_PAD_CSS },
+    disabledDab: dab,
     disabledMultipliers: new Map(),
   };
 }
@@ -284,47 +471,85 @@ async function loadOrCapture(host: HTMLElement, key: string): Promise<CellBitmap
   const dKey = disabledBitmapKey();
   const legacyKey = BMP_LEGACY_KEY();
   const legacyDKey = `${legacyKey}|disabled`;
-  let [stored, dStored] = await loadSpritesMany([key, dKey]);
-  if (!stored?.blobs?.length) {
-    [stored, dStored] = await loadSpritesMany([legacyKey, legacyDKey]);
-  }
-  let set: CellBitmaps | null = null;
-  if (stored && stored.blobs.length === CELL_BLOB_COUNT) {
-    set = await fromBlobs(stored.blobs);
-  }
-  if (!set) {
-    set = await captureSet(host);
-    const blobs = await blobsOf(set);
-    if (blobs) void saveSprites({ key, meta: { padCss: BADGE_PAD_CSS, format: "png" }, blobs });
+
+  let activeParts = await loadActivePartsFromIdb();
+  if (!activeParts) {
+    let [stored] = await loadSpritesMany([key]);
+    if (!stored?.blobs?.length) {
+      [stored] = await loadSpritesMany([legacyKey]);
+    }
+    if (stored && stored.blobs.length === CELL_BLOB_COUNT) {
+      const legacy = await fromBlobs(stored.blobs);
+      if (legacy) {
+        activeParts = {
+          numbers: legacy.numbers,
+          dab: legacy.dab,
+          multipliers: legacy.multipliers,
+        };
+        void persistActiveCellParts(legacy);
+      } else {
+        void deleteSprites(key);
+      }
+    }
   }
 
-  if (dStored && dStored.blobs.length === CELL_BLOB_COUNT) {
-    const disabled = await disabledFromBlobs(dStored.blobs);
-    if (disabled) {
-      set.disabledNumbers = disabled.disabledNumbers;
-      set.disabledDab = disabled.disabledDab;
-      set.disabledMultipliers = disabled.disabledMultipliers;
-      if (!isPngPack(dStored.blobs)) {
-        const migrated = await disabledBlobsOf(set);
-        if (migrated) void saveSprites({ key: dKey, meta: { padCss: BADGE_PAD_CSS, format: "png" }, blobs: migrated });
-      }
-      return set;
+  let set: CellBitmaps;
+  if (activeParts) {
+    set = {
+      numbers: activeParts.numbers,
+      dab: activeParts.dab,
+      multipliers: activeParts.multipliers,
+      disabledNumbers: [],
+      disabledDab: activeParts.dab,
+      disabledMultipliers: new Map(),
+    };
+  } else {
+    set = await captureSet(host);
+    void persistActiveCellParts(set);
+  }
+
+  let disabledParts = await loadDisabledPartsFromIdb();
+  if (!disabledParts) {
+    let [dStored] = await loadSpritesMany([dKey]);
+    if (!dStored?.blobs?.length) {
+      [dStored] = await loadSpritesMany([legacyDKey]);
     }
+    if (dStored && dStored.blobs.length === CELL_BLOB_COUNT) {
+      const legacy = await disabledFromBlobs(dStored.blobs);
+      if (legacy) {
+        disabledParts = {
+          numbers: legacy.disabledNumbers,
+          dab: legacy.disabledDab,
+          multipliers: legacy.disabledMultipliers,
+        };
+        set.disabledNumbers = legacy.disabledNumbers;
+        set.disabledDab = legacy.disabledDab;
+        set.disabledMultipliers = legacy.disabledMultipliers;
+        void persistDisabledCellParts(set);
+        return set;
+      }
+    }
+  }
+
+  if (disabledParts) {
+    set.disabledNumbers = disabledParts.numbers;
+    set.disabledDab = disabledParts.dab;
+    set.disabledMultipliers = disabledParts.multipliers;
+    return set;
   }
 
   const disabled = await captureDisabledBadges(host);
   set.disabledNumbers = disabled.numbers;
   set.disabledDab = disabled.dab;
   set.disabledMultipliers = disabled.multipliers;
-  const dBlobs = await disabledBlobsOf(set);
-  if (dBlobs) void saveSprites({ key: dKey, meta: { padCss: BADGE_PAD_CSS, format: "png" }, blobs: dBlobs });
+  void persistDisabledCellParts(set);
   return set;
 }
 
 function chromeRamKey(win: boolean, disabled: boolean): string {
   const layout = getActiveLayout();
   const face = disabled ? "disabled" : win ? "win" : "plain";
-  return `${layout.metrics.id}|${layout.cardWidth}|${activeDpr()}|${face}`;
+  return `${layout.metrics.id}|${layout.cardWidth}|pdpr|${face}`;
 }
 
 function chromeIdbKey(win: boolean, disabled: boolean): string {
@@ -361,9 +586,14 @@ export function ticketChrome(
       if (sprite) {
         chromeCache.set(key, sprite);
         if (!isPngPack(stored.blobs) && stored.blobs[0]) {
-          void svgBlobToPngBlob(stored.blobs[0]).then((png) =>
-            saveSprites({ key: idbKey, meta: { face: key, format: "png" }, blobs: [png] }),
-          );
+          void svgBlobToPngBlob(stored.blobs[0]).then((png) => {
+            if (!png) return;
+            return saveSprites({
+              key: idbKey,
+              meta: { face: key, format: "png" },
+              blobs: [png],
+            });
+          });
         }
         return sprite;
       }
@@ -372,7 +602,11 @@ export function ticketChrome(
     const svg = rasterSvgBlob(canvas);
     if (svg) {
       const png = await svgBlobToPngBlob(svg);
-      void saveSprites({ key: idbKey, meta: { face: key, format: "png" }, blobs: [png] });
+      if (png) {
+        void saveSprites({ key: idbKey, meta: { face: key, format: "png" }, blobs: [png] });
+      } else {
+        void saveSprites({ key: idbKey, meta: { face: key, format: "svg" }, blobs: [svg] });
+      }
     }
     chromeCache.set(key, canvas);
     return canvas;
@@ -392,7 +626,7 @@ export async function headerSlice(
   const hit = headerCache.get(full);
   if (hit) return hit;
   await ensureTicketFont(getActiveLayout().metrics.metaFontSize);
-  const canvas = await rasterizeTicketSvg(el, activeDpr());
+  const canvas = await rasterizeTicketSvg(el, spriteRasterDpr());
   headerCache.set(full, canvas);
   return canvas;
 }
@@ -413,7 +647,7 @@ async function captureChrome(
   win: boolean,
   disabled = false,
 ): Promise<HTMLCanvasElement> {
-  const dpr = activeDpr();
+  const paintDpr = activeDpr();
   await ensureTicketFont(getActiveLayout().metrics.metaFontSize);
   const card = new TicketCard();
   card.dom.style.position = "fixed";
@@ -423,7 +657,7 @@ async function captureChrome(
   try {
     card.bind(chromeTicket(win, disabled));
     clearInk(card.dom);
-    return await rasterizeTicketSvg(card.dom, dpr);
+    return await rasterizeTicketSvg(card.dom, paintDpr);
   } finally {
     card.dom.remove();
   }
@@ -446,7 +680,7 @@ async function captureDisabledBadges(host: HTMLElement): Promise<{
   dab: PlacedBitmap;
   multipliers: Map<number, PlacedBitmap>;
 }> {
-  const dpr = activeDpr();
+  const paintDpr = activeDpr();
   await ensureTicketFont(getActiveLayout().metrics.numberFontSize);
   const card = new TicketCard();
   card.dom.style.position = "fixed";
@@ -454,31 +688,19 @@ async function captureDisabledBadges(host: HTMLElement): Promise<{
   card.dom.style.top = "0";
   host.appendChild(card.dom);
   try {
-    const numbers: BitmapSprite[] = [];
-    for (let n = 1; n <= NUMBER_COUNT; n++) {
-      card.bind(sourceTicket(n, false, 0, true));
-      numbers[n] = await captureCell(card, dpr);
-    }
+    card.applyCardWidth(getActiveLayout().cardWidth, true);
+    const numbers = await captureAllCellNumbers(
+      host,
+      card.dom,
+      paintDpr,
+      (ball) => card.bind(sourceTicket(ball, false, 0, true)),
+    );
     card.bind(sourceTicket(1, true, 0, true));
-    const dab = {
-      canvas: await rasterizeTicketSvg(
-        card.dom.querySelector(".ticketCard__badgeHost") as HTMLElement,
-        dpr,
-        BADGE_PAD_CSS,
-      ),
-      padCss: BADGE_PAD_CSS,
-    };
+    const dab = placedBadge(await captureBadgeHost(card, paintDpr));
     const multipliers = new Map<number, PlacedBitmap>();
     for (const value of MULTIPLIER_VALUES) {
       card.bind(sourceTicket(1, true, value, true));
-      multipliers.set(value, {
-        canvas: await rasterizeTicketSvg(
-          card.dom.querySelector(".ticketCard__badgeHost") as HTMLElement,
-          dpr,
-          BADGE_PAD_CSS,
-        ),
-        padCss: BADGE_PAD_CSS,
-      });
+      multipliers.set(value, placedBadge(await captureBadgeHost(card, paintDpr)));
     }
     return { numbers, dab, multipliers };
   } finally {
@@ -493,21 +715,30 @@ function sourceTicket(ball: number, hit: boolean, mult: number, disabled = false
     id: "cell-bitmap-src",
     no: "0",
     balls,
-    hits: hit ? [0, 1] : [1, 2],
+    // No win chrome for digit capture (hits.length must stay < WIN_MATCH_THRESHOLD).
+    hits: hit ? [0] : [],
     multipliers: mult > 0 ? { 0: mult } : {},
-    win: "$0.00",
+    win: "",
     disabled,
   };
 }
 
-async function captureCell(card: TicketCard, dpr: number): Promise<HTMLCanvasElement> {
-  const cell = card.dom.querySelector(".ticketCard__cell");
-  if (!cell) throw new Error("cell bitmap source missing");
-  return rasterizeTicketSvg(cell as HTMLElement, dpr);
+function badgeCapturePad(dpr: number): { x: number; y: number } {
+  const geo = resolveTicketCellGeometry(getActiveLayout(), dpr);
+  return { x: BADGE_CAPTURE_PAD_X, y: geo.bodyPaddingY };
+}
+
+async function captureBadgeHost(
+  card: TicketCard,
+  dpr: number,
+): Promise<HTMLCanvasElement> {
+  const host = card.dom.querySelector(".ticketCard__badgeHost");
+  if (!host) throw new Error("badge host missing");
+  return rasterizeTicketSvg(host as HTMLElement, dpr, badgeCapturePad(dpr));
 }
 
 async function captureSet(host: HTMLElement): Promise<CellBitmaps> {
-  const dpr = activeDpr();
+  const paintDpr = activeDpr();
   const fontPx = getActiveLayout().metrics.numberFontSize;
   await ensureTicketFont(fontPx);
 
@@ -518,33 +749,21 @@ async function captureSet(host: HTMLElement): Promise<CellBitmaps> {
   host.appendChild(card.dom);
 
   try {
-    const numbers: BitmapSprite[] = [];
-    for (let n = 1; n <= NUMBER_COUNT; n++) {
-      card.bind(sourceTicket(n, false, 0));
-      numbers[n] = await captureCell(card, dpr);
-    }
+    card.applyCardWidth(getActiveLayout().cardWidth, true);
+    const numbers = await captureAllCellNumbers(
+      host,
+      card.dom,
+      paintDpr,
+      (ball) => card.bind(sourceTicket(ball, false, 0)),
+    );
 
     card.bind(sourceTicket(1, true, 0));
-    const dab = {
-      canvas: await rasterizeTicketSvg(
-        card.dom.querySelector(".ticketCard__badgeHost") as HTMLElement,
-        dpr,
-        BADGE_PAD_CSS,
-      ),
-      padCss: BADGE_PAD_CSS,
-    };
+    const dab = placedBadge(await captureBadgeHost(card, paintDpr));
 
     const multipliers = new Map<number, PlacedBitmap>();
     for (const value of MULTIPLIER_VALUES) {
       card.bind(sourceTicket(1, true, value));
-      multipliers.set(value, {
-        canvas: await rasterizeTicketSvg(
-          card.dom.querySelector(".ticketCard__badgeHost") as HTMLElement,
-          dpr,
-          BADGE_PAD_CSS,
-        ),
-        padCss: BADGE_PAD_CSS,
-      });
+      multipliers.set(value, placedBadge(await captureBadgeHost(card, paintDpr)));
     }
 
     return {

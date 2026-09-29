@@ -1,13 +1,17 @@
 import {
   activeDpr,
   applyBadgeChrome,
+  applyCellBoxCssVars,
   badgeHostDevice,
   getLiveCellBoxModel,
   resolveCellBoxModel,
   setLiveCellBoxModel,
   snapCss,
+  type CellBoxModel,
 } from "./cellBoxModel";
-import { getActiveLayout } from "./catalogLayout";
+import { getActiveLayout, type CatalogLayout } from "./catalogLayout";
+import { resolveLiveCellBoxModel } from "./cellAtlas";
+import { applyTicketCssVars, type TicketMetrics } from "./ticketPresets";
 import { BALLS_PER_TICKET } from "./layout";
 import { MultiplierLabelNode } from "./multiplierLabel";
 import { isWinTicket, type Ticket } from "./tickets";
@@ -61,13 +65,33 @@ export function createTicketDom(): TicketDomParts {
   return { root, idText, winText, cellEls, cellTexts };
 }
 
+/** Fixed cell boxes — same as fix/restore-catalog-alignment (required for SVG raster match). */
+export function applyTicketCellLayout(
+  root: HTMLElement,
+  cellEls: HTMLElement[],
+  model: CellBoxModel,
+  metrics: TicketMetrics,
+  cardHeight: number,
+): void {
+  root.style.width = `${model.cardWidth}px`;
+  root.style.height = `${cardHeight}px`;
+  applyCellBoxCssVars(root, model, metrics);
+  for (const cell of cellEls) {
+    cell.style.boxSizing = "border-box";
+    cell.style.width = `${model.cellW}px`;
+    cell.style.height = `${model.cellH}px`;
+    cell.style.flex = `0 0 ${model.cellW}px`;
+    cell.style.removeProperty("margin");
+  }
+}
+
 /** Per-cell dab/multiplier badge, built lazily like fortunamania. */
 type CellBadge = {
   host: HTMLElement;
   label: MultiplierLabelNode | null;
 };
 
-function ticketContentKey(ticket: Ticket): string {
+export function ticketContentKey(ticket: Ticket): string {
   const mult = Object.keys(ticket.multipliers)
     .sort((a, b) => Number(a) - Number(b))
     .map((k) => `${k}:${ticket.multipliers[Number(k)]}`)
@@ -133,11 +157,37 @@ export class TicketCard {
       model = resolveCellBoxModel(layout);
       setLiveCellBoxModel(model);
     }
-
     const key = `${layout.metrics.id}|${cardWidth}|${layout.cardHeight}|${model.cellW}x${model.cellH}`;
     if (!force && this.layoutKey === key) return;
     this.layoutKey = key;
-    // Layout change invalidates badge geometry keys so the next bind re-places.
+    applyTicketCssVars(this.dom, layout.metrics);
+    applyTicketCellLayout(
+      this.dom,
+      this.cellEls,
+      model,
+      layout.metrics,
+      layout.cardHeight,
+    );
+    this.cellBadgeKey.fill("");
+  }
+
+  /** Explicit catalog layout (capture host / tests). */
+  applyCardLayout(layout: CatalogLayout, force = false): void {
+    const cardWidth = layout.cardWidth;
+    if (cardWidth <= 0) return;
+    const dpr = activeDpr();
+    const model = resolveLiveCellBoxModel(layout, dpr);
+    const key = `${layout.metrics.id}|${cardWidth}|${layout.cardHeight}|${model.cellW}x${model.cellH}`;
+    if (!force && this.layoutKey === key) return;
+    this.layoutKey = key;
+    applyTicketCssVars(this.dom, layout.metrics);
+    applyTicketCellLayout(
+      this.dom,
+      this.cellEls,
+      model,
+      layout.metrics,
+      layout.cardHeight,
+    );
     this.cellBadgeKey.fill("");
   }
 
@@ -210,8 +260,9 @@ export class TicketCard {
     return sx === this.slotX && sy === this.slotY;
   }
 
-  bind(ticket: Ticket, x?: number, y?: number): void {
-    this.applyCardWidth(getActiveLayout().cardWidth);
+  bind(ticket: Ticket, x?: number, y?: number, layout?: CatalogLayout): void {
+    if (layout) this.applyCardLayout(layout);
+    else this.applyCardWidth(getActiveLayout().cardWidth);
     this.boundId = ticket.id;
     this.contentKey = ticketContentKey(ticket);
 

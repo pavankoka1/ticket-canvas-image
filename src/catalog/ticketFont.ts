@@ -1,3 +1,13 @@
+import type { TicketMetrics } from "./ticketPresets";
+
+/** Body + header sizes used on the ticket face before SVG raster or capture. */
+export async function ensureTicketFontsForLayout(
+  metrics: TicketMetrics,
+): Promise<void> {
+  await ensureTicketFont(metrics.numberFontSize);
+  await ensureTicketFont(metrics.metaFontSize);
+}
+
 /**
  * Ticket face is self-hosted Onest 700 (aliased as MB-Onest). SnapDOM embedFonts
  * reads the same-origin /fonts/onest-700.woff2 — no Google Fonts CORS.

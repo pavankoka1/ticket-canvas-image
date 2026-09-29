@@ -2,10 +2,15 @@
  * Worker-backed PNG decode with main-thread fallback.
  */
 
+import { decodeStoredSpriteBlob } from "./ticketSvgRaster";
+
 let worker: Worker | null = null;
 let workerBroken = false;
 let seq = 0;
-const pending = new Map<number, (bitmaps: ImageBitmap[]) => void>();
+const pending = new Map<
+  number,
+  { resolve: (bitmaps: ImageBitmap[]) => void; blobs: readonly Blob[] }
+>();
 
 function getWorker(): Worker | null {
   if (workerBroken || typeof Worker === "undefined") return null;
@@ -14,17 +19,26 @@ function getWorker(): Worker | null {
     worker = new Worker(new URL("./spriteDecode.worker.ts", import.meta.url), {
       type: "module",
     });
-    worker.onmessage = (e: MessageEvent<{ id: number; bitmaps?: ImageBitmap[] }>) => {
-      const cb = pending.get(e.data.id);
-      if (cb && e.data.bitmaps) {
-        pending.delete(e.data.id);
-        cb(e.data.bitmaps);
+    worker.onmessage = (
+      e: MessageEvent<{ id: number; bitmaps?: ImageBitmap[]; error?: string }>,
+    ) => {
+      const entry = pending.get(e.data.id);
+      if (!entry) return;
+      pending.delete(e.data.id);
+      if (e.data.bitmaps?.length) {
+        entry.resolve(e.data.bitmaps);
+        return;
       }
+      void decodePngOnMain(entry.blobs).then(entry.resolve);
     };
     worker.onerror = () => {
       workerBroken = true;
       worker?.terminate();
       worker = null;
+      for (const [, entry] of pending) {
+        void decodePngOnMain(entry.blobs).then(entry.resolve);
+      }
+      pending.clear();
     };
     return worker;
   } catch {
@@ -33,10 +47,30 @@ function getWorker(): Worker | null {
   }
 }
 
+/** PNG first; fall back to stored SVG / canvas decode when IDB bytes are not valid PNG. */
+async function decodeOneBlob(b: Blob): Promise<ImageBitmap> {
+  const tryPng = async (): Promise<ImageBitmap> => {
+    try {
+      return await createImageBitmap(b);
+    } catch {
+      return await createImageBitmap(b, { premultiplyAlpha: "none" });
+    }
+  };
+
+  try {
+    return await tryPng();
+  } catch {
+    const decoded = await decodeStoredSpriteBlob(b).catch(() => null);
+    if (decoded instanceof ImageBitmap) return decoded;
+    if (decoded instanceof HTMLCanvasElement) {
+      return await createImageBitmap(decoded);
+    }
+    throw new Error("sprite blob decode failed");
+  }
+}
+
 async function decodePngOnMain(blobs: readonly Blob[]): Promise<ImageBitmap[]> {
-  return Promise.all(
-    blobs.map((b) => createImageBitmap(b).catch(() => createImageBitmap(b, { premultiplyAlpha: "none" }))),
-  );
+  return Promise.all(blobs.map((b) => decodeOneBlob(b)));
 }
 
 export async function decodePngBlobsToBitmaps(
@@ -49,16 +83,13 @@ export async function decodePngBlobsToBitmaps(
   const id = ++seq;
   const buffers = await Promise.all(blobs.map((b) => b.arrayBuffer()));
   return new Promise((resolve) => {
-    const finish = (bitmaps: ImageBitmap[]) => {
-      pending.delete(id);
-      resolve(bitmaps);
-    };
-    pending.set(id, finish);
+    pending.set(id, { resolve, blobs });
     w.postMessage({ id, buffers }, buffers);
     window.setTimeout(() => {
-      if (!pending.has(id)) return;
+      const entry = pending.get(id);
+      if (!entry) return;
       pending.delete(id);
-      void decodePngOnMain(blobs).then(resolve);
+      void decodePngOnMain(entry.blobs).then(resolve);
     }, 8000);
   });
 }
@@ -78,13 +109,21 @@ export function bitmapToCanvas(bmp: ImageBitmap): HTMLCanvasElement {
 export async function decodePngBlobsToCanvases(
   blobs: readonly Blob[],
 ): Promise<(HTMLCanvasElement | null)[]> {
-  const bitmaps = await decodePngBlobsToBitmaps(blobs);
-  return bitmaps.map((bmp) => {
+  const out: (HTMLCanvasElement | null)[] = [];
+  for (const blob of blobs) {
     try {
-      return bitmapToCanvas(bmp);
+      const [bmp] = await decodePngBlobsToBitmaps([blob]);
+      out.push(bitmapToCanvas(bmp));
     } catch {
-      bmp.close();
-      return null;
+      try {
+        const canvas = await decodeStoredSpriteBlob(blob);
+        if (canvas instanceof HTMLCanvasElement) out.push(canvas);
+        else if (canvas instanceof ImageBitmap) out.push(bitmapToCanvas(canvas));
+        else out.push(null);
+      } catch {
+        out.push(null);
+      }
     }
-  });
+  }
+  return out;
 }

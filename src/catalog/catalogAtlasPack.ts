@@ -94,7 +94,7 @@ export function cancelCatalogAtlasWarm(): void {
 function chromeRamKey(win: boolean, disabled: boolean): string {
   const layout = getActiveLayout();
   const face = disabled ? "disabled" : win ? "win" : "plain";
-  return `${layout.metrics.id}|${layout.cardWidth}|${activeDpr()}|${face}`;
+  return `${layout.metrics.id}|${layout.cardWidth}|pdpr|${face}`;
 }
 
 function chromeIdbKey(win: boolean, disabled: boolean): string {
@@ -113,20 +113,18 @@ function isPngPack(blobs: readonly Blob[]): boolean {
 async function blobsToPng(blobs: Blob[]): Promise<Blob[] | null> {
   if (blobs.length === 0) return [];
   if (isPngPack(blobs)) return blobs;
-  try {
-    return await Promise.all(blobs.map((b) => svgBlobToPngBlob(b)));
-  } catch {
-    return null;
+  const out: Blob[] = [];
+  for (const b of blobs) {
+    const png = await svgBlobToPngBlob(b);
+    if (!png) return null;
+    out.push(png);
   }
+  return out;
 }
 
 async function singleBlobToPng(blob: Blob): Promise<Blob | null> {
   if (blob.type.includes("png")) return blob;
-  try {
-    return await svgBlobToPngBlob(blob);
-  } catch {
-    return null;
-  }
+  return svgBlobToPngBlob(blob);
 }
 
 function expectedDigitEntries(): { color: IdColor; digit: string }[] {

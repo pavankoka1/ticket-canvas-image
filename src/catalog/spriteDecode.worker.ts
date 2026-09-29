@@ -8,12 +8,26 @@ type Req = { id: number; buffers: ArrayBuffer[] };
 
 self.onmessage = async (e: MessageEvent<Req>) => {
   const { id, buffers } = e.data;
+  const bitmaps: ImageBitmap[] = [];
   try {
-    const bitmaps = await Promise.all(
-      buffers.map((buf) =>
-        createImageBitmap(new Blob([buf], { type: "image/png" })),
-      ),
-    );
+    for (const buf of buffers) {
+      try {
+        bitmaps.push(
+          await createImageBitmap(new Blob([buf], { type: "image/png" })),
+        );
+      } catch {
+        try {
+          bitmaps.push(
+            await createImageBitmap(new Blob([buf], { type: "image/png" }), {
+              premultiplyAlpha: "none",
+            }),
+          );
+        } catch {
+          self.postMessage({ id, error: "png decode failed" });
+          return;
+        }
+      }
+    }
     self.postMessage({ id, bitmaps }, bitmaps);
   } catch (err) {
     self.postMessage({ id, error: String(err) });
