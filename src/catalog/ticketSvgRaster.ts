@@ -543,10 +543,17 @@ export async function rasterizeTicketSvg(
 }
 
 /** Compare experiment: shared HTML/CSS, embedded assets and device-scale layout. */
+export type CompareRasterPart = {
+  crop?: { x: number; y: number; width: number; height: number };
+  prepare?: (clone: HTMLElement) => void;
+  css?: string;
+};
+
 export async function rasterizeCompareTicketSvg(
   card: HTMLElement,
   dpr: number,
   metrics: TicketMetrics,
+  part?: CompareRasterPart,
 ): Promise<HTMLCanvasElement> {
   await ensureTicketFontsForLayout(metrics);
   const assets = await loadRasterAssets();
@@ -560,17 +567,19 @@ export async function rasterizeCompareTicketSvg(
     }
   }
   clone.style.visibility = "visible";
+  part?.prepare?.(clone);
+  const crop = part?.crop ?? { x: 0, y: 0, width: rect.width, height: rect.height };
   const holder = document.createElement("div");
   holder.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
   holder.style.cssText = `position:relative;width:${rect.width}px;height:${rect.height}px;margin:0;padding:0;zoom:${dpr}`;
   const style = document.createElement("style");
   // Embedded font declarations must follow page declarations to win the cascade.
-  style.textContent = ticketDocumentCss(assets.images) + assets.fontCss;
+  style.textContent = ticketDocumentCss(assets.images) + assets.fontCss + (part?.css ?? "");
   holder.append(style, clone);
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("width", String(Math.round(rect.width * dpr)));
-  svg.setAttribute("height", String(Math.round(rect.height * dpr)));
-  svg.setAttribute("viewBox", `0 0 ${Math.round(rect.width * dpr)} ${Math.round(rect.height * dpr)}`);
+  svg.setAttribute("width", String(Math.round(crop.width * dpr)));
+  svg.setAttribute("height", String(Math.round(crop.height * dpr)));
+  svg.setAttribute("viewBox", `${crop.x * dpr} ${crop.y * dpr} ${Math.round(crop.width * dpr)} ${Math.round(crop.height * dpr)}`);
   const fo = document.createElementNS("http://www.w3.org/2000/svg", "foreignObject");
   fo.setAttribute("width", String(Math.round(rect.width * dpr)));
   fo.setAttribute("height", String(Math.round(rect.height * dpr)));
@@ -579,7 +588,78 @@ export async function rasterizeCompareTicketSvg(
   const blob = new Blob([new XMLSerializer().serializeToString(svg)], {
     type: "image/svg+xml;charset=utf-8",
   });
-  return decodeSvgBlobToCanvas(blob);
+  let canvas: HTMLCanvasElement;
+  if (part?.crop) {
+    // Rasterize at the same origin as the baseline before cropping: SVG
+    // viewport translations can change gradient and glyph rounding.
+    svg.setAttribute('width', fo.getAttribute('width')!);
+    svg.setAttribute('height', fo.getAttribute('height')!);
+    svg.setAttribute('viewBox', `0 0 ${fo.getAttribute('width')} ${fo.getAttribute('height')}`);
+    const fullBlob = new Blob([new XMLSerializer().serializeToString(svg)], { type: 'image/svg+xml' });
+    const full = await decodeCompareSvgBlob(fullBlob);
+    canvas = document.createElement('canvas');
+    canvas.width = Math.round(crop.width * dpr);
+    canvas.height = Math.round(crop.height * dpr);
+    canvas.getContext('2d')!.drawImage(full, Math.round(crop.x * dpr), Math.round(crop.y * dpr), canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
+  } else canvas = await decodeCompareSvgBlob(blob);
+  rasterSvgBlobs.set(canvas, blob);
+  return canvas;
+}
+
+/** Compare uses a self-contained data URL so pixel diagnostics remain readable. */
+export async function decodeCompareSvgBlob(blob: Blob): Promise<HTMLCanvasElement> {
+  const img = new Image();
+  img.src = blob.type.includes('svg')
+    ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(await blob.text())}`
+    : await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(blob);
+      });
+  await img.decode();
+  const canvas = document.createElement('canvas');
+  canvas.width = img.naturalWidth;
+  canvas.height = img.naturalHeight;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Compare 2D context unavailable');
+  ctx.drawImage(img, 0, 0);
+  return canvas;
+}
+
+/** Reuse captured glyph markup, blending its ink once on the original CSS surface. */
+export async function composeCompareInkPatch(
+  blob: Blob,
+  bounds: { x: number; y: number; width: number; height: number },
+  transparentCss: string,
+  gold: boolean,
+  shiftX = 0,
+): Promise<HTMLCanvasElement> {
+  const doc = new DOMParser().parseFromString(await blob.text(), 'image/svg+xml');
+  const svg = doc.documentElement;
+  const view = svg.getAttribute('viewBox')!.split(/\s+/).map(Number);
+  const fo = doc.querySelector('foreignObject')!;
+  svg.setAttribute('width', fo.getAttribute('width')!);
+  svg.setAttribute('height', fo.getAttribute('height')!);
+  svg.setAttribute('viewBox', `0 0 ${fo.getAttribute('width')} ${fo.getAttribute('height')}`);
+  const style = doc.querySelector('style')!;
+  style.textContent = style.textContent!.replace(transparentCss, '');
+  if (gold) doc.querySelector('.ticketCard')!.classList.add('ticketCard_win');
+  if (shiftX) {
+    const cell = doc.querySelector('.ticketCard__cell') as HTMLElement;
+    cell.style.position = 'relative';
+    cell.style.left = `${shiftX}px`;
+  }
+  const result = new Blob([new XMLSerializer().serializeToString(doc)], { type: 'image/svg+xml' });
+  const full = await decodeCompareSvgBlob(result);
+  const canvas = document.createElement('canvas');
+  canvas.width = bounds.width;
+  canvas.height = bounds.height;
+  const ctx = canvas.getContext('2d')!;
+  ctx.drawImage(full, view[0]! + bounds.x + shiftX * Number((doc.querySelector('foreignObject > div') as HTMLElement).style.zoom || 1), view[1]! + bounds.y,
+    bounds.width, bounds.height, 0, 0, bounds.width, bounds.height);
+  rasterSvgBlobs.set(canvas, result);
+  return canvas;
 }
 
 /** SVG bytes for a raster, so the bitmap can be stored without reading pixels. */

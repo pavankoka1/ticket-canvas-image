@@ -740,3 +740,10 @@ button:disabled {
   line-height: 1;
   justify-content: center;
 }
+
+.compare__rowTitle {
+  max-width: 960px;
+  margin: 24px auto 0;
+  font-size: 1rem;
+}
+

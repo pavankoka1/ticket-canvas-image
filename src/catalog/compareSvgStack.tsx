@@ -10,6 +10,7 @@ import {
   styleCompareTicketDom,
 } from "./compareDomAlign";
 import { TicketCard } from "./ticketCardElement";
+import { assembleCompareSprites } from "./compareCachedSprites";
 import { rasterizeCompareTicketSvg } from "./ticketSvgRaster";
 import { setActiveLayout } from "./catalogLayout";
 import type { CatalogLayout } from "./catalogLayout";
@@ -17,6 +18,7 @@ import type { TicketMetrics } from "./ticketPresets";
 import type { Ticket } from "./tickets";
 
 export type CompareSvgStackProps = {
+  optimized?: boolean;
   ticket: Ticket;
   title: string;
   cardWidth: number;
@@ -33,6 +35,7 @@ export type CompareSvgStackProps = {
 };
 
 export function CompareSvgStack({
+  optimized = false,
   ticket,
   title,
   cardWidth,
@@ -84,6 +87,12 @@ export function CompareSvgStack({
     card.bind(ticket, 0, 0, layout);
     card.dom.classList.add("ticketCard_compare");
     styleCompareTicketDom(card.dom);
+    // Compare follows the original CSS image sizing, independent of whether
+    // the catalog image loader happened to be ready at the first bind.
+    card.dom.querySelectorAll<HTMLElement>('.ticketCard__badgeHost').forEach(badge => {
+      badge.style.backgroundSize = 'contain';
+      badge.style.backgroundPosition = '0 0';
+    });
     card.dom.style.visibility = showDom ? "visible" : "hidden";
     card.dom.style.zIndex = "1";
     if (!wrap.contains(card.dom)) {
@@ -106,7 +115,9 @@ export function CompareSvgStack({
 
       try {
         setNote("rasterizing SVG…");
-        const raw = await rasterizeCompareTicketSvg(card.dom, dpr, metrics);
+        const raw = optimized
+          ? await assembleCompareSprites(card.dom, ticket, layout, dpr)
+          : await rasterizeCompareTicketSvg(card.dom, dpr, metrics);
         if (cancelled) return;
         if (raw.width < 1 || raw.height < 1) {
           setNote("svg raster: empty bitmap");
@@ -119,7 +130,34 @@ export function CompareSvgStack({
         ctx.imageSmoothingEnabled = false;
         ctx.clearRect(0, 0, c.width, c.height);
         ctx.drawImage(raw, 0, 0);
-        setNote(`${raw.width}×${raw.height} svg raster`);
+        c.dataset.ready = "true";
+        let diagnostic = "";
+        if (optimized) {
+          const reference = document.querySelector<HTMLCanvasElement>(
+            `[data-renderer="full"][data-ticket="${ticket.id}"] canvas`,
+          );
+          if (reference?.dataset.ready === "true" && reference.width === raw.width && reference.height === raw.height) {
+            try {
+              const expected = reference.getContext('2d')!.getImageData(0, 0, raw.width, raw.height).data;
+              const actual = ctx.getImageData(0, 0, raw.width, raw.height).data;
+              let changed = 0;
+              let maxDelta = 0;
+              for (let i = 0; i < actual.length; i += 4) {
+                let different = false;
+                for (let channel = 0; channel < 4; channel++) {
+                  const delta = Math.abs(actual[i + channel]! - expected[i + channel]!);
+                  if (delta) different = true;
+                  maxDelta = Math.max(maxDelta, delta);
+                }
+                if (different) changed++;
+              }
+              diagnostic = ` · vs full: ${changed} pixels, max Δ ${maxDelta}`;
+            } catch {
+              diagnostic = ' · pixel readback unavailable';
+            }
+          } else diagnostic = ' · full reference not ready';
+        }
+        setNote(`${raw.width}×${raw.height} · ${optimized ? "cached sprites" : "full ticket blob"}${diagnostic}`);
       } catch (err: unknown) {
         if (!cancelled) setNote(err instanceof Error ? err.message : "svg failed");
       }
@@ -128,10 +166,10 @@ export function CompareSvgStack({
     return () => {
       cancelled = true;
     };
-  }, [ticket, cardWidth, cardHeight, metrics, layout, paintGen]);
+  }, [ticket, cardWidth, cardHeight, metrics, layout, paintGen, optimized]);
 
   return (
-    <section className="compare__fullSnap">
+    <section data-renderer={optimized ? "optimized" : "full"} data-ticket={ticket.id} className="compare__fullSnap" style={{ width: Math.max(cardWidth, 270) }}>
       <h2 className="compare__caseTitle">{title}</h2>
       <p className="compare__snapNote">{note}</p>
       <div

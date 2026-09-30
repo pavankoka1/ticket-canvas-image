@@ -175,7 +175,7 @@ export function Compare() {
         <p className="compare__hint">
           Tickets share the live HTML and CSS, with embedded fonts and images.
           HTML layout runs at the canvas DPR inside the SVG. Difference at
-          overlay 1.0: flat black = pixel match; visible marks = mismatch.
+          overlay 1.0: visible marks show DOM differences. Optimized counters compare canvas RGBA bytes against the full-ticket row; zero is exact.
         </p>
       </header>
 
@@ -189,6 +189,7 @@ export function Compare() {
         />
       </div>
 
+      <h2 className="compare__rowTitle">Full ticket blob</h2>
       <div className="compare__cases">
         {COMPARE_TICKETS.map(({ title, ticket }) => (
           <CompareSvgStack
@@ -200,6 +201,18 @@ export function Compare() {
         ))}
       </div>
 
+      <h2 className="compare__rowTitle">Optimized · reusable cached sprites</h2>
+      <div className="compare__cases">
+        {COMPARE_TICKETS.map(({ title, ticket }) => (
+          <CompareSvgStack
+            key={`optimized:${presetId}:${ticket.id}`}
+            {...stackProps}
+            optimized
+            ticket={ticket}
+            title={`${title} (#${ticket.no})`}
+          />
+        ))}
+      </div>
     </div>
   );
 }
