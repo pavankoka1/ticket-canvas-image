@@ -733,3 +733,10 @@ button:disabled {
   position: absolute;
   inset: 0;
 }
+
+/* Compare uses the same explicit, centered header layout in HTML and SVG. */
+.ticketCard_compare .ticketCard__id,
+.ticketCard_compare .ticketCard__win {
+  line-height: 1;
+  justify-content: center;
+}

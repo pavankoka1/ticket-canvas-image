@@ -1,11 +1,9 @@
 /**
- * Rasterize the live ticket by embedding that DOM, with computed styles
- * and the font inlined, in an SVG foreignObject. The image is then decoded
- * and blitted to a canvas. Unlike an SVG <text> redraw, the browser's HTML
- * painter produces the pixels, including the rotated multiplier.
+ * Rasterize the live ticket by embedding a class clone plus the page
+ * stylesheet (and the font) in an SVG foreignObject. Computed-style dumps
+ * are only for isolated sprites — they shift full-ticket text in FO.
  */
 
-import { nudgeSnapText } from "./fullTicketSnap";
 import { ensureTicketFontsForLayout } from "./ticketFont";
 import type { TicketMetrics } from "./ticketPresets";
 
@@ -169,17 +167,10 @@ function measureForeignObjectInkCentreYDevice(
 
   const clone = liveCell.cloneNode(true) as HTMLElement;
   inlineTree(liveCell, clone, assets.images);
-  clone.style.position = "absolute";
-  clone.style.inset = "auto";
-  clone.style.left = "0";
-  clone.style.top = "0";
-  clone.style.transform = "none";
-  clone.style.margin = "0";
-  clone.style.width = `${rect.width}px`;
-  clone.style.height = `${rect.height}px`;
+  prepareRasterCloneBox(clone, rect, 0, 0);
   applySvgRasterInkNudge(clone, inkShiftCss);
 
-  const holder = `position:relative;margin:0;padding:0;width:${cssW}px;height:${cssH}px;zoom:${dpr}`;
+  const holder = holderStyleForRaster(cssW, cssH, dpr, 0, 0);
   const xhtml =
     `<div xmlns="http://www.w3.org/1999/xhtml" style="${holder}">` +
     `<style>${assets.fontCss}</style>` +
@@ -255,33 +246,67 @@ function prepareRasterCloneBox(
   padX: number,
   padY: number,
 ): { cssW: number; cssH: number } {
-  clone.style.position = "absolute";
   clone.style.inset = "auto";
-  clone.style.left = `${padX}px`;
-  clone.style.top = `${padY}px`;
   clone.style.right = "auto";
   clone.style.bottom = "auto";
   clone.style.transform = "none";
   clone.style.margin = "0";
   clone.style.width = `${rect.width}px`;
   clone.style.height = `${rect.height}px`;
-  if (padX > 0 || padY > 0) clone.style.overflow = "visible";
+  const padded = padX > 0 || padY > 0;
+  if (padded) {
+    clone.style.position = "absolute";
+    clone.style.left = `${padX}px`;
+    clone.style.top = `${padY}px`;
+    clone.style.overflow = "visible";
+  } else {
+    clone.style.position = "relative";
+    clone.style.left = "";
+    clone.style.top = "";
+  }
   return { cssW: rect.width + padX * 2, cssH: rect.height + padY * 2 };
 }
 
-function buildFullTicketRasterClone(
+function ticketDocumentCss(images: Map<string, string>): string {
+  let css = "";
+  for (const sheet of document.styleSheets) {
+    let rules: CSSRuleList;
+    try {
+      rules = sheet.cssRules;
+    } catch {
+      continue;
+    }
+    for (const rule of rules) css += `${rule.cssText}\n`;
+  }
+  return rewriteUrls(css, images);
+}
+
+/** Class clone — same stylesheet as the live card. Computed-style dumps shift FO text. */
+function buildStylesheetRasterClone(
   live: HTMLElement,
-  assets: RasterAssets,
   rect: DOMRect,
   padX: number,
   padY: number,
-  dpr: number,
 ): HTMLElement {
   const clone = live.cloneNode(true) as HTMLElement;
-  inlineTree(live, clone, assets.images);
   prepareRasterCloneBox(clone, rect, padX, padY);
-  nudgeSnapText(clone, dpr);
+  // Match the live card: absolute in a positioned frame, not a computed-style flatten.
+  clone.style.position = "absolute";
+  clone.style.left = `${padX}px`;
+  clone.style.top = `${padY}px`;
   return clone;
+}
+
+function holderStyleForRaster(
+  cssW: number,
+  cssH: number,
+  dpr: number,
+  padX: number,
+  padY: number,
+): string {
+  const padded = padX > 0 || padY > 0;
+  const overflow = padded ? "overflow:visible;" : "";
+  return `position:relative;${overflow}margin:0;padding:0;width:${cssW}px;height:${cssH}px;zoom:${dpr}`;
 }
 
 async function encodePreparedCloneForeignObject(
@@ -291,20 +316,19 @@ async function encodePreparedCloneForeignObject(
   padY: number,
   rect: DOMRect,
   assets: RasterAssets,
+  documentCss = "",
 ): Promise<HTMLCanvasElement> {
   const cssW = rect.width + padX * 2;
   const cssH = rect.height + padY * 2;
   const bw = Math.round(cssW * dpr);
   const bh = Math.round(cssH * dpr);
-  const holderOverflow = padX > 0 || padY > 0 ? "overflow:visible;" : "";
-  const holderStyle =
-    `position:relative;${holderOverflow}margin:0;padding:0;width:${cssW}px;height:${cssH}px;zoom:${dpr}`;
+  const holderStyle = holderStyleForRaster(cssW, cssH, dpr, padX, padY);
 
   const xhtmlRoot = document.createElement("div");
   xhtmlRoot.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
   xhtmlRoot.style.cssText = holderStyle;
   const styleEl = document.createElement("style");
-  styleEl.textContent = assets.fontCss;
+  styleEl.textContent = assets.fontCss + documentCss;
   xhtmlRoot.append(styleEl, clone);
 
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -342,6 +366,9 @@ async function encodePreparedCloneForeignObject(
     const ctx = canvas.getContext("2d");
     if (!ctx) return canvas;
     ctx.imageSmoothingEnabled = false;
+    if (img.naturalWidth < 1 || img.naturalHeight < 1) {
+      throw new Error("svg raster: decoded image has zero size");
+    }
     ctx.drawImage(img, 0, 0, bw, bh);
     canvasOut = canvas;
     return canvas;
@@ -359,8 +386,16 @@ async function rasterizeFullTicketForeignObject(
   assets: RasterAssets,
   rect: DOMRect,
 ): Promise<HTMLCanvasElement> {
-  const clone = buildFullTicketRasterClone(live, assets, rect, padX, padY, dpr);
-  return encodePreparedCloneForeignObject(clone, dpr, padX, padY, rect, assets);
+  const clone = buildStylesheetRasterClone(live, rect, padX, padY);
+  return encodePreparedCloneForeignObject(
+    clone,
+    dpr,
+    padX,
+    padY,
+    rect,
+    assets,
+    ticketDocumentCss(assets.images),
+  );
 }
 
 type RasterAssets = {
@@ -505,6 +540,46 @@ export async function rasterizeTicketSvg(
     metrics,
     liveRoot: card,
   });
+}
+
+/** Compare experiment: shared HTML/CSS, embedded assets and device-scale layout. */
+export async function rasterizeCompareTicketSvg(
+  card: HTMLElement,
+  dpr: number,
+  metrics: TicketMetrics,
+): Promise<HTMLCanvasElement> {
+  await ensureTicketFontsForLayout(metrics);
+  const assets = await loadRasterAssets();
+  const rect = card.getBoundingClientRect();
+  const clone = buildStylesheetRasterClone(card, rect, 0, 0);
+  const computed = getComputedStyle(card);
+  for (let i = 0; i < computed.length; i++) {
+    const property = computed.item(i);
+    if (property.startsWith("--")) {
+      clone.style.setProperty(property, computed.getPropertyValue(property));
+    }
+  }
+  clone.style.visibility = "visible";
+  const holder = document.createElement("div");
+  holder.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
+  holder.style.cssText = `position:relative;width:${rect.width}px;height:${rect.height}px;margin:0;padding:0;zoom:${dpr}`;
+  const style = document.createElement("style");
+  // Embedded font declarations must follow page declarations to win the cascade.
+  style.textContent = ticketDocumentCss(assets.images) + assets.fontCss;
+  holder.append(style, clone);
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("width", String(Math.round(rect.width * dpr)));
+  svg.setAttribute("height", String(Math.round(rect.height * dpr)));
+  svg.setAttribute("viewBox", `0 0 ${Math.round(rect.width * dpr)} ${Math.round(rect.height * dpr)}`);
+  const fo = document.createElementNS("http://www.w3.org/2000/svg", "foreignObject");
+  fo.setAttribute("width", String(Math.round(rect.width * dpr)));
+  fo.setAttribute("height", String(Math.round(rect.height * dpr)));
+  fo.append(holder);
+  svg.append(fo);
+  const blob = new Blob([new XMLSerializer().serializeToString(svg)], {
+    type: "image/svg+xml;charset=utf-8",
+  });
+  return decodeSvgBlobToCanvas(blob);
 }
 
 /** SVG bytes for a raster, so the bitmap can be stored without reading pixels. */

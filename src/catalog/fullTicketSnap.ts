@@ -77,13 +77,31 @@ function deviceBox(
   bitmapW: number,
   bitmapH: number,
 ): DeviceBox {
-  const sx = bitmapW / root.width;
-  const sy = bitmapH / root.height;
+  const rw = Math.max(root.width, 1);
+  const rh = Math.max(root.height, 1);
+  const sx = bitmapW / rw;
+  const sy = bitmapH / rh;
   const x = (box.left - root.left) * sx;
   const y = (box.top - root.top) * sy;
-  const w = box.width * sx;
-  const h = box.height * sy;
+  const w = Math.max(0, box.width * sx);
+  const h = Math.max(0, box.height * sy);
   return { x, y, w, h, cx: x + w / 2, cy: y + h / 2 };
+}
+
+/** Off-screen FO clones need explicit card size or label/deviceBox math collapses to 0. */
+export function syncCaptureCloneLayout(live: HTMLElement, clone: HTMLElement): void {
+  const w = live.offsetWidth;
+  const h = live.offsetHeight;
+  if (w > 0) clone.style.width = `${w}px`;
+  if (h > 0) clone.style.height = `${h}px`;
+  void clone.offsetWidth;
+}
+
+export function liveHasMultiplierBadge(live: HTMLElement): boolean {
+  const label = live.querySelector<HTMLElement>(".ticketCard__multiplier");
+  if (!label) return false;
+  const r = label.getBoundingClientRect();
+  return r.width > 0.5 && r.height > 0.5;
 }
 
 function blitRotatedMultiplierSprite(
@@ -98,8 +116,9 @@ function blitRotatedMultiplierSprite(
   out.width = base.width;
   out.height = base.height;
   const ctx = out.getContext("2d");
-  if (!ctx) return base;
+  if (!ctx || base.width < 1 || base.height < 1) return base;
   ctx.drawImage(base, 0, 0);
+  if (sprite.width < 1 || sprite.height < 1) return out;
   ctx.save();
   ctx.imageSmoothingEnabled = true;
   ctx.imageSmoothingQuality = "high";
@@ -124,6 +143,16 @@ function buildMultiplierSprite(
   cropH: number,
 ): HTMLCanvasElement {
   const sprite = document.createElement("canvas");
+  if (
+    cropW < 1 ||
+    cropH < 1 ||
+    flat.width < 1 ||
+    flat.height < 1 ||
+    base.width < 1 ||
+    base.height < 1
+  ) {
+    return sprite;
+  }
   sprite.width = cropW;
   sprite.height = cropH;
   const sctx = sprite.getContext("2d");
@@ -184,25 +213,37 @@ export function paintRotatedMultiplier(
   const flatLabel = flatRoot.querySelector<HTMLElement>(".ticketCard__multiplier");
   const liveLabel = liveRoot.querySelector<HTMLElement>(".ticketCard__multiplier");
   if (!flatLabel || !liveLabel) return base;
+  if (base.width < 1 || base.height < 1 || flat.width < 1 || flat.height < 1) return base;
+
+  syncCaptureCloneLayout(liveRoot, flatRoot);
+  const liveRootBox = liveRoot.getBoundingClientRect();
+  const flatRootBox = flatRoot.getBoundingClientRect();
+  const flatRootForMap =
+    flatRootBox.width > 0 && flatRootBox.height > 0 ? flatRootBox : liveRootBox;
 
   const src = deviceBox(
     flatLabel.getBoundingClientRect(),
-    flatRoot.getBoundingClientRect(),
+    flatRootForMap,
     flat.width,
     flat.height,
   );
   const dest = deviceBox(
     liveLabel.getBoundingClientRect(),
-    liveRoot.getBoundingClientRect(),
+    liveRootBox,
     base.width,
     base.height,
   );
   const fontPx = parseFloat(getComputedStyle(flatLabel).fontSize) || 13;
-  const pad = Math.ceil(fontPx * 0.8 * (flat.width / flatRoot.getBoundingClientRect().width));
+  const pad = Math.ceil(
+    fontPx * 0.8 * (flat.width / Math.max(flatRootForMap.width, 1)),
+  );
   const cropX = Math.floor(src.x - pad);
   const cropY = Math.floor(src.y - pad);
   const cropW = Math.ceil(src.w + pad * 2);
   const cropH = Math.ceil(src.h + pad * 2);
+  if (cropW < 1 || cropH < 1 || !Number.isFinite(cropX) || !Number.isFinite(cropY)) {
+    return base;
+  }
 
   const sprite = buildMultiplierSprite(base, flat, cropX, cropY, cropW, cropH);
   return blitRotatedMultiplierSprite(base, sprite, dest, src, cropX, cropY);

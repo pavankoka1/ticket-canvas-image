@@ -1,12 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { activeDpr, applyCellBoxCssVars, setLiveCellBoxModel } from "./cellBoxModel";
-import { resolveLiveCellBoxModel, warmCellAtlas } from "./cellAtlas";
+import { activeDpr, applyCellBoxCssVars, setLiveCellBoxModel, resolveCellBoxModel } from "./cellBoxModel";
 import { resolveCatalogLayout, setActiveLayout } from "./catalogLayout";
 import { CompareMinimalFoProbe } from "./compareMinimalFoProbe";
 import { CompareSvgStack } from "./compareSvgStack";
-import { warmCellBitmaps } from "./cellBitmaps";
-import { warmIdDigits } from "./headerGlyphs";
 import { ensureTicketFontsForLayout } from "./ticketFont";
 import {
   applyTicketCssVars,
@@ -63,11 +60,11 @@ function layoutForPreset(metrics: TicketMetrics) {
 
 export function Compare() {
   const cssHostRef = useRef<HTMLDivElement>(null);
-  const atlasHostRef = useRef<HTMLDivElement>(null);
   const [presetId, setPresetId] = useState<TicketPresetId>("desktopMedium");
-  const [paintGen, setPaintGen] = useState(0);
+  const [readyPreset, setReadyPreset] = useState<TicketPresetId | null>(null);
+  const paintGen = readyPreset === presetId ? 1 : 0;
   const [status, setStatus] = useState("warming…");
-  const [canvasOpacity, setCanvasOpacity] = useState(0.55);
+  const [canvasOpacity, setCanvasOpacity] = useState(1);
   const [blend, setBlend] = useState<"normal" | "difference">("difference");
   const [showDom, setShowDom] = useState(true);
 
@@ -76,7 +73,7 @@ export function Compare() {
 
   useLayoutEffect(() => {
     setActiveLayout(layout);
-    const model = resolveLiveCellBoxModel(layout);
+    const model = resolveCellBoxModel(layout);
     setLiveCellBoxModel(model);
     const host = cssHostRef.current;
     if (host) {
@@ -87,30 +84,24 @@ export function Compare() {
 
   useEffect(() => {
     let cancelled = false;
-    setPaintGen(0);
+    setReadyPreset(null);
     setStatus("loading fonts…");
 
     void (async () => {
       await ensureTicketFontsForLayout(layout.metrics);
       if (cancelled) return;
-      setLiveCellBoxModel(resolveLiveCellBoxModel(layout, activeDpr()));
-      setPaintGen((g) => g + 1);
+      setLiveCellBoxModel(resolveCellBoxModel(layout, activeDpr()));
+      setReadyPreset(presetId);
       setStatus(
         `ready · ${metrics.label} · ${layout.cardWidth}×${layout.cardHeight} css · dpr ${activeDpr()}`,
       );
 
-      const atlasHost = atlasHostRef.current;
-      if (!atlasHost || cancelled) return;
-      applyTicketCssVars(atlasHost, layout.metrics);
-      void warmCellBitmaps(atlasHost);
-      void warmIdDigits(atlasHost);
-      void warmCellAtlas(atlasHost);
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [layout, metrics.label]);
+  }, [layout, metrics.label, presetId]);
 
   const stackProps = {
     cardWidth: layout.cardWidth,
@@ -182,10 +173,9 @@ export function Compare() {
           </label>
         </div>
         <p className="compare__hint">
-          FO probe (50×50 “100”) isolates text vs ticket chrome. Tickets use{" "}
-          <code>rasterizeTicketSvg</code>. Difference @ overlay 1.0: flat black =
-          pixel match; colored fringing = DOM vs blob-FO mismatch (often text ink
-          or <code>zoom:dpr</code>, not stack position).
+          Tickets share the live HTML and CSS, with embedded fonts and images.
+          HTML layout runs at the canvas DPR inside the SVG. Difference at
+          overlay 1.0: flat black = pixel match; visible marks = mismatch.
         </p>
       </header>
 
@@ -202,7 +192,7 @@ export function Compare() {
       <div className="compare__cases">
         {COMPARE_TICKETS.map(({ title, ticket }) => (
           <CompareSvgStack
-            key={ticket.id}
+            key={`${presetId}:${ticket.id}`}
             {...stackProps}
             ticket={ticket}
             title={`${title} (#${ticket.no})`}
@@ -210,7 +200,6 @@ export function Compare() {
         ))}
       </div>
 
-      <div ref={atlasHostRef} className="catalog__captureHost" />
     </div>
   );
 }
