@@ -69,7 +69,16 @@ export function CompareSvgStack({
     align();
     const observer = new ResizeObserver(align);
     observer.observe(document.documentElement);
-    return () => observer.disconnect();
+    const compare = wrap.closest('.compare');
+    if (compare) observer.observe(compare);
+    if (wrap.parentElement) observer.observe(wrap.parentElement);
+    window.addEventListener('resize', align);
+    window.visualViewport?.addEventListener('resize', align);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', align);
+      window.visualViewport?.removeEventListener('resize', align);
+    };
   });
 
   // Re-attach every commit: React only owns <canvas>; slider/blend updates drop the card otherwise.

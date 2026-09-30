@@ -571,7 +571,7 @@ export async function rasterizeCompareTicketSvg(
   const crop = part?.crop ?? { x: 0, y: 0, width: rect.width, height: rect.height };
   const holder = document.createElement("div");
   holder.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
-  holder.style.cssText = `position:relative;width:${rect.width}px;height:${rect.height}px;margin:0;padding:0;zoom:${dpr}`;
+  holder.style.cssText = `position:relative;width:${rect.width}px;height:${rect.height}px;margin:0;padding:0;zoom:${dpr};-webkit-text-size-adjust:none;text-size-adjust:none`;
   const style = document.createElement("style");
   // Embedded font declarations must follow page declarations to win the cascade.
   style.textContent = ticketDocumentCss(assets.images) + assets.fontCss + (part?.css ?? "");

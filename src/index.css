@@ -747,3 +747,13 @@ button:disabled {
   font-size: 1rem;
 }
 
+
+/* Ticket typography must not be autosized differently by iOS in the page and SVG. */
+.ticketCard_compare,
+.ticketCard_compare *,
+.compare__foProbeBox {
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+}
+.compare__diagnostics { max-width: 960px; margin: 16px auto; }
+.compare__diagnostics pre { overflow: auto; height: 320px; font-size: 12px; }

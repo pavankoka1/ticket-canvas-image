@@ -14,7 +14,7 @@ const packs = new Map<string, Promise<Pack>>();
 type Pack = { numbers: Sprite[][]; badges: Map<string, Sprite>; prefix: string };
 
 function prefix(layout: CatalogLayout, dpr: number): string {
-  return `compare-sprites-v11|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+  return `compare-sprites-v12-text-size-fixed|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
 }
 
 async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): Promise<Sprite> {

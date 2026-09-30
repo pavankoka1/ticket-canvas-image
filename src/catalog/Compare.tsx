@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { activeDpr, applyCellBoxCssVars, setLiveCellBoxModel, resolveCellBoxModel } from "./cellBoxModel";
 import { resolveCatalogLayout, setActiveLayout } from "./catalogLayout";
+import { CompareDiagnostics } from "./compareDiagnostics";
 import { CompareMinimalFoProbe } from "./compareMinimalFoProbe";
 import { CompareSvgStack } from "./compareSvgStack";
 import { ensureTicketFontsForLayout } from "./ticketFont";
@@ -189,6 +190,7 @@ export function Compare() {
         />
       </div>
 
+      <CompareDiagnostics />
       <h2 className="compare__rowTitle">Full ticket blob</h2>
       <div className="compare__cases">
         {COMPARE_TICKETS.map(({ title, ticket }) => (
