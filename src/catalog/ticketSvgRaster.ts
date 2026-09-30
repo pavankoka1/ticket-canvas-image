@@ -543,7 +543,17 @@ export async function rasterizeTicketSvg(
 }
 
 /** Compare experiment: shared HTML/CSS, embedded assets and device-scale layout. */
+export type CompareScaleMode = 'html-zoom' | 'svg-scale';
+
+/** iOS CSS zoom has a separate text layout path; preserve 1× layout there. */
+export function defaultCompareScaleMode(): CompareScaleMode {
+  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent)
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  return ios ? 'svg-scale' : 'html-zoom';
+}
+
 export type CompareRasterPart = {
+  scaleMode?: CompareScaleMode;
   crop?: { x: number; y: number; width: number; height: number };
   prepare?: (clone: HTMLElement) => void;
   css?: string;
@@ -569,9 +579,13 @@ export async function rasterizeCompareTicketSvg(
   clone.style.visibility = "visible";
   part?.prepare?.(clone);
   const crop = part?.crop ?? { x: 0, y: 0, width: rect.width, height: rect.height };
+  const scaleMode = part?.scaleMode ?? defaultCompareScaleMode();
+  const fullWidth = Math.round(rect.width * dpr);
+  const fullHeight = Math.round(rect.height * dpr);
   const holder = document.createElement("div");
   holder.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
-  holder.style.cssText = `position:relative;width:${rect.width}px;height:${rect.height}px;margin:0;padding:0;zoom:${dpr};-webkit-text-size-adjust:none;text-size-adjust:none`;
+  holder.style.cssText = `position:relative;width:${rect.width}px;height:${rect.height}px;margin:0;padding:0;-webkit-text-size-adjust:none;text-size-adjust:none`;
+  if (scaleMode === 'html-zoom') holder.style.zoom = String(dpr);
   const style = document.createElement("style");
   // Embedded font declarations must follow page declarations to win the cascade.
   style.textContent = ticketDocumentCss(assets.images) + assets.fontCss + (part?.css ?? "");
@@ -581,10 +595,18 @@ export async function rasterizeCompareTicketSvg(
   svg.setAttribute("height", String(Math.round(crop.height * dpr)));
   svg.setAttribute("viewBox", `${crop.x * dpr} ${crop.y * dpr} ${Math.round(crop.width * dpr)} ${Math.round(crop.height * dpr)}`);
   const fo = document.createElementNS("http://www.w3.org/2000/svg", "foreignObject");
-  fo.setAttribute("width", String(Math.round(rect.width * dpr)));
-  fo.setAttribute("height", String(Math.round(rect.height * dpr)));
+  svg.setAttribute('data-full-width', String(fullWidth));
+  svg.setAttribute('data-full-height', String(fullHeight));
+  svg.setAttribute('data-raster-scale', String(dpr));
+  fo.setAttribute('width', String(scaleMode === 'svg-scale' ? rect.width : fullWidth));
+  fo.setAttribute('height', String(scaleMode === 'svg-scale' ? rect.height : fullHeight));
   fo.append(holder);
-  svg.append(fo);
+  if (scaleMode === 'svg-scale') {
+    const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    group.setAttribute('transform', `scale(${dpr})`);
+    group.append(fo);
+    svg.append(group);
+  } else svg.append(fo);
   const blob = new Blob([new XMLSerializer().serializeToString(svg)], {
     type: "image/svg+xml;charset=utf-8",
   });
@@ -592,9 +614,9 @@ export async function rasterizeCompareTicketSvg(
   if (part?.crop) {
     // Rasterize at the same origin as the baseline before cropping: SVG
     // viewport translations can change gradient and glyph rounding.
-    svg.setAttribute('width', fo.getAttribute('width')!);
-    svg.setAttribute('height', fo.getAttribute('height')!);
-    svg.setAttribute('viewBox', `0 0 ${fo.getAttribute('width')} ${fo.getAttribute('height')}`);
+    svg.setAttribute('width', String(fullWidth));
+    svg.setAttribute('height', String(fullHeight));
+    svg.setAttribute('viewBox', `0 0 ${fullWidth} ${fullHeight}`);
     const fullBlob = new Blob([new XMLSerializer().serializeToString(svg)], { type: 'image/svg+xml' });
     const full = await decodeCompareSvgBlob(fullBlob);
     canvas = document.createElement('canvas');
@@ -639,9 +661,11 @@ export async function composeCompareInkPatch(
   const svg = doc.documentElement;
   const view = svg.getAttribute('viewBox')!.split(/\s+/).map(Number);
   const fo = doc.querySelector('foreignObject')!;
-  svg.setAttribute('width', fo.getAttribute('width')!);
-  svg.setAttribute('height', fo.getAttribute('height')!);
-  svg.setAttribute('viewBox', `0 0 ${fo.getAttribute('width')} ${fo.getAttribute('height')}`);
+  const fullWidth = svg.getAttribute('data-full-width') ?? fo.getAttribute('width')!;
+  const fullHeight = svg.getAttribute('data-full-height') ?? fo.getAttribute('height')!;
+  svg.setAttribute('width', fullWidth);
+  svg.setAttribute('height', fullHeight);
+  svg.setAttribute('viewBox', `0 0 ${fullWidth} ${fullHeight}`);
   const style = doc.querySelector('style')!;
   style.textContent = style.textContent!.replace(transparentCss, '');
   if (gold) doc.querySelector('.ticketCard')!.classList.add('ticketCard_win');
@@ -656,7 +680,7 @@ export async function composeCompareInkPatch(
   canvas.width = bounds.width;
   canvas.height = bounds.height;
   const ctx = canvas.getContext('2d')!;
-  ctx.drawImage(full, view[0]! + bounds.x + shiftX * Number((doc.querySelector('foreignObject > div') as HTMLElement).style.zoom || 1), view[1]! + bounds.y,
+  ctx.drawImage(full, view[0]! + bounds.x + shiftX * Number(svg.getAttribute('data-raster-scale') ?? 1), view[1]! + bounds.y,
     bounds.width, bounds.height, 0, 0, bounds.width, bounds.height);
   rasterSvgBlobs.set(canvas, result);
   return canvas;

@@ -5,7 +5,7 @@ import type { CatalogLayout } from './catalogLayout';
 import { applyTicketCellLayout, TicketCard } from './ticketCardElement';
 import { ensureTicketFontsForLayout } from './ticketFont';
 import { isWinTicket, MULTIPLIER_VALUES, type Ticket } from './tickets';
-import { composeCompareInkPatch, decodeCompareSvgBlob, rasterizeCompareTicketSvg, rasterSvgBlob, type CompareRasterPart } from './ticketSvgRaster';
+import { composeCompareInkPatch, decodeCompareSvgBlob, rasterizeCompareTicketSvg, rasterSvgBlob, type CompareRasterPart, type CompareScaleMode } from './ticketSvgRaster';
 
 const TRANSPARENT = `:root{background:transparent!important}.ticketCard,.ticketCard__header,.ticketCard__body{background:none!important;box-shadow:none!important}.ticketCard__cell::before{visibility:hidden!important}`;
 type Sprite = { bitmap: HTMLCanvasElement; blob: Blob };
@@ -13,8 +13,8 @@ const sprites = new Map<string, Promise<Sprite>>();
 const packs = new Map<string, Promise<Pack>>();
 type Pack = { numbers: Sprite[][]; badges: Map<string, Sprite>; prefix: string };
 
-function prefix(layout: CatalogLayout, dpr: number): string {
-  return `compare-sprites-v12-text-size-fixed|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+function prefix(layout: CatalogLayout, dpr: number, scaleMode: CompareScaleMode): string {
+  return `compare-sprites-v13|${scaleMode}|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
 }
 
 async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): Promise<Sprite> {
@@ -82,8 +82,8 @@ function prepareSource(card: TicketCard, layout: CatalogLayout, dpr: number): vo
   });
 }
 
-function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
-  const key = prefix(layout, dpr);
+function warmPack(layout: CatalogLayout, dpr: number, scaleMode: CompareScaleMode): Promise<Pack> {
+  const key = prefix(layout, dpr, scaleMode);
   let pending = packs.get(key);
   if (pending) return pending;
   pending = (async () => {
@@ -98,7 +98,7 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
     const m = layout.metrics;
     const numbers: Sprite[][] = [[], []];
     const badges = new Map<string, Sprite>();
-    const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(card.dom, dpr, m, part);
+    const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(card.dom, dpr, m, { ...part, scaleMode });
     try {
       for (const disabled of [false, true]) {
         for (let n = 1; n <= 60; n++) {
@@ -145,12 +145,13 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
   return pending;
 }
 
-export async function assembleCompareSprites(live: HTMLElement, ticket: Ticket, layout: CatalogLayout, dpr: number): Promise<HTMLCanvasElement> {
-  const pack = await warmPack(layout, dpr);
+export async function assembleCompareSprites(live: HTMLElement, ticket: Ticket, layout: CatalogLayout, dpr: number, scaleMode: CompareScaleMode): Promise<HTMLCanvasElement> {
+  const pack = await warmPack(layout, dpr, scaleMode);
   const m = layout.metrics;
+  const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(live, dpr, m, { ...part, scaleMode });
   const model = resolveCellBoxModel(layout, dpr);
   const face = ticket.disabled ? 'disabled' : isWinTicket(ticket) ? 'gold' : 'normal';
-  const chrome = await cached(`${pack.prefix}|chrome|${face}`, () => rasterizeCompareTicketSvg(live, dpr, m, {
+  const chrome = await cached(`${pack.prefix}|chrome|${face}`, () => capture({
     css: '.ticketCard__cell::before{visibility:visible!important}',
     prepare(root) {
       hideHeader(root);
@@ -187,12 +188,12 @@ export async function assembleCompareSprites(live: HTMLElement, ticket: Ticket, 
     const part = headerPart('.ticketCard__id');
     part.crop = { x: x / dpr, y: 0, width: width / dpr, height: m.headerHeight };
     const sprite = await cached(`${pack.prefix}|id-digit|${face}|${ticket.no[i]}|${phase}|${width}`,
-      () => rasterizeCompareTicketSvg(live, dpr, m, part));
+      () => capture(part));
     const patch = await inkPatch(`${pack.prefix}|id-digit|${face}|${ticket.no[i]}|${phase}|${width}`, sprite);
     ids.push({ sprite: patch.sprite, x: x + patch.x, y: patch.y });
   }
   const amount = isWinTicket(ticket) && ticket.win
-    ? await cached(`${pack.prefix}|amount|${face}|${ticket.win}`, () => rasterizeCompareTicketSvg(live, dpr, m, headerPart('.ticketCard__win')))
+    ? await cached(`${pack.prefix}|amount|${face}|${ticket.win}`, () => capture(headerPart('.ticketCard__win')))
     : null;
   const amountPatch = amount ? await inkPatch(`${pack.prefix}|amount|${face}|${ticket.win}`, amount) : null;
   const numberPatches = await Promise.all(ticket.balls.map((ball, i) => ticket.hits.includes(i) || ticket.multipliers[i]

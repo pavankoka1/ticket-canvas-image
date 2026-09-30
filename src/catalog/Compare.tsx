@@ -5,6 +5,7 @@ import { resolveCatalogLayout, setActiveLayout } from "./catalogLayout";
 import { CompareDiagnostics } from "./compareDiagnostics";
 import { CompareMinimalFoProbe } from "./compareMinimalFoProbe";
 import { CompareSvgStack } from "./compareSvgStack";
+import { defaultCompareScaleMode, type CompareScaleMode } from "./ticketSvgRaster";
 import { ensureTicketFontsForLayout } from "./ticketFont";
 import {
   applyTicketCssVars,
@@ -68,6 +69,7 @@ export function Compare() {
   const [canvasOpacity, setCanvasOpacity] = useState(1);
   const [blend, setBlend] = useState<"normal" | "difference">("difference");
   const [showDom, setShowDom] = useState(true);
+  const [scaleMode, setScaleMode] = useState<CompareScaleMode>(defaultCompareScaleMode);
 
   const metrics = getPreset(presetId);
   const layout = useMemo(() => layoutForPreset(metrics), [metrics]);
@@ -105,6 +107,7 @@ export function Compare() {
   }, [layout, metrics.label, presetId]);
 
   const stackProps = {
+    scaleMode,
     cardWidth: layout.cardWidth,
     cardHeight: layout.cardHeight,
     metrics: layout.metrics,
@@ -138,6 +141,13 @@ export function Compare() {
                   {p.label}
                 </option>
               ))}
+            </select>
+          </label>
+          <label>
+            raster scaling
+            <select value={scaleMode} onChange={event => setScaleMode(event.target.value as CompareScaleMode)}>
+              <option value="svg-scale">SVG scale · layout at 1×</option>
+              <option value="html-zoom">HTML zoom · previous</option>
             </select>
           </label>
           <label>
@@ -175,7 +185,7 @@ export function Compare() {
         </div>
         <p className="compare__hint">
           Tickets share the live HTML and CSS, with embedded fonts and images.
-          HTML layout runs at the canvas DPR inside the SVG. Difference at
+          {scaleMode === 'svg-scale' ? 'HTML layout stays at 1×; SVG scales once to the canvas DPR.' : 'HTML layout uses CSS zoom at the canvas DPR.'} Difference at
           overlay 1.0: visible marks show DOM differences. Optimized counters compare canvas RGBA bytes against the full-ticket row; zero is exact.
         </p>
       </header>
@@ -195,7 +205,7 @@ export function Compare() {
       <div className="compare__cases">
         {COMPARE_TICKETS.map(({ title, ticket }) => (
           <CompareSvgStack
-            key={`${presetId}:${ticket.id}`}
+            key={`${presetId}:${scaleMode}:${ticket.id}`}
             {...stackProps}
             ticket={ticket}
             title={`${title} (#${ticket.no})`}
@@ -207,7 +217,7 @@ export function Compare() {
       <div className="compare__cases">
         {COMPARE_TICKETS.map(({ title, ticket }) => (
           <CompareSvgStack
-            key={`optimized:${presetId}:${ticket.id}`}
+            key={`optimized:${presetId}:${scaleMode}:${ticket.id}`}
             {...stackProps}
             optimized
             ticket={ticket}
