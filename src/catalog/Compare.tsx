@@ -1,17 +1,22 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { activeDpr, applyCellBoxCssVars, setLiveCellBoxModel, resolveCellBoxModel } from "./cellBoxModel";
 import { resolveCatalogLayout, setActiveLayout } from "./catalogLayout";
+import {
+  activeDpr,
+  applyCellBoxCssVars,
+  resolveCellBoxModel,
+  setLiveCellBoxModel,
+} from "./cellBoxModel";
 import { CompareDiagnostics } from "./compareDiagnostics";
 import { CompareMinimalFoProbe } from "./compareMinimalFoProbe";
 import { CompareSvgStack } from "./compareSvgStack";
 import { ensureTicketFontsForLayout } from "./ticketFont";
 import {
+  TICKET_PRESETS,
   applyTicketCssVars,
   getPreset,
-  TICKET_PRESETS,
-  type TicketPresetId,
   type TicketMetrics,
+  type TicketPresetId,
 } from "./ticketPresets";
 import type { Ticket } from "./tickets";
 
@@ -66,7 +71,7 @@ export function Compare() {
   const paintGen = readyPreset === presetId ? 1 : 0;
   const [status, setStatus] = useState("warming…");
   const [canvasOpacity, setCanvasOpacity] = useState(1);
-  const [blend, setBlend] = useState<"normal" | "difference">("normal");
+  const [blend, setBlend] = useState<"normal" | "difference">("difference");
   const [showDom, setShowDom] = useState(true);
   const rasterRatio = activeDpr();
 
@@ -97,7 +102,6 @@ export function Compare() {
       setStatus(
         `ready · ${metrics.label} · ${layout.cardWidth}×${layout.cardHeight} css · raster ${rasterRatio}× · display DPR ${activeDpr()}`,
       );
-
     })();
 
     return () => {
@@ -176,8 +180,9 @@ export function Compare() {
         </div>
         <p className="compare__hint">
           Tickets share the live HTML and CSS, with embedded fonts and images.
-          HTML layout uses CSS zoom at the canvas DPR. Difference at
-          overlay 1.0: visible marks show DOM differences. Optimized counters compare canvas RGBA bytes against the full-ticket row; zero is exact.
+          HTML layout uses CSS zoom at the canvas DPR. Difference at overlay
+          1.0: visible marks show DOM differences. Optimized counters compare
+          canvas RGBA bytes against the full-ticket row; zero is exact.
         </p>
       </header>
 
