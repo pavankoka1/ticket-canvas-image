@@ -5,13 +5,13 @@
 
 import { useLayoutEffect, useRef, useState } from "react";
 
-import { activeDpr } from "./cellBoxModel";
 import { layoutCompareRasterCanvas } from "./compareDomAlign";
 import { rasterizeElementSvg } from "./ticketSvgRaster";
 
 const PROBE_CSS = 50;
 
 export type CompareMinimalFoProbeProps = {
+  rasterRatio: number;
   paintGen: number;
   canvasOpacity: number;
   blend: "normal" | "difference";
@@ -20,6 +20,7 @@ export type CompareMinimalFoProbeProps = {
 };
 
 export function CompareMinimalFoProbe({
+  rasterRatio,
   paintGen,
   canvasOpacity,
   blend,
@@ -45,7 +46,7 @@ export function CompareMinimalFoProbe({
     if (paintGen < 1) return;
 
     let cancelled = false;
-    const dpr = activeDpr();
+    const dpr = rasterRatio;
 
     void (async () => {
       const box = boxRef.current;
@@ -64,7 +65,7 @@ export function CompareMinimalFoProbe({
         ctx.imageSmoothingEnabled = false;
         ctx.clearRect(0, 0, c.width, c.height);
         ctx.drawImage(raw, 0, 0);
-        setNote(`${raw.width}×${raw.height} · dpr ${dpr}`);
+        setNote(`${raw.width}×${raw.height} · raster ${dpr}×`);
       } catch (err: unknown) {
         if (!cancelled) setNote(err instanceof Error ? err.message : "svg failed");
       }
@@ -73,7 +74,7 @@ export function CompareMinimalFoProbe({
     return () => {
       cancelled = true;
     };
-  }, [paintGen, showDom]);
+  }, [paintGen, showDom, rasterRatio]);
 
   return (
     <section className="compare__fullSnap compare__foProbe">

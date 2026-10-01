@@ -5,7 +5,7 @@ import type { CatalogLayout } from './catalogLayout';
 import { applyTicketCellLayout, TicketCard } from './ticketCardElement';
 import { ensureTicketFontsForLayout } from './ticketFont';
 import { isWinTicket, MULTIPLIER_VALUES, type Ticket } from './tickets';
-import { composeCompareInkPatch, decodeCompareSvgBlob, rasterizeCompareTicketSvg, rasterSvgBlob, type CompareRasterPart, type CompareScaleMode } from './ticketSvgRaster';
+import { composeCompareInkPatch, decodeCompareSvgBlob, rasterizeCompareTicketSvg, rasterSvgBlob, type CompareRasterPart } from './ticketSvgRaster';
 
 const TRANSPARENT = `:root{background:transparent!important}.ticketCard,.ticketCard__header,.ticketCard__body{background:none!important;box-shadow:none!important}.ticketCard__cell::before{visibility:hidden!important}`;
 type Sprite = { bitmap: HTMLCanvasElement; blob: Blob };
@@ -13,8 +13,8 @@ const sprites = new Map<string, Promise<Sprite>>();
 const packs = new Map<string, Promise<Pack>>();
 type Pack = { numbers: Sprite[][]; badges: Map<string, Sprite>; prefix: string };
 
-function prefix(layout: CatalogLayout, dpr: number, scaleMode: CompareScaleMode): string {
-  return `compare-sprites-v13|${scaleMode}|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+function prefix(layout: CatalogLayout, dpr: number): string {
+  return `compare-sprites-v16|html-zoom|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
 }
 
 async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): Promise<Sprite> {
@@ -65,7 +65,7 @@ function sourceTicket(disabled: boolean, number = 1, badge = 0): Ticket {
   return { id: 'compare-cache-source', no: '0', balls: Array(6).fill(number) as number[], hits: badge ? [0] : [], multipliers: badge > 1 ? { 0: badge } : {}, win: '', disabled };
 }
 
-function prepareSource(card: TicketCard, layout: CatalogLayout, dpr: number): void {
+export function prepareCompareCard(card: TicketCard, layout: CatalogLayout, dpr: number): void {
   const model = resolveCellBoxModel(layout, dpr);
   const cells = [...card.dom.querySelectorAll<HTMLElement>('.ticketCard__cell')];
   applyTicketCellLayout(card.dom, cells, model, layout.metrics, layout.cardHeight);
@@ -82,8 +82,8 @@ function prepareSource(card: TicketCard, layout: CatalogLayout, dpr: number): vo
   });
 }
 
-function warmPack(layout: CatalogLayout, dpr: number, scaleMode: CompareScaleMode): Promise<Pack> {
-  const key = prefix(layout, dpr, scaleMode);
+function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
+  const key = prefix(layout, dpr);
   let pending = packs.get(key);
   if (pending) return pending;
   pending = (async () => {
@@ -98,12 +98,12 @@ function warmPack(layout: CatalogLayout, dpr: number, scaleMode: CompareScaleMod
     const m = layout.metrics;
     const numbers: Sprite[][] = [[], []];
     const badges = new Map<string, Sprite>();
-    const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(card.dom, dpr, m, { ...part, scaleMode });
+    const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(card.dom, dpr, m, part);
     try {
       for (const disabled of [false, true]) {
         for (let n = 1; n <= 60; n++) {
           card.bind(sourceTicket(disabled, n), 0, 0, layout);
-          prepareSource(card, layout, dpr);
+          prepareCompareCard(card, layout, dpr);
           numbers[Number(disabled)]![n] = await cached(`${key}|number|${disabled}|${n}`, () => capture({
             crop: { x: 0, y: m.headerHeight, width: model.cellW, height: m.bodyHeight },
             css: TRANSPARENT,
@@ -122,7 +122,7 @@ function warmPack(layout: CatalogLayout, dpr: number, scaleMode: CompareScaleMod
           ticket.hits = face === 'gold' ? [1, 2] : [1];
           ticket.multipliers = value > 1 ? { 1: value } : {};
           card.bind(ticket, 0, 0, layout);
-          prepareSource(card, layout, dpr);
+          prepareCompareCard(card, layout, dpr);
           const badgeKey = `${face}|${value}`;
           badges.set(badgeKey, await cached(`${key}|badge-body|${badgeKey}`, () => capture({
             crop: { x: model.cells[1]!.x - 16, y: m.headerHeight, width: model.cellW + 32, height: m.bodyHeight },
@@ -145,10 +145,10 @@ function warmPack(layout: CatalogLayout, dpr: number, scaleMode: CompareScaleMod
   return pending;
 }
 
-export async function assembleCompareSprites(live: HTMLElement, ticket: Ticket, layout: CatalogLayout, dpr: number, scaleMode: CompareScaleMode): Promise<HTMLCanvasElement> {
-  const pack = await warmPack(layout, dpr, scaleMode);
+export async function assembleCompareSprites(live: HTMLElement, ticket: Ticket, layout: CatalogLayout, dpr: number): Promise<HTMLCanvasElement> {
+  const pack = await warmPack(layout, dpr);
   const m = layout.metrics;
-  const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(live, dpr, m, { ...part, scaleMode });
+  const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(live, dpr, m, part);
   const model = resolveCellBoxModel(layout, dpr);
   const face = ticket.disabled ? 'disabled' : isWinTicket(ticket) ? 'gold' : 'normal';
   const chrome = await cached(`${pack.prefix}|chrome|${face}`, () => capture({

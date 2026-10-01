@@ -543,17 +543,7 @@ export async function rasterizeTicketSvg(
 }
 
 /** Compare experiment: shared HTML/CSS, embedded assets and device-scale layout. */
-export type CompareScaleMode = 'html-zoom' | 'svg-scale';
-
-/** iOS CSS zoom has a separate text layout path; preserve 1× layout there. */
-export function defaultCompareScaleMode(): CompareScaleMode {
-  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent)
-    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-  return ios ? 'svg-scale' : 'html-zoom';
-}
-
 export type CompareRasterPart = {
-  scaleMode?: CompareScaleMode;
   crop?: { x: number; y: number; width: number; height: number };
   prepare?: (clone: HTMLElement) => void;
   css?: string;
@@ -579,13 +569,12 @@ export async function rasterizeCompareTicketSvg(
   clone.style.visibility = "visible";
   part?.prepare?.(clone);
   const crop = part?.crop ?? { x: 0, y: 0, width: rect.width, height: rect.height };
-  const scaleMode = part?.scaleMode ?? defaultCompareScaleMode();
   const fullWidth = Math.round(rect.width * dpr);
   const fullHeight = Math.round(rect.height * dpr);
   const holder = document.createElement("div");
   holder.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
   holder.style.cssText = `position:relative;width:${rect.width}px;height:${rect.height}px;margin:0;padding:0;-webkit-text-size-adjust:none;text-size-adjust:none`;
-  if (scaleMode === 'html-zoom') holder.style.zoom = String(dpr);
+  holder.style.zoom = String(dpr);
   const style = document.createElement("style");
   // Embedded font declarations must follow page declarations to win the cascade.
   style.textContent = ticketDocumentCss(assets.images) + assets.fontCss + (part?.css ?? "");
@@ -598,15 +587,10 @@ export async function rasterizeCompareTicketSvg(
   svg.setAttribute('data-full-width', String(fullWidth));
   svg.setAttribute('data-full-height', String(fullHeight));
   svg.setAttribute('data-raster-scale', String(dpr));
-  fo.setAttribute('width', String(scaleMode === 'svg-scale' ? rect.width : fullWidth));
-  fo.setAttribute('height', String(scaleMode === 'svg-scale' ? rect.height : fullHeight));
+  fo.setAttribute('width', String(fullWidth));
+  fo.setAttribute('height', String(fullHeight));
   fo.append(holder);
-  if (scaleMode === 'svg-scale') {
-    const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-    group.setAttribute('transform', `scale(${dpr})`);
-    group.append(fo);
-    svg.append(group);
-  } else svg.append(fo);
+  svg.append(fo);
   const blob = new Blob([new XMLSerializer().serializeToString(svg)], {
     type: "image/svg+xml;charset=utf-8",
   });

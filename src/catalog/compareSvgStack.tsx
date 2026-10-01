@@ -10,8 +10,8 @@ import {
   styleCompareTicketDom,
 } from "./compareDomAlign";
 import { TicketCard } from "./ticketCardElement";
-import { assembleCompareSprites } from "./compareCachedSprites";
-import { rasterizeCompareTicketSvg, type CompareScaleMode } from "./ticketSvgRaster";
+import { assembleCompareSprites, prepareCompareCard } from "./compareCachedSprites";
+import { rasterizeCompareTicketSvg } from "./ticketSvgRaster";
 import { setActiveLayout } from "./catalogLayout";
 import type { CatalogLayout } from "./catalogLayout";
 import type { TicketMetrics } from "./ticketPresets";
@@ -19,7 +19,6 @@ import type { Ticket } from "./tickets";
 
 export type CompareSvgStackProps = {
   optimized?: boolean;
-  scaleMode: CompareScaleMode;
   ticket: Ticket;
   title: string;
   cardWidth: number;
@@ -58,7 +57,6 @@ function canvasPixelDiagnostic(canvas: HTMLCanvasElement, ticketId: string): str
 
 export function CompareSvgStack({
   optimized = false,
-  scaleMode,
   ticket,
   title,
   cardWidth,
@@ -115,16 +113,12 @@ export function CompareSvgStack({
       cardRef.current = card;
     }
     setActiveLayout(layout);
-    setLiveCellBoxModel(resolveCellBoxModel(layout));
+    setLiveCellBoxModel(resolveCellBoxModel(layout, activeDpr()));
     card.bind(ticket, 0, 0, layout);
     card.dom.classList.add("ticketCard_compare");
     styleCompareTicketDom(card.dom);
-    // Compare follows the original CSS image sizing, independent of whether
-    // the catalog image loader happened to be ready at the first bind.
-    card.dom.querySelectorAll<HTMLElement>('.ticketCard__badgeHost').forEach(badge => {
-      badge.style.backgroundSize = 'contain';
-      badge.style.backgroundPosition = '0 0';
-    });
+    // Live DOM and captured cells share the same geometry at the chosen ratio.
+    prepareCompareCard(card, layout, activeDpr());
     card.dom.style.visibility = showDom ? "visible" : "hidden";
     card.dom.style.zIndex = "1";
     if (!wrap.contains(card.dom)) {
@@ -155,8 +149,8 @@ export function CompareSvgStack({
       try {
         setNote("rasterizing SVG…");
         const raw = optimized
-          ? await assembleCompareSprites(card.dom, ticket, layout, dpr, scaleMode)
-          : await rasterizeCompareTicketSvg(card.dom, dpr, metrics, { scaleMode });
+          ? await assembleCompareSprites(card.dom, ticket, layout, dpr)
+          : await rasterizeCompareTicketSvg(card.dom, dpr, metrics);
         if (cancelled) return;
         if (raw.width < 1 || raw.height < 1) {
           setNote("svg raster: empty bitmap");
@@ -182,10 +176,10 @@ export function CompareSvgStack({
       cancelled = true;
       document.removeEventListener('compare-full-ready', refreshDiagnostic);
     };
-  }, [ticket, cardWidth, cardHeight, metrics, layout, paintGen, optimized, scaleMode]);
+  }, [ticket, cardWidth, cardHeight, metrics, layout, paintGen, optimized]);
 
   return (
-    <section data-renderer={optimized ? "optimized" : "full"} data-ticket={ticket.id} data-scale-mode={scaleMode} className="compare__fullSnap" style={{ width: Math.max(cardWidth, 270) }}>
+    <section data-renderer={optimized ? "optimized" : "full"} data-ticket={ticket.id} data-scale-mode="html-zoom" data-raster-ratio={activeDpr()} className="compare__fullSnap" style={{ width: Math.max(cardWidth, 270) }}>
       <h2 className="compare__caseTitle">{title}</h2>
       <p className="compare__snapNote">{note}</p>
       <div

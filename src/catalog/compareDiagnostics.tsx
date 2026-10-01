@@ -36,21 +36,21 @@ export function CompareDiagnostics() {
         return { class: element.className, text: element.textContent, rect: rect(element), font: style.font,
           lineHeight: style.lineHeight, textSizeAdjust: style.getPropertyValue('-webkit-text-size-adjust') };
       });
-      return { renderer: section.dataset.renderer, scaleMode: section.dataset.scaleMode, ticket: section.dataset.ticket,
+      return { renderer: section.dataset.renderer, scaleMode: section.dataset.scaleMode, rasterRatio: Number(section.dataset.rasterRatio), ticket: section.dataset.ticket,
         dpr: window.devicePixelRatio, activeDpr: activeDpr(), zoom: window.outerWidth / window.innerWidth,
         rect: rect(canvas), devicePixelContentBox: await deviceBox(canvas),
         canvas: { width: canvas.width, height: canvas.height },
         drawingBuffer: { width: canvas.width, height: canvas.height },
         overlayRect: rect(card), targetCanvasPoint: { x: 0, y: 0 }, typography };
     }));
-    const result = { revision: 'compare-scaling-v13', userAgent: navigator.userAgent,
+    const result = { revision: 'compare-html-zoom-v16', userAgent: navigator.userAgent,
       viewport: { width: window.innerWidth, height: window.innerHeight, scale: window.visualViewport?.scale },
       fontStatus: document.fonts.status, fontLoaded: document.fonts.check('700 18px "MB-Onest"'), rows };
     console.info('Compare pixel probe', result);
     setReport(JSON.stringify(result, null, 2));
   }
   return <details className="compare__diagnostics" onToggle={event => { if (event.currentTarget.open) void collect(); }}>
-    <summary>Rendering diagnostics · scaling v13</summary>
+    <summary>Rendering diagnostics · HTML zoom</summary>
     <pre>{report}</pre>
   </details>;
 }
