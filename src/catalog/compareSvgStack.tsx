@@ -11,6 +11,7 @@ import {
 } from "./compareDomAlign";
 import { TicketCard } from "./ticketCardElement";
 import { assembleCompareSprites, prepareCompareCard } from "./compareCachedSprites";
+import { headerCalibration } from "./compareHeaderCalibration";
 import { rasterizeCompareTicketSvg } from "./ticketSvgRaster";
 import { setActiveLayout } from "./catalogLayout";
 import type { CatalogLayout } from "./catalogLayout";
@@ -75,18 +76,47 @@ export function CompareSvgStack({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const cardRef = useRef<TicketCard | null>(null);
   const [note, setNote] = useState("waiting for the live card…");
+  const alignRef = useRef<() => string>(() => "");
 
   useLayoutEffect(() => {
     const wrap = wrapRef.current;
     if (!wrap) return;
+    // WebKit rounds DOM text against the card's layout origin (iPhone, DPR 3):
+    // a fractional origin moves header glyphs a whole device px. Put the
+    // layout origin on a whole CSS px in document coordinates. Any device
+    // remainder (non-zero only for a fractional ratio) goes in a transform,
+    // which DOM and canvas share. Returns the alignment key captures check.
     const align = () => {
       wrap.style.left = "0px";
       wrap.style.top = "0px";
+      wrap.style.transform = "";
       const rect = wrap.getBoundingClientRect();
+      const x = rect.left + window.scrollX;
+      const y = rect.top + window.scrollY;
+      const lx = Math.round(x);
+      const ly = Math.round(y);
+      // Engines truncate stored offsets to their layout unit (WebKit 1/64 CSS,
+      // Chromium 1/64 device px), so aim a hair past the target and re-check.
+      const aim = (d: number) => (d === 0 ? 0 : d + Math.sign(d) * 1e-3);
+      let ox = aim(lx - x);
+      let oy = aim(ly - y);
+      for (let i = 0; i < 3; i++) {
+        wrap.style.left = `${ox}px`;
+        wrap.style.top = `${oy}px`;
+        const r = wrap.getBoundingClientRect();
+        const ex = lx - (r.left + window.scrollX);
+        const ey = ly - (r.top + window.scrollY);
+        if (Math.abs(ex) < 1e-4 && Math.abs(ey) < 1e-4) break;
+        ox += aim(ex);
+        oy += aim(ey);
+      }
       const dpr = activeDpr();
-      wrap.style.left = `${Math.round(rect.left * dpr) / dpr - rect.left}px`;
-      wrap.style.top = `${Math.round(rect.top * dpr) / dpr - rect.top}px`;
+      const rx = Math.round(lx * dpr) / dpr - lx;
+      const ry = Math.round(ly * dpr) / dpr - ly;
+      if (rx || ry) wrap.style.transform = `translate(${rx}px, ${ry}px)`;
+      return `${lx},${ly},${rx},${ry},${rect.width}x${rect.height}`;
     };
+    alignRef.current = align;
     align();
     const observer = new ResizeObserver(align);
     observer.observe(document.documentElement);
@@ -148,10 +178,28 @@ export function CompareSvgStack({
 
       try {
         setNote("rasterizing SVG…");
-        const raw = optimized
-          ? await assembleCompareSprites(card.dom, ticket, layout, dpr)
-          : await rasterizeCompareTicketSvg(card.dom, dpr, metrics);
-        if (cancelled) return;
+        // Capture only from a settled layout: fonts loaded and origin aligned
+        // before any DOM measurement, and unchanged when the bitmap is ready.
+        // A moved origin (resize, reflow above) restarts the capture.
+        let raw: HTMLCanvasElement | null = null;
+        let alignKey = "";
+        for (let attempt = 0; attempt < 3 && !raw; attempt++) {
+          await document.fonts.ready;
+          if (cancelled) return;
+          alignKey = alignRef.current();
+          const shot = optimized
+            ? await assembleCompareSprites(card.dom, ticket, layout, dpr)
+            : await rasterizeCompareTicketSvg(card.dom, dpr, metrics, undefined, headerCalibration(card.dom, dpr));
+          if (cancelled) return;
+          const settled = alignRef.current() === alignKey;
+          console.debug("[compare-capture]", { renderer: optimized ? "optimized" : "full", ticket: ticket.id, attempt, alignKey, settled });
+          if (settled) raw = shot;
+        }
+        if (!raw) {
+          setNote("layout kept moving during capture");
+          return;
+        }
+        c.dataset.alignKey = alignKey;
         if (raw.width < 1 || raw.height < 1) {
           setNote("svg raster: empty bitmap");
           return;

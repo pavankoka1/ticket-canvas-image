@@ -4,6 +4,7 @@
  * are only for isolated sprites — they shift full-ticket text in FO.
  */
 
+import { applyHeaderCalibration, type HeaderCalibration } from "./compareHeaderCalibration";
 import { ensureTicketFontsForLayout } from "./ticketFont";
 import type { TicketMetrics } from "./ticketPresets";
 
@@ -554,6 +555,7 @@ export async function rasterizeCompareTicketSvg(
   dpr: number,
   metrics: TicketMetrics,
   part?: CompareRasterPart,
+  calibration?: HeaderCalibration,
 ): Promise<HTMLCanvasElement> {
   await ensureTicketFontsForLayout(metrics);
   const assets = await loadRasterAssets();
@@ -567,6 +569,8 @@ export async function rasterizeCompareTicketSvg(
     }
   }
   clone.style.visibility = "visible";
+  // Header calibration: once, on the clone, before serialization and crop.
+  if (calibration) applyHeaderCalibration(clone, calibration, dpr);
   part?.prepare?.(clone);
   const crop = part?.crop ?? { x: 0, y: 0, width: rect.width, height: rect.height };
   const fullWidth = Math.round(rect.width * dpr);

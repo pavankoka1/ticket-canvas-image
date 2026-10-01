@@ -2,6 +2,7 @@
 import { loadSprites, saveSprites } from './atlasStore';
 import { badgeHostDevice, resolveCellBoxModel } from './cellBoxModel';
 import type { CatalogLayout } from './catalogLayout';
+import { headerCalibration } from './compareHeaderCalibration';
 import { applyTicketCellLayout, TicketCard } from './ticketCardElement';
 import { ensureTicketFontsForLayout } from './ticketFont';
 import { isWinTicket, MULTIPLIER_VALUES, type Ticket } from './tickets';
@@ -14,7 +15,7 @@ const packs = new Map<string, Promise<Pack>>();
 type Pack = { numbers: Sprite[][]; badges: Map<string, Sprite>; prefix: string };
 
 function prefix(layout: CatalogLayout, dpr: number): string {
-  return `compare-sprites-v16|html-zoom|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+  return `compare-sprites-v17|html-zoom|whole-css-origin|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
 }
 
 async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): Promise<Sprite> {
@@ -148,10 +149,19 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
 export async function assembleCompareSprites(live: HTMLElement, ticket: Ticket, layout: CatalogLayout, dpr: number): Promise<HTMLCanvasElement> {
   const pack = await warmPack(layout, dpr);
   const m = layout.metrics;
-  const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(live, dpr, m, part);
+  // Same validated header calibration as the full row; part of every live key.
+  const calibration = headerCalibration(live, dpr);
+  const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(live, dpr, m, part, calibration);
   const model = resolveCellBoxModel(layout, dpr);
   const face = ticket.disabled ? 'disabled' : isWinTicket(ticket) ? 'gold' : 'normal';
-  const chrome = await cached(`${pack.prefix}|chrome|${face}`, () => capture({
+  // Live-card captures depend on the card's layout-origin fraction (WebKit text
+  // rounding). Key them by it so a capture taken mid-reflow can never be reused
+  // at a settled whole-pixel origin.
+  const liveRect = live.getBoundingClientRect();
+  const frac = (v: number) => (v - Math.round(v)).toFixed(4);
+  const origin = `o${frac(liveRect.left + window.scrollX)},${frac(liveRect.top + window.scrollY)}`;
+  const liveKey = `${pack.prefix}|${origin}|${calibration.key}`;
+  const chrome = await cached(`${liveKey}|chrome|${face}`, () => capture({
     css: '.ticketCard__cell::before{visibility:visible!important}',
     prepare(root) {
       hideHeader(root);
@@ -187,15 +197,15 @@ export async function assembleCompareSprites(live: HTMLElement, ticket: Ticket, 
     const phase = Math.round((start - x) * 64);
     const part = headerPart('.ticketCard__id');
     part.crop = { x: x / dpr, y: 0, width: width / dpr, height: m.headerHeight };
-    const sprite = await cached(`${pack.prefix}|id-digit|${face}|${ticket.no[i]}|${phase}|${width}`,
+    const sprite = await cached(`${liveKey}|id-digit|${face}|${ticket.no[i]}|${phase}|${width}`,
       () => capture(part));
-    const patch = await inkPatch(`${pack.prefix}|id-digit|${face}|${ticket.no[i]}|${phase}|${width}`, sprite);
+    const patch = await inkPatch(`${liveKey}|id-digit|${face}|${ticket.no[i]}|${phase}|${width}`, sprite);
     ids.push({ sprite: patch.sprite, x: x + patch.x, y: patch.y });
   }
   const amount = isWinTicket(ticket) && ticket.win
-    ? await cached(`${pack.prefix}|amount|${face}|${ticket.win}`, () => capture(headerPart('.ticketCard__win')))
+    ? await cached(`${liveKey}|amount|${face}|${ticket.win}`, () => capture(headerPart('.ticketCard__win')))
     : null;
-  const amountPatch = amount ? await inkPatch(`${pack.prefix}|amount|${face}|${ticket.win}`, amount) : null;
+  const amountPatch = amount ? await inkPatch(`${liveKey}|amount|${face}|${ticket.win}`, amount) : null;
   const numberPatches = await Promise.all(ticket.balls.map((ball, i) => ticket.hits.includes(i) || ticket.multipliers[i]
     ? Promise.resolve(null)
     : inkPatch(`${pack.prefix}|number-surface|${face}|${ball}|${i}`, pack.numbers[Number(Boolean(ticket.disabled))]![ball]!, face === 'gold', model.cells[i]!.x))); 
