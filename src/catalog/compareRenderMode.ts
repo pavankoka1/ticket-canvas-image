@@ -6,6 +6,7 @@
  *   CSS size, so the browser rescales it (softer at N < display ratio).
  * - `svg-mult`: multiplier label drawn as SVG text with explicit coordinates,
  *   identically in the live DOM and the raster clone.
+ * - `svg-all`: also header id/amount, cell numbers and the multiplier disc.
  */
 
 import { activeDpr } from "./cellBoxModel";
@@ -13,6 +14,7 @@ import { activeDpr } from "./cellBoxModel";
 export const COMPARE_RENDER_MODES = [
   { id: "html", label: "HTML zoom · display ratio" },
   { id: "svg-mult", label: "SVG-text multiplier · display ratio" },
+  { id: "svg-all", label: "SVG text: all (id, amount, numbers, multiplier + disc)" },
   { id: "ratio-1", label: "Raster ratio 1" },
   { id: "ratio-2", label: "Raster ratio 2" },
   { id: "ratio-2.5", label: "Raster ratio 2.5" },
@@ -37,7 +39,12 @@ export function compareRasterRatio(m: CompareRenderMode = mode): number {
 }
 
 export function usesSvgMultiplier(m: CompareRenderMode = mode): boolean {
-  return m === "svg-mult";
+  return m === "svg-mult" || m === "svg-all";
+}
+
+/** Header, cell numbers and multiplier disc as SVG too. */
+export function usesSvgText(m: CompareRenderMode = mode): boolean {
+  return m === "svg-all";
 }
 
 export function isCompareRenderMode(value: string): value is CompareRenderMode {

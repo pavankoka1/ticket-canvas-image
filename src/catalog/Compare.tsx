@@ -16,6 +16,7 @@ import {
   type CompareRenderMode,
 } from "./compareRenderMode";
 import { CompareSvgStack } from "./compareSvgStack";
+import { loadSvgMultiplierAssets } from "./compareSvgMultiplier";
 import { ensureTicketFontsForLayout } from "./ticketFont";
 import {
   TICKET_PRESETS,
@@ -105,6 +106,7 @@ export function Compare() {
 
     void (async () => {
       await ensureTicketFontsForLayout(layout.metrics);
+      await loadSvgMultiplierAssets();
       if (cancelled) return;
       setLiveCellBoxModel(resolveCellBoxModel(layout, rasterRatio));
       setReadyPreset(presetId);

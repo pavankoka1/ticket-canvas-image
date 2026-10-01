@@ -21,6 +21,11 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
+/** Embedded @font-face CSS (data URL) for self-contained SVG images. */
+export function compareFontFaceCss(): Promise<string> {
+  return fontFaceCss();
+}
+
 function fontFaceCss(): Promise<string> {
   if (!fontFacePromise) {
     fontFacePromise = fetch(FONT_URL)

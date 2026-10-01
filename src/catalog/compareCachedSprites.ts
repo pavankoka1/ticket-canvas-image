@@ -1,8 +1,9 @@
 /** Compare-only reusable HTML/CSS sprites. No catalog cache or geometry mutation. */
 import { loadSprites, saveSprites } from './atlasStore';
 import { activeDpr, badgeHostDevice, resolveCellBoxModel } from './cellBoxModel';
-import { usesSvgMultiplier } from './compareRenderMode';
+import { usesSvgMultiplier, usesSvgText } from './compareRenderMode';
 import { applySvgMultiplier } from './compareSvgMultiplier';
+import { applySvgText, OVERLAY_CLASS } from './compareSvgText';
 import type { CatalogLayout } from './catalogLayout';
 import { applyTicketCellLayout, TicketCard } from './ticketCardElement';
 import { ensureTicketFontsForLayout } from './ticketFont';
@@ -16,7 +17,7 @@ const packs = new Map<string, Promise<Pack>>();
 type Pack = { numbers: Sprite[][]; badges: Map<string, Sprite>; prefix: string };
 
 function prefix(layout: CatalogLayout, dpr: number): string {
-  return `compare-sprites-v20|html-zoom|whole-css-origin|${usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+  return `compare-sprites-v20|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
 }
 
 async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): Promise<Sprite> {
@@ -63,6 +64,10 @@ async function inkPatch(key: string, sprite: Sprite, gold = false, shiftX = 0): 
   return { sprite: patch, x: left, y: top };
 }
 
+function removeOverlay(root: HTMLElement): void {
+  root.querySelector(`:scope > .${OVERLAY_CLASS}`)?.remove();
+}
+
 function hideHeader(root: HTMLElement): void {
   root.querySelectorAll<HTMLElement>('.ticketCard__id,.ticketCard__win').forEach(el => { el.style.visibility = 'hidden'; });
 }
@@ -86,7 +91,9 @@ export function prepareCompareCard(card: TicketCard, layout: CatalogLayout, dpr:
       backgroundSize: 'contain', backgroundPosition: '0 0',
     });
   });
-  applySvgMultiplier(card.dom, usesSvgMultiplier());
+  // svg-all draws the label inside the card overlay instead.
+  applySvgMultiplier(card.dom, usesSvgMultiplier() && !usesSvgText());
+  applySvgText(card.dom, usesSvgText());
 }
 
 function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
@@ -136,6 +143,7 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
             css: '.ticketCard__body{border-radius:0!important}',
             prepare(root) {
               hideHeader(root);
+              removeOverlay(root);
               root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell, i) => {
                 for (const node of [...cell.childNodes]) if (node.nodeType === Node.TEXT_NODE) node.textContent = '';
                 if (i !== 1) cell.querySelectorAll<HTMLElement>('.ticketCard__badgeHost').forEach(badge => { badge.style.visibility = 'hidden'; });
@@ -169,10 +177,12 @@ export async function assembleCompareSprites(live: HTMLElement, ticket: Ticket, 
     css: '.ticketCard__cell::before{visibility:visible!important}',
     prepare(root) {
       hideHeader(root);
+      removeOverlay(root);
       root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach(cell => { for (const node of [...cell.childNodes]) if (node.nodeType === Node.TEXT_NODE) node.textContent = ''; });
       root.querySelectorAll<HTMLElement>('.ticketCard__badgeHost').forEach(el => { el.style.visibility = 'hidden'; });
     },
   }));
+  if (usesSvgText()) return assembleWithOverlay(live, ticket, layout, dpr, pack, chrome.bitmap, model.cells.map(c => c.x), model.cellW);
   const headerPart = (selector: string): CompareRasterPart => ({
     crop: { x: 0, y: 0, width: layout.cardWidth, height: m.headerHeight },
     css: TRANSPARENT,
@@ -242,5 +252,48 @@ export async function assembleCompareSprites(live: HTMLElement, ticket: Ticket, 
     ctx.drawImage(patch.sprite.bitmap,
       Math.round(model.cells[i]!.x * dpr) + patch.x, Math.round(m.headerHeight * dpr) + patch.y);
   }
+  return out;
+}
+
+/** svg-all: chrome + plain dab sprites, then the ticket overlay (header, numbers, multipliers). */
+async function assembleWithOverlay(
+  live: HTMLElement,
+  ticket: Ticket,
+  layout: CatalogLayout,
+  dpr: number,
+  pack: Pack,
+  chrome: HTMLCanvasElement,
+  cellX: number[],
+  cellW: number,
+): Promise<HTMLCanvasElement> {
+  const m = layout.metrics;
+  const face = ticket.disabled ? 'disabled' : isWinTicket(ticket) ? 'gold' : 'normal';
+  const out = document.createElement('canvas');
+  out.width = Math.round(layout.cardWidth * dpr);
+  out.height = Math.round(layout.cardHeight * dpr);
+  const ctx = out.getContext('2d');
+  if (!ctx) throw new Error('Compare 2D context unavailable');
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(chrome, 0, 0);
+  for (let i = 0; i < 6; i++) {
+    // Multiplier discs and labels come from the overlay; only plain dabs here.
+    if (!ticket.hits.includes(i) || ticket.multipliers[i]) continue;
+    const badge = pack.badges.get(`${face}|1`)!;
+    const pad = Math.round(16 * dpr);
+    const width = Math.round(cellW * dpr);
+    ctx.drawImage(badge.bitmap, pad, 0, width, badge.bitmap.height,
+      Math.round(cellX[i]! * dpr), Math.round(m.headerHeight * dpr), width, badge.bitmap.height);
+  }
+  // Same foreignObject path as the full row (which matches the DOM), with
+  // everything but the overlay hidden and backgrounds transparent.
+  const overlay = await rasterizeCompareTicketSvg(live, dpr, m, {
+    css: TRANSPARENT,
+    prepare(root) {
+      for (const child of [...root.children] as HTMLElement[]) {
+        if (!child.classList.contains(OVERLAY_CLASS)) child.style.visibility = 'hidden';
+      }
+    },
+  });
+  ctx.drawImage(overlay, 0, 0);
   return out;
 }

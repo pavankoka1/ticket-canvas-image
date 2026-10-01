@@ -17,7 +17,7 @@ const SHADOW_DY_EM = 0.0556;
 /** Optical centre: baseline offset from the badge centre, in em (Onest caps). */
 const BASELINE_EM = 0.36;
 
-function el<K extends keyof SVGElementTagNameMap>(
+export function svgEl<K extends keyof SVGElementTagNameMap>(
   tag: K,
   attrs: Record<string, string | number>,
   ...children: SVGElement[]
@@ -28,12 +28,13 @@ function el<K extends keyof SVGElementTagNameMap>(
   return node;
 }
 
-function gradients(): SVGDefsElement {
-  const stop = (offset: string, color: string) => el("stop", { offset, "stop-color": color });
-  return el(
+/** Gradient defs referenced by the gold label layers (ids are shared). */
+export function multiplierDefs(): SVGDefsElement {
+  const stop = (offset: string, color: string) => svgEl("stop", { offset, "stop-color": color });
+  return svgEl(
     "defs",
     {},
-    el(
+    svgEl(
       "linearGradient",
       { id: "cmpMultFill", x1: 0.456, y1: 0.002, x2: 0.544, y2: 0.998 },
       stop("0.495%", "#ffe27b"),
@@ -41,7 +42,7 @@ function gradients(): SVGDefsElement {
       stop("63.411%", "#ffda6c"),
       stop("78.509%", "#ffb200"),
     ),
-    el(
+    svgEl(
       "linearGradient",
       { id: "cmpMultStroke", x1: 0, y1: 0, x2: 0, y2: 1 },
       stop("0", "rgb(128,26,28)"),
@@ -50,16 +51,44 @@ function gradients(): SVGDefsElement {
   );
 }
 
-function multiplierSvg(value: string, size: number, fontPx: number, disabled: boolean): SVGSVGElement {
-  const c = size / 2;
+const DISC_URLS = { normal: "/badge-circle.png", disabled: "/badge-circle-disabled.png" } as const;
+const discData: Partial<Record<keyof typeof DISC_URLS, string>> = {};
+let discLoad: Promise<void> | null = null;
+
+/**
+ * Disc PNGs as data URLs: an SVG drawn as an image cannot fetch files, so the
+ * raster clone needs them inline. Await before the first SVG-disc capture.
+ */
+export function loadSvgMultiplierAssets(): Promise<void> {
+  discLoad ??= Promise.all(
+    (Object.keys(DISC_URLS) as (keyof typeof DISC_URLS)[]).map(async (k) => {
+      const blob = await (await fetch(DISC_URLS[k])).blob();
+      discData[k] = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(reader.error ?? new Error(DISC_URLS[k]));
+        reader.readAsDataURL(blob);
+      });
+    }),
+  ).then(() => undefined);
+  return discLoad;
+}
+
+/** Data URL of the disc PNG, once `loadSvgMultiplierAssets` has resolved. */
+export function discDataUrl(disabled: boolean): string | undefined {
+  return discData[disabled ? "disabled" : "normal"];
+}
+
+/** Rotated three-layer label centred on (cx, cy), in the caller's coordinates. */
+export function multiplierGroup(value: string, cx: number, cy: number, fontPx: number, disabled: boolean): SVGGElement {
   const layer = (fill: string, stroke: string | null, dy: number) => {
-    const suffix = el("tspan", { "font-size": SUFFIX_SCALE * fontPx, dx: SUFFIX_GAP_EM * fontPx });
+    const suffix = svgEl("tspan", { "font-size": SUFFIX_SCALE * fontPx, dx: SUFFIX_GAP_EM * fontPx });
     suffix.textContent = "×";
-    const digits = el("tspan", {});
+    const digits = svgEl("tspan", {});
     digits.textContent = value;
     const attrs: Record<string, string | number> = {
-      x: c,
-      y: c + BASELINE_EM * fontPx + dy,
+      x: cx,
+      y: cy + BASELINE_EM * fontPx + dy,
       "text-anchor": "middle",
       "font-family": "MB-Onest, Onest, sans-serif",
       "font-weight": 700,
@@ -75,7 +104,7 @@ function multiplierSvg(value: string, size: number, fontPx: number, disabled: bo
         "paint-order": "stroke fill",
       });
     }
-    return el("text", attrs, digits, suffix);
+    return svgEl("text", attrs, digits, suffix);
   };
   const layers = disabled
     ? [layer("#053734", "#053734", SHADOW_DY_EM * fontPx), layer("#236260", null, 0)]
@@ -84,7 +113,18 @@ function multiplierSvg(value: string, size: number, fontPx: number, disabled: bo
         layer("url(#cmpMultStroke)", "url(#cmpMultStroke)", 0),
         layer("url(#cmpMultFill)", null, 0),
       ];
-  const svg = el(
+  return svgEl("g", { transform: `rotate(${ROTATION_DEG} ${cx} ${cy})` }, ...layers);
+}
+
+function multiplierSvg(
+  value: string,
+  size: number,
+  fontPx: number,
+  disabled: boolean,
+  disc: string | undefined,
+): SVGSVGElement {
+  const c = size / 2;
+  const svg = svgEl(
     "svg",
     {
       class: "ticketCard__multiplierSvg",
@@ -94,8 +134,11 @@ function multiplierSvg(value: string, size: number, fontPx: number, disabled: bo
       overflow: "visible",
       "aria-hidden": "true",
     },
-    ...(disabled ? [] : [gradients()]),
-    el("g", { transform: `rotate(${ROTATION_DEG} ${c} ${c})` }, ...layers),
+    ...(disabled ? [] : [multiplierDefs()]),
+    // Disc at explicit coordinates: no CSS background-size resampling of a
+    // fractional host box.
+    ...(disc ? [svgEl("image", { href: disc, x: 0, y: 0, width: size, height: size, preserveAspectRatio: "none" })] : []),
+    multiplierGroup(value, c, c, fontPx, disabled),
   );
   return svg;
 }
@@ -104,28 +147,32 @@ function multiplierSvg(value: string, size: number, fontPx: number, disabled: bo
  * Swap every multiplier label under `root` to (or back from) the SVG version.
  * The HTML label is hidden, not removed, so `TicketCard` updates keep working.
  */
-export function applySvgMultiplier(root: HTMLElement, enabled: boolean): void {
+export function applySvgMultiplier(root: HTMLElement, enabled: boolean, withDisc = false): void {
   const disabled = root.classList.contains("ticketCard_disabled");
   root
     .querySelectorAll<HTMLElement>(".ticketCard__badgeHost_multiplier .ticketCard__badgeLabel")
     .forEach((label) => {
       const html = label.querySelector<HTMLElement>(".ticketCard__multiplier");
       const existing = label.querySelector<SVGSVGElement>(".ticketCard__multiplierSvg");
+      const host = label.parentElement as HTMLElement;
       if (!enabled) {
         existing?.remove();
         html?.style.removeProperty("display");
+        host.style.removeProperty("background-image");
         return;
       }
       const value = html?.querySelector(".ticketCard__multiplierFill > span")?.textContent ?? "";
-      const host = label.parentElement as HTMLElement;
       const size = parseFloat(host.style.width) || host.getBoundingClientRect().width;
       // From the card's own variable: computed styles are empty while detached.
       const dab = parseFloat(root.style.getPropertyValue("--ticket-dab-size")) || size;
       const fontPx = (13 * dab) / 24;
-      const key = `${value}|${size}|${fontPx}|${disabled}`;
+      const disc = withDisc ? discData[disabled ? "disabled" : "normal"] : undefined;
+      if (disc) host.style.setProperty("background-image", "none");
+      else host.style.removeProperty("background-image");
+      const key = `${value}|${size}|${fontPx}|${disabled}|${disc ? "disc" : "css-disc"}`;
       if (existing?.dataset.key === key) return;
       existing?.remove();
-      const svg = multiplierSvg(value, size, fontPx, disabled);
+      const svg = multiplierSvg(value, size, fontPx, disabled, disc);
       svg.dataset.key = key;
       if (html) html.style.display = "none";
       label.append(svg);
