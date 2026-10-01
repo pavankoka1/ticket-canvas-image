@@ -7,20 +7,21 @@
  * that copies the element's box, font and in-card offset, at zoom 1 and at
  * zoom dpr. The difference (device px) is the clone's translateY.
  *
- * Only whole-device-pixel differences are applied. On the reference phone a
- * −1 correction (mobile) was validated; a −0.5 measurement (desktopSmall) was
- * ineffective, so fractional results are reported as unvalidated and skipped.
+ * Round each baseline before subtracting: desktopSmall measures 33 vs 33.5
+ * device px on the reference phone, but its painted displacement is 1 px.
+ * Rounding the difference loses that phase information.
  * Multiplier labels are never calibrated here.
  */
 
-export const HEADER_CALIBRATION_REVISION = "hdr-cal-1";
+export const HEADER_CALIBRATION_REVISION = "hdr-cal-3";
 
 export type HeaderTextCalibration = {
-  /** Applied clone shift, device px (0 when none or unvalidated). */
+  /** Applied clone shift, device px. */
   shiftDevice: number;
   /** Raw marker difference, device px. */
   measuredDevice: number;
-  validated: boolean;
+  nativeBaselineDevice: number;
+  rasterBaselineDevice: number;
 };
 
 export type HeaderCalibration = {
@@ -64,14 +65,19 @@ function markerOffsetDevice(
   return zoom === 1 ? offset : offset / zoom;
 }
 
+const onGrid = (device: number) => Math.round(device * 64) / 64;
+
 function calibrateText(el: HTMLElement | null, card: HTMLElement, dpr: number): HeaderTextCalibration {
-  if (!el || dpr === 1) return { shiftDevice: 0, measuredDevice: 0, validated: true };
-  const measured = markerOffsetDevice(el, card, 1, dpr) - markerOffsetDevice(el, card, dpr, dpr);
-  const whole = Math.abs(measured - Math.round(measured)) < 0.02;
+  if (!el || dpr === 1) return { shiftDevice: 0, measuredDevice: 0, nativeBaselineDevice: 0, rasterBaselineDevice: 0 };
+  const native = markerOffsetDevice(el, card, 1, dpr);
+  const raster = markerOffsetDevice(el, card, dpr, dpr);
   return {
-    measuredDevice: measured,
-    validated: whole,
-    shiftDevice: whole ? Math.round(measured) : 0,
+    measuredDevice: native - raster,
+    nativeBaselineDevice: native,
+    rasterBaselineDevice: raster,
+    // Snap to the 1/64 device-px layout grid first: float noise (32.49994 vs
+    // 32.5) must not round to different pixels.
+    shiftDevice: Math.round(onGrid(native)) - Math.round(onGrid(raster)),
   };
 }
 
@@ -85,7 +91,8 @@ export function headerCalibration(card: HTMLElement, dpr: number): HeaderCalibra
     const cs = getComputedStyle(el);
     const r = el.getBoundingClientRect();
     return [cs.fontFamily, cs.fontWeight, cs.fontSize, cs.lineHeight, cs.letterSpacing,
-      cs.display, cs.justifyContent, r.top - cr.top, r.width, r.height].join(",");
+      cs.display, cs.flexDirection, cs.alignItems, cs.justifyContent, cs.padding,
+      r.top - cr.top, r.width, r.height].join(",");
   };
   const styleKey = `${HEADER_CALIBRATION_REVISION}|${dpr}|${sig(id)}|${sig(win)}`;
   const hit = cache.get(styleKey);
@@ -102,7 +109,7 @@ export function headerCalibration(card: HTMLElement, dpr: number): HeaderCalibra
   return result;
 }
 
-/** Apply the validated shifts to a raster clone (never the live card). */
+/** Apply measured shifts to a raster clone (never the live card). */
 export function applyHeaderCalibration(clone: HTMLElement, cal: HeaderCalibration, dpr: number): void {
   const shift = (selector: string, t: HeaderTextCalibration) => {
     if (!t.shiftDevice) return;

@@ -2,7 +2,8 @@
 import { loadSprites, saveSprites } from './atlasStore';
 import { badgeHostDevice, resolveCellBoxModel } from './cellBoxModel';
 import type { CatalogLayout } from './catalogLayout';
-import { headerCalibration } from './compareHeaderCalibration';
+import { headerCalibration, HEADER_CALIBRATION_REVISION } from './compareHeaderCalibration';
+import { MULTIPLIER_CALIBRATION_REVISION } from './compareMultiplierCalibration';
 import { applyTicketCellLayout, TicketCard } from './ticketCardElement';
 import { ensureTicketFontsForLayout } from './ticketFont';
 import { isWinTicket, MULTIPLIER_VALUES, type Ticket } from './tickets';
@@ -15,7 +16,7 @@ const packs = new Map<string, Promise<Pack>>();
 type Pack = { numbers: Sprite[][]; badges: Map<string, Sprite>; prefix: string };
 
 function prefix(layout: CatalogLayout, dpr: number): string {
-  return `compare-sprites-v17|html-zoom|whole-css-origin|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+  return `compare-sprites-v18|html-zoom|whole-css-origin|${HEADER_CALIBRATION_REVISION}|${MULTIPLIER_CALIBRATION_REVISION}|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
 }
 
 async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): Promise<Sprite> {

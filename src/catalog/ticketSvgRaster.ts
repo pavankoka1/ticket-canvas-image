@@ -5,6 +5,7 @@
  */
 
 import { applyHeaderCalibration, type HeaderCalibration } from "./compareHeaderCalibration";
+import { applyCompareMultiplierCalibration } from "./compareMultiplierCalibration";
 import { ensureTicketFontsForLayout } from "./ticketFont";
 import type { TicketMetrics } from "./ticketPresets";
 
@@ -571,6 +572,7 @@ export async function rasterizeCompareTicketSvg(
   clone.style.visibility = "visible";
   // Header calibration: once, on the clone, before serialization and crop.
   if (calibration) applyHeaderCalibration(clone, calibration, dpr);
+  applyCompareMultiplierCalibration(card, clone, dpr);
   part?.prepare?.(clone);
   const crop = part?.crop ?? { x: 0, y: 0, width: rect.width, height: rect.height };
   const fullWidth = Math.round(rect.width * dpr);
