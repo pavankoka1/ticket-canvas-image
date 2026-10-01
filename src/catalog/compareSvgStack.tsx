@@ -5,13 +5,13 @@
 import { useLayoutEffect, useRef, useState } from "react";
 
 import { activeDpr, resolveCellBoxModel, setLiveCellBoxModel } from "./cellBoxModel";
+import { compareRasterRatio, type CompareRenderMode } from "./compareRenderMode";
 import {
   layoutCompareRasterCanvas,
   styleCompareTicketDom,
 } from "./compareDomAlign";
 import { TicketCard } from "./ticketCardElement";
 import { assembleCompareSprites, prepareCompareCard } from "./compareCachedSprites";
-import { headerCalibration } from "./compareHeaderCalibration";
 import { rasterizeCompareTicketSvg } from "./ticketSvgRaster";
 import { setActiveLayout } from "./catalogLayout";
 import type { CatalogLayout } from "./catalogLayout";
@@ -20,6 +20,7 @@ import type { Ticket } from "./tickets";
 
 export type CompareSvgStackProps = {
   optimized?: boolean;
+  renderMode: CompareRenderMode;
   ticket: Ticket;
   title: string;
   cardWidth: number;
@@ -58,6 +59,7 @@ function canvasPixelDiagnostic(canvas: HTMLCanvasElement, ticketId: string): str
 
 export function CompareSvgStack({
   optimized = false,
+  renderMode,
   ticket,
   title,
   cardWidth,
@@ -160,7 +162,7 @@ export function CompareSvgStack({
     if (paintGen < 1) return;
 
     let cancelled = false;
-    const dpr = activeDpr();
+    const dpr = compareRasterRatio(renderMode);
     const refreshDiagnostic = () => {
       const canvas = canvasRef.current;
       if (!cancelled && optimized && canvas?.dataset.ready === 'true') {
@@ -189,7 +191,7 @@ export function CompareSvgStack({
           alignKey = alignRef.current();
           const shot = optimized
             ? await assembleCompareSprites(card.dom, ticket, layout, dpr)
-            : await rasterizeCompareTicketSvg(card.dom, dpr, metrics, undefined, headerCalibration(card.dom, dpr));
+            : await rasterizeCompareTicketSvg(card.dom, dpr, metrics);
           if (cancelled) return;
           const settled = alignRef.current() === alignKey;
           console.debug("[compare-capture]", { renderer: optimized ? "optimized" : "full", ticket: ticket.id, attempt, alignKey, settled });
@@ -224,10 +226,10 @@ export function CompareSvgStack({
       cancelled = true;
       document.removeEventListener('compare-full-ready', refreshDiagnostic);
     };
-  }, [ticket, cardWidth, cardHeight, metrics, layout, paintGen, optimized]);
+  }, [ticket, cardWidth, cardHeight, metrics, layout, paintGen, optimized, renderMode]);
 
   return (
-    <section data-renderer={optimized ? "optimized" : "full"} data-ticket={ticket.id} data-scale-mode="html-zoom" data-raster-ratio={activeDpr()} className="compare__fullSnap" style={{ width: Math.max(cardWidth, 270) }}>
+    <section data-renderer={optimized ? "optimized" : "full"} data-ticket={ticket.id} data-scale-mode="html-zoom" data-render-mode={renderMode} data-raster-ratio={compareRasterRatio(renderMode)} className="compare__fullSnap" style={{ width: Math.max(cardWidth, 270) }}>
       <h2 className="compare__caseTitle">{title}</h2>
       <p className="compare__snapNote">{note}</p>
       <div

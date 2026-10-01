@@ -1,9 +1,9 @@
 /** Compare-only reusable HTML/CSS sprites. No catalog cache or geometry mutation. */
 import { loadSprites, saveSprites } from './atlasStore';
-import { badgeHostDevice, resolveCellBoxModel } from './cellBoxModel';
+import { activeDpr, badgeHostDevice, resolveCellBoxModel } from './cellBoxModel';
+import { usesSvgMultiplier } from './compareRenderMode';
+import { applySvgMultiplier } from './compareSvgMultiplier';
 import type { CatalogLayout } from './catalogLayout';
-import { headerCalibration, HEADER_CALIBRATION_REVISION } from './compareHeaderCalibration';
-import { MULTIPLIER_CALIBRATION_REVISION } from './compareMultiplierCalibration';
 import { applyTicketCellLayout, TicketCard } from './ticketCardElement';
 import { ensureTicketFontsForLayout } from './ticketFont';
 import { isWinTicket, MULTIPLIER_VALUES, type Ticket } from './tickets';
@@ -16,7 +16,7 @@ const packs = new Map<string, Promise<Pack>>();
 type Pack = { numbers: Sprite[][]; badges: Map<string, Sprite>; prefix: string };
 
 function prefix(layout: CatalogLayout, dpr: number): string {
-  return `compare-sprites-v18|html-zoom|whole-css-origin|${HEADER_CALIBRATION_REVISION}|${MULTIPLIER_CALIBRATION_REVISION}|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+  return `compare-sprites-v20|html-zoom|whole-css-origin|${usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
 }
 
 async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): Promise<Sprite> {
@@ -29,9 +29,13 @@ async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): P
         const meta = stored.meta;
         const source = meta && typeof meta === 'object' && 'source' in meta && meta.source instanceof Blob
           ? meta.source : blob;
-        return { bitmap: await decodeCompareSvgBlob(blob), blob: source };
+        const bitmap = await decodeCompareSvgBlob(blob).catch(() => null);
+        // An empty stored sprite (written by an earlier build) is never served;
+        // fall through and recapture, overwriting the bad record.
+        if (bitmap && bitmap.width > 0 && bitmap.height > 0) return { bitmap, blob: source };
       }
       const bitmap = await capture();
+      if (bitmap.width < 1 || bitmap.height < 1) throw new Error('Compare sprite capture is empty');
       const captured = rasterSvgBlob(bitmap);
       if (!captured) throw new Error('Compare sprite has no SVG blob');
       const png = await new Promise<Blob | null>(resolve => bitmap.toBlob(resolve, 'image/png'));
@@ -82,6 +86,7 @@ export function prepareCompareCard(card: TicketCard, layout: CatalogLayout, dpr:
       backgroundSize: 'contain', backgroundPosition: '0 0',
     });
   });
+  applySvgMultiplier(card.dom, usesSvgMultiplier());
 }
 
 function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
@@ -105,7 +110,7 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
       for (const disabled of [false, true]) {
         for (let n = 1; n <= 60; n++) {
           card.bind(sourceTicket(disabled, n), 0, 0, layout);
-          prepareCompareCard(card, layout, dpr);
+          prepareCompareCard(card, layout, activeDpr());
           numbers[Number(disabled)]![n] = await cached(`${key}|number|${disabled}|${n}`, () => capture({
             crop: { x: 0, y: m.headerHeight, width: model.cellW, height: m.bodyHeight },
             css: TRANSPARENT,
@@ -124,7 +129,7 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
           ticket.hits = face === 'gold' ? [1, 2] : [1];
           ticket.multipliers = value > 1 ? { 1: value } : {};
           card.bind(ticket, 0, 0, layout);
-          prepareCompareCard(card, layout, dpr);
+          prepareCompareCard(card, layout, activeDpr());
           const badgeKey = `${face}|${value}`;
           badges.set(badgeKey, await cached(`${key}|badge-body|${badgeKey}`, () => capture({
             crop: { x: model.cells[1]!.x - 16, y: m.headerHeight, width: model.cellW + 32, height: m.bodyHeight },
@@ -150,9 +155,7 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
 export async function assembleCompareSprites(live: HTMLElement, ticket: Ticket, layout: CatalogLayout, dpr: number): Promise<HTMLCanvasElement> {
   const pack = await warmPack(layout, dpr);
   const m = layout.metrics;
-  // Same validated header calibration as the full row; part of every live key.
-  const calibration = headerCalibration(live, dpr);
-  const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(live, dpr, m, part, calibration);
+  const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(live, dpr, m, part);
   const model = resolveCellBoxModel(layout, dpr);
   const face = ticket.disabled ? 'disabled' : isWinTicket(ticket) ? 'gold' : 'normal';
   // Live-card captures depend on the card's layout-origin fraction (WebKit text
@@ -161,7 +164,7 @@ export async function assembleCompareSprites(live: HTMLElement, ticket: Ticket, 
   const liveRect = live.getBoundingClientRect();
   const frac = (v: number) => (v - Math.round(v)).toFixed(4);
   const origin = `o${frac(liveRect.left + window.scrollX)},${frac(liveRect.top + window.scrollY)}`;
-  const liveKey = `${pack.prefix}|${origin}|${calibration.key}`;
+  const liveKey = `${pack.prefix}|${origin}`;
   const chrome = await cached(`${liveKey}|chrome|${face}`, () => capture({
     css: '.ticketCard__cell::before{visibility:visible!important}',
     prepare(root) {

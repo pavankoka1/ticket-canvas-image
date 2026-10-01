@@ -4,8 +4,6 @@
  * are only for isolated sprites — they shift full-ticket text in FO.
  */
 
-import { applyHeaderCalibration, type HeaderCalibration } from "./compareHeaderCalibration";
-import { applyCompareMultiplierCalibration } from "./compareMultiplierCalibration";
 import { ensureTicketFontsForLayout } from "./ticketFont";
 import type { TicketMetrics } from "./ticketPresets";
 
@@ -556,11 +554,15 @@ export async function rasterizeCompareTicketSvg(
   dpr: number,
   metrics: TicketMetrics,
   part?: CompareRasterPart,
-  calibration?: HeaderCalibration,
 ): Promise<HTMLCanvasElement> {
   await ensureTicketFontsForLayout(metrics);
   const assets = await loadRasterAssets();
   const rect = card.getBoundingClientRect();
+  // A superseded stack can still be capturing after its card was detached.
+  // Never rasterize an element without a layout box: it decodes to 0×0.
+  if (!card.isConnected || rect.width < 1 || rect.height < 1) {
+    throw new Error("compare raster: card is not laid out");
+  }
   const clone = buildStylesheetRasterClone(card, rect, 0, 0);
   const computed = getComputedStyle(card);
   for (let i = 0; i < computed.length; i++) {
@@ -570,9 +572,6 @@ export async function rasterizeCompareTicketSvg(
     }
   }
   clone.style.visibility = "visible";
-  // Header calibration: once, on the clone, before serialization and crop.
-  if (calibration) applyHeaderCalibration(clone, calibration, dpr);
-  applyCompareMultiplierCalibration(card, clone, dpr);
   part?.prepare?.(clone);
   const crop = part?.crop ?? { x: 0, y: 0, width: rect.width, height: rect.height };
   const fullWidth = Math.round(rect.width * dpr);

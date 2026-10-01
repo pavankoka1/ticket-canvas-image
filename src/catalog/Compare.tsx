@@ -9,6 +9,12 @@ import {
 } from "./cellBoxModel";
 import { CompareDiagnostics } from "./compareDiagnostics";
 import { CompareMinimalFoProbe } from "./compareMinimalFoProbe";
+import {
+  COMPARE_RENDER_MODES,
+  isCompareRenderMode,
+  setCompareRenderMode,
+  type CompareRenderMode,
+} from "./compareRenderMode";
 import { CompareSvgStack } from "./compareSvgStack";
 import { ensureTicketFontsForLayout } from "./ticketFont";
 import {
@@ -73,6 +79,9 @@ export function Compare() {
   const [canvasOpacity, setCanvasOpacity] = useState(1);
   const [blend, setBlend] = useState<"normal" | "difference">("difference");
   const [showDom, setShowDom] = useState(true);
+  const [renderMode, setRenderMode] = useState<CompareRenderMode>("html");
+  // Module state read by the shared capture path; set before children render.
+  setCompareRenderMode(renderMode);
   const rasterRatio = activeDpr();
 
   const metrics = getPreset(presetId);
@@ -100,7 +109,7 @@ export function Compare() {
       setLiveCellBoxModel(resolveCellBoxModel(layout, rasterRatio));
       setReadyPreset(presetId);
       setStatus(
-        `ready · ${metrics.label} · ${layout.cardWidth}×${layout.cardHeight} css · raster ${rasterRatio}× · display DPR ${activeDpr()}`,
+        `ready · ${metrics.label} · ${layout.cardWidth}×${layout.cardHeight} css · display DPR ${activeDpr()}`,
       );
     })();
 
@@ -110,6 +119,7 @@ export function Compare() {
   }, [layout, metrics.label, presetId, rasterRatio]);
 
   const stackProps = {
+    renderMode,
     cardWidth: layout.cardWidth,
     cardHeight: layout.cardHeight,
     metrics: layout.metrics,
@@ -141,6 +151,21 @@ export function Compare() {
               {TICKET_PRESETS.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label>
+            render mode
+            <select
+              value={renderMode}
+              onChange={(e) => {
+                if (isCompareRenderMode(e.target.value)) setRenderMode(e.target.value);
+              }}
+            >
+              {COMPARE_RENDER_MODES.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.label}
                 </option>
               ))}
             </select>
@@ -202,7 +227,7 @@ export function Compare() {
       <div className="compare__cases">
         {COMPARE_TICKETS.map(({ title, ticket }) => (
           <CompareSvgStack
-            key={`${presetId}:${ticket.id}`}
+            key={`${renderMode}:${presetId}:${ticket.id}`}
             {...stackProps}
             ticket={ticket}
             title={`${title} (#${ticket.no})`}
@@ -214,7 +239,7 @@ export function Compare() {
       <div className="compare__cases">
         {COMPARE_TICKETS.map(({ title, ticket }) => (
           <CompareSvgStack
-            key={`optimized:${presetId}:${ticket.id}`}
+            key={`optimized:${renderMode}:${presetId}:${ticket.id}`}
             {...stackProps}
             optimized
             ticket={ticket}
