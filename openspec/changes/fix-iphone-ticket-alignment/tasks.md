@@ -11,13 +11,13 @@ Planning only: all tasks remain unstarted. Groups preserve the agreed 0–7 orde
 
 ## 1. Compare origins and capture ordering
 
-- [ ] 1.1 Establish whole effective CSS-pixel layout origins in `compareSvgStack.tsx`, with the visual remainder shared after layout; verify original → whole-origin → restored captures, unchanged dimensions and the ancestor-origin diagnostics.
-- [ ] 1.2 Make font/alignment readiness an explicit prerequisite for measurements and both capture paths, including asynchronous pack warming; verify cold start, preset changes and resize with logs or focused tests showing that stale generations neither publish ready canvases nor populate incompatible cache keys.
-- [ ] 1.3 Version the compare origin policy across persistent records, module maps and derived patches; verify old `compare-sprites-v16` entries are bypassed, cold/warm results agree and unrelated `bingo-cell-atlas` records are preserved.
-- [ ] 1.4 Run the physical-phone origin-only matrix for both rows; verify desktopMedium/mobileLarge/mobileCompact headers clear, no new cell/disc/multiplier discrepancies appear, and residual mobile/desktopSmall behaviour is recorded without requiring optimized output to copy full-row errors.
-- [ ] 1.5 Record the origin implementation and gate results, run `npm run lint` and `npm run build`, and perform available Mac/Linux regression captures; verify failures or unavailable environments are explicit and do not substitute for the phone gate.
+- [x] 1.1 Establish whole effective CSS-pixel layout origins in `compareSvgStack.tsx`, with the visual remainder shared after layout; verify original → whole-origin → restored captures, unchanged dimensions and the ancestor-origin diagnostics.
+- [x] 1.2 Make font/alignment readiness an explicit prerequisite for measurements and both capture paths, including asynchronous pack warming; verify cold start, preset changes and resize with logs or focused tests showing that stale generations neither publish ready canvases nor populate incompatible cache keys.
+- [x] 1.3 Version the compare origin policy across persistent records, module maps and derived patches; verify old `compare-sprites-v16` entries are bypassed, cold/warm results agree and unrelated `bingo-cell-atlas` records are preserved.
+- [x] 1.4 Run the physical-phone origin-only matrix for both rows; verify desktopMedium/mobileLarge/mobileCompact headers clear, no new cell/disc/multiplier discrepancies appear, and residual mobile/desktopSmall behaviour is recorded without requiring optimized output to copy full-row errors.
+- [x] 1.5 Record the origin implementation and gate results, run `npm run lint` and `npm run build`, and perform available Mac/Linux regression captures; verify failures or unavailable environments are explicit and do not substitute for the phone gate.
 
-## 2. Shared header-only F3
+## 2. Shared header-only F3 (superseded by group 8; calibration removed, not implemented)
 
 - [ ] 2.1 Port the preserved baseline-marker measurement into a typed calibration result after normalized layout; verify marker neutrality, compatible-style reuse, mobile prediction and explicit exclusion of ineffective desktopSmall/multiplier measurements.
 - [ ] 2.2 Add one clone-only ID/amount correction point to `rasterizeCompareTicketSvg`, shared by full and partial captures; verify decoded full images, cropped headers and derived ink patches apply it once while live DOM and multiplier nodes stay unchanged.
@@ -25,17 +25,17 @@ Planning only: all tasks remain unstarted. Groups preserve the agreed 0–7 orde
 - [ ] 2.4 Run original → origins-only → origins-plus-header-F3 → restored phases on the phone; verify mobile headers clear for all three states in both rows, the other passing presets retain their results, and desktopSmall remains explicitly unresolved if still displaced.
 - [ ] 2.5 Document calibration limits and cold/warm gate results; verify focused calibration/cache checks, lint/build and available desktop regressions pass before continuing.
 
-## 3. desktopSmall header investigation
+## 3. desktopSmall header investigation (resolved on devices by SVG text, group 8)
 
 - [ ] 3.1 Isolate the 11px-font/15px-header case at whole origins with F3 off; deliver a reproduction comparing the -0.5 marker prediction with decoded glyph rows and live DOM, explaining whether the marker or paint rounding causes the discrepancy before proposing an offset.
 - [ ] 3.2 Record a causal finding, bounded candidate and phone acceptance case, or an explicit unresolved disposition; verify any demonstrated remedy in both rows with fresh/warm assets and desktop regressions before marking the header fixed, updating this change if the remedy alters its scope.
 
-## 4. Multiplier investigation
+## 4. Multiplier investigation (resolved on devices by SVG text, group 8)
 
 - [ ] 4.1 Reproduce solid and gold labels on desktopMedium/mobileLarge/mobileCompact at whole origins without multiplier F3; deliver label-specific baseline/rotation and line-layout measurements with layer-isolation controls and absolute positions.
 - [ ] 4.2 Record the mechanism and a candidate-specific gate or unresolved disposition; verify a proposed remedy against both label types and all five presets, including previously improved desktopSmall/mobile, before implementing or declaring it fixed. Keep rejected blanket multiplier F3 disabled.
 
-## 5. Glyph and disc classification
+## 5. Glyph and disc classification (resolved on devices by SVG text, group 8)
 
 - [ ] 5.1 Analyse separate `5` and `8` crops in mobileLarge `58`; deliver shared-coordinate displacement and shape evidence that distinguishes glyph movement from raster differences, with a bounded follow-up gate if movement remains.
 - [ ] 5.2 Reproduce mobileCompact disc fringes across sessions with matching manifests; deliver a movement-versus-softness classification supported by position and residual evidence, not merely disappearance when the image is removed.
@@ -53,3 +53,14 @@ Planning only: all tasks remain unstarted. Groups preserve the agreed 0–7 orde
 - [ ] 7.1 Update AGENTS.md to name the actual Compare full/sprite paths, correct the contradictory catalog painter and buffer descriptions, and document the origin-before-capture rule; verify every changed architecture statement against current source.
 - [ ] 7.2 Document that DevTools DPR emulation is not physical-iPhone acceptance evidence; verify the phone harness instructions and links lead to the preserved scripts, provenance and result tables.
 - [ ] 7.3 Publish the final integrated phone matrix and known-issue ledger, cross-checking both rows and catalog cold/warm runs; verify no unresolved displacement is labelled softness or all-presets success and no required gate is silently skipped.
+
+## 8. SVG-text reference and glyph atlas
+
+- [x] 8.1 Remove header and multiplier calibration from the shipped path; verify Chrome DPR 2 no longer drifts.
+- [x] 8.2 Add `/compare` render modes (HTML zoom, SVG-text multiplier, SVG text: all, raster ratios 1/2/2.5/3); verify every mode renders without errors.
+- [x] 8.3 Fix capture from detached cards and empty cached sprites (cache v20); verify mode switching on DPR 2.
+- [x] 8.4 "SVG text: all" overlay at the card origin, both rows; verify no displacement in Chrome DPR 2/3 and Mac WebKit DPR 3, and on the user's Macs and iPhones.
+- [ ] 8.5 Phone check A: stamp a captured "58" sprite over the full overlay; it must show no displacement before continuing.
+- [ ] 8.6 Phone check B: distinct renderings of one id digit at 1/16-px offsets; record the count as the atlas width.
+- [ ] 8.7 Phone check C: "10" as one sprite vs two stamped glyphs; classify the seam as softness or not, and decide amount strategy.
+- [ ] 8.8 Build the glyph atlas (numbers, multiplier labels, id digits, amounts) for the optimized row; gate against the overlay row on the phone and at 1,000 tickets (capture count, timing).

@@ -66,7 +66,7 @@ Use new namespaces and a fresh page context for cold runs. Warm runs verify actu
 
 Alternative rejected: deleting IndexedDB alone, which leaves module maps alive and erases evidence of capture timing if done without a manifest.
 
-### 4. Share one validated header calibration path
+### 4. Share one validated header calibration path (superseded, see 7)
 
 Use the baseline-marker method from the preserved F3 harness, remeasured after origin normalization for the actual font, meta size, line height, header geometry and capture ratio. Verify the marker does not alter the measured layout. In-page zoom is a calibration model; decoded SVG versus phone DOM remains its validation. Do not substitute a Range rectangle centre or infer glyph font identity from `document.fonts.check()`.
 
@@ -90,6 +90,19 @@ Each investigation produces a minimal reproduction, causal evidence, disposition
 After the comparison gates and investigation dispositions are recorded, extend the origin contract to the ticket frame, tile host, capture hosts and pooled cards. Carry compatible header calibration into `catalogPaint`, `headerGlyphs` and `cellBitmaps` as appropriate to their actual paths; preserve their reusable cells/digits/amounts and the existing activeDpr policy. Check the current edge-based CanvasPool sizing against the required probe rather than replacing it from stale documentation.
 
 Validate settled DOM/canvas handoffs, short-row centring, scroll/tile boundaries, resize, adds and draw/sort gestures. Exercise 1,000 tickets and compare capture counts/warm-cache reuse with baseline; calibration must not introduce work proportional to every ticket. Keep known unresolved cases explicit rather than claiming catalog parity means universal perfection.
+
+### 7. Revised direction (2026-10-02): SVG text replaces the HTML-text painter
+
+Header calibration (decision 4) was removed after it failed on the phone and regressed Chrome at DPR 2: in-page zoom probes do not predict the SVG image's text layout. The `/compare` mode "SVG text: all" draws id, amount, cell numbers and multiplier (disc + label) as one SVG overlay anchored at the card's whole-pixel origin, at numeric coordinates, identically in the live DOM and the raster clone. It shows no displacement at quarter-device-pixel resolution in Chrome DPR 2/3 and Mac WebKit DPR 3, and the user verified it on M1 Pro, M4 Pro, iPhone 16 Pro Max and iPhone 13.
+
+That overlay is the reference painter. It rasterizes once per ticket, so it does not scale to 1,000 tickets. The scalable painter is a cached SVG-glyph atlas, captured on the card's pixel grid (card-origin SVG, glyph at its real coordinate, overlay zoom, then cropped) and stamped at positions read from the live `<text>` (`getStartPositionOfChar`):
+
+- cell numbers 1–60: one sprite per fill (integer column pitch, no phase variants);
+- multiplier labels: one whole sprite per value and face; disc stays the PNG;
+- id digits: per digit × measured sub-pixel phase × fill;
+- amounts: whole-string sprites while payouts are a small set.
+
+The baseline's fractional device y is baked into each sprite, not snapped. The atlas is built only after three phone checks pass: (A) a stamped "58" matches the overlay; (B) the number of distinct renderings of one digit across 1/16-px offsets (atlas width); (C) the seam of "10" stamped as two glyphs vs one sprite.
 
 ## Risks / Trade-offs
 
