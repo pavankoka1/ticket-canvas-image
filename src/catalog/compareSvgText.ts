@@ -19,6 +19,11 @@ import { discDataUrl, multiplierDefs, multiplierGroup, svgEl } from "./compareSv
 const BASELINE_EM = 0.36;
 const FONT = "MB-Onest, Onest, sans-serif";
 export const OVERLAY_CLASS = "ticketCard__svgOverlay";
+const HEADER_TEXT_STYLE = "font-kerning:none;font-feature-settings:'kern' 0";
+
+function applyHeaderTextStyle(el: SVGTextElement): void {
+  el.setAttribute("style", HEADER_TEXT_STYLE);
+}
 
 const COLORS = {
   id: { normal: "#b19797", gold: "#9f8080", disabled: "#0f6864" },
@@ -56,8 +61,8 @@ function text(
     "font-weight": 700,
     "font-size": fontPx,
     fill,
-    ...(header ? { "font-kerning": "none" } : {}),
   });
+  if (header) applyHeaderTextStyle(t);
   t.textContent = value;
   return t;
 }

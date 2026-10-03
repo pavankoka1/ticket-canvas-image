@@ -13,6 +13,7 @@ const GLYPH_REF_X0 = 6;
 const GLYPH_REF_STEP = 20;
 const HEADER_BASELINE_EM = 0.36;
 const HEADER_FONT = "MB-Onest, Onest, sans-serif";
+const HEADER_TEXT_STYLE = "font-kerning:none;font-feature-settings:'kern' 0";
 
 type Sprite = { bitmap: HTMLCanvasElement; blob: Blob };
 
@@ -134,9 +135,9 @@ function isolatedGlyphPart(
         "font-family": HEADER_FONT,
         "font-weight": 700,
         "font-size": metaPx,
-        "font-kerning": "none",
         fill,
       });
+      t.setAttribute("style", HEADER_TEXT_STYLE);
       t.textContent = char;
       overlay.append(t);
     },
