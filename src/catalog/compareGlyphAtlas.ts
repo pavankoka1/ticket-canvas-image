@@ -109,11 +109,12 @@ function isolatedGlyphPart(
   fill: string,
   refXCss: number,
   phase: number,
+  phases: number,
   dpr: number,
   headerHeight: number,
   transparentCss: string,
 ): CompareRasterPart {
-  const xCss = refXCss + compareGlyphPhaseShiftCss(phase, dpr);
+  const xCss = refXCss + compareGlyphPhaseShiftCss(phase, dpr, phases);
   return {
     crop: refGlyphCrop(refXCss, dpr, headerHeight),
     css: transparentCss,
@@ -176,7 +177,7 @@ export async function warmHeaderGlyphPack(
       bindFace(face, ch, "");
       afterBind();
       for (let phase = 0; phase < phases; phase++) {
-        const part = isolatedGlyphPart(ch, idFill, refX, phase, dpr, headerHeight, transparentCss);
+        const part = isolatedGlyphPart(ch, idFill, refX, phase, phases, dpr, headerHeight, transparentCss);
         const sprite = await cached(`${key}|glyph-id|${idFill}|${ch}|${phase}|iso`, () => capture(part));
         id.set(glyphKey(idFill, ch, phase), sprite);
       }
@@ -190,7 +191,7 @@ export async function warmHeaderGlyphPack(
     bindFace("gold", "", ch);
     afterBind();
     for (let phase = 0; phase < phases; phase++) {
-      const part = isolatedGlyphPart(ch, sharedAmountFill, refX, phase, dpr, headerHeight, transparentCss);
+      const part = isolatedGlyphPart(ch, sharedAmountFill, refX, phase, phases, dpr, headerHeight, transparentCss);
       const sprite = await cached(`${key}|glyph-amt|${sharedAmountFill}|${encodeURIComponent(ch)}|${phase}|iso`, () =>
         capture(part),
       );
@@ -206,7 +207,7 @@ export async function warmHeaderGlyphPack(
     bindFace("disabled", "", ch);
     afterBind();
     for (let phase = 0; phase < phases; phase++) {
-      const part = isolatedGlyphPart(ch, disabledFill, refX, phase, dpr, headerHeight, transparentCss);
+      const part = isolatedGlyphPart(ch, disabledFill, refX, phase, phases, dpr, headerHeight, transparentCss);
       const sprite = await cached(`${key}|glyph-amt|${disabledFill}|${encodeURIComponent(ch)}|${phase}|iso`, () =>
         capture(part),
       );

@@ -8,7 +8,7 @@ The `/compare` "SVG text: all" full-ticket row is the reference. The optimized r
 |---|---|---|---|
 | Cell numbers 1–60 | one whole centred run per number and fill (normal/gold share `#704f4f`; disabled is the second fill) | cell origin; column pitch is a whole device px | none (fraction baked in) |
 | Multiplier labels 2/3/5/10 | one whole rotated group per value and face; the disc stays the PNG | badge position, same as today's overlay | none |
-| Id digits 0–9 | per digit and fill (3 fills: `#b19797`, `#9f8080`, `#0f6864`) | x from `getStartPositionOfChar(i)` on the live `<text>` | WebKit: 1, stamp at `floor(x·dpr)`. Chromium: 4, stamp sprite `q` at pixel `p` where `v = round(x·dpr·4)/4`, `p = floor(v)`, `q = (v − p)·4` |
+| Id digits 0–9 | per digit and fill (3 fills: `#b19797`, `#9f8080`, `#0f6864`) | x from `getStartPositionOfChar(i)` on the live `<text>` | WebKit: 2 half-pixel phases, stamp `v = floor(x·dpr·2 + ε)/2`, `p = floor(v)`, `q = (v−p)·2`. Chromium: 4 quarter-pixel phases, `v = floor(x·dpr·4 + ε)/4`, `q = (v−p)·4`. ε = 1e−3 |
 | Amount glyphs `0–9 $ , .` | per glyph and fill (2 fills) | same as id | same as id |
 
 - Only x is quantized. The baseline's fractional device y is baked into each sprite.

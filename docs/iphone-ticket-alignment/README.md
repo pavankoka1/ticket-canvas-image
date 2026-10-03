@@ -80,4 +80,4 @@ Same page script on every engine (`check2/`, `check2-q4/`):
 | Mac WebKit, DPR 3 | floor to device px | same as iPhone (34 px at `9.`) |
 | Chrome, DPR 2 and DPR 3 | 4 sub-pixel renderings: nearest ¼ px (0, ¼, ½, ¾; 0.99 rounds to +1 px) | floor-only stamp: 415 / 948 px differ; **4-phase stamp (round to ¼ px): byte-identical** |
 
-Atlas rule: WebKit = one sprite per glyph and fill, stamp at `floor(x·dpr)`; Chromium = four phase sprites per glyph and fill, stamp at `round(x·dpr·4)/4` (integer part = pixel, fraction = phase). Remaining WebKit residual: anti-aliased edges where adjacent glyph boxes share a pixel (seen at `9.`), a softness difference with no displacement.
+Atlas rule (2026-10-03 `check3/`, iPhone 16 Pro Max): WebKit = **two** half-pixel sprites per glyph and fill (at 12 px meta both often match; at 9–11 px header sizes Safari uses 0/½ device-px steps). Stamp `v = floor(x·dpr·2 + ε)/2`, `p = floor(v)`, phase `(v−p)·2`, ε = 1e−3. Chromium = four quarter-pixel sprites, `v = floor(x·dpr·4 + ε)/4`. Shared-edge softness at `9.` remains allowed (no displacement).
