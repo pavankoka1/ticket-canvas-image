@@ -97,12 +97,14 @@ Header calibration (decision 4) was removed after it failed on the phone and reg
 
 That overlay is the reference painter. It rasterizes once per ticket, so it does not scale to 1,000 tickets. The scalable painter is a cached SVG-glyph atlas, captured on the card's pixel grid (card-origin SVG, glyph at its real coordinate, overlay zoom, then cropped) and stamped at positions read from the live `<text>` (`getStartPositionOfChar`):
 
-- cell numbers 1–60: one sprite per fill (integer column pitch, no phase variants);
+- cell numbers 1–60: one sprite per fill (integer column pitch);
 - multiplier labels: one whole sprite per value and face; disc stays the PNG;
-- id digits: per digit × measured sub-pixel phase × fill;
-- amounts: whole-string sprites while payouts are a small set.
+- id digits: one sprite per digit and fill (3 fills);
+- amount glyphs (`0–9 $ , .`): one sprite per glyph and fill (2 fills), no whole-string sprites.
 
-The baseline's fractional device y is baked into each sprite, not snapped. The atlas is built only after three phone checks pass: (A) a stamped "58" matches the overlay; (B) the number of distinct renderings of one digit across 1/16-px offsets (atlas width); (C) the seam of "10" stamped as two glyphs vs one sprite.
+Placement (measured 2026-10-03): read each glyph's x from the live `<text>` with `getStartPositionOfChar`; only x is quantized, the baseline's fractional device y is baked into each sprite. Captures are made inside the card, on its pixel grid, with a transparent background. The quantization rule differs by engine (next paragraph); numbers and multiplier labels are whole sprites captured at their real position and need no phases on either engine.
+
+Engine rule (measured 2026-10-03): WebKit (iPhone, Mac WebKit) floors glyph x, so one sprite per glyph and fill. Chromium keeps four quarter-pixel renderings, so four phase sprites per glyph and fill, stamped at `round(x·dpr·4)/4`; with that, a stamped `$1,509.31` is byte-identical to the text run at DPR 2 and 3. The engine rule should be chosen by measurement at warm time (capture one glyph at 0 and 0.5 px and compare) where raster pixels are readable; whether Safari allows `getImageData` on these foreignObject rasters is unverified, and if it does not, the rule falls back to the rendering engine (WebKit vs Chromium). On WebKit, adjacent glyphs that share an edge pixel (`9.`) differ by anti-aliasing only (no displacement); amounts accept that softness, or fall back to whole-string sprites if bit-exactness is required.
 
 ## Risks / Trade-offs
 

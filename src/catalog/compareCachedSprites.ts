@@ -1,6 +1,7 @@
 /** Compare-only reusable HTML/CSS sprites. No catalog cache or geometry mutation. */
 import { loadSprites, saveSprites } from './atlasStore';
 import { activeDpr, badgeHostDevice, resolveCellBoxModel } from './cellBoxModel';
+import { alignCompareStackOrigin, styleCompareTicketDom } from './compareDomAlign';
 import { usesSvgMultiplier, usesSvgText } from './compareRenderMode';
 import { applySvgMultiplier } from './compareSvgMultiplier';
 import { applySvgText, OVERLAY_CLASS } from './compareSvgText';
@@ -8,16 +9,25 @@ import type { CatalogLayout } from './catalogLayout';
 import { applyTicketCellLayout, TicketCard } from './ticketCardElement';
 import { ensureTicketFontsForLayout } from './ticketFont';
 import { isWinTicket, MULTIPLIER_VALUES, type Ticket } from './tickets';
+import { compareGlyphPhaseCount } from './compareGlyphEngine';
+import {
+  glyphWarmMinCardWidthCss,
+  stampHeaderGlyphs,
+  warmHeaderGlyphPack,
+  widenCardForGlyphWarm,
+  type HeaderGlyphPack,
+} from './compareGlyphAtlas';
 import { composeCompareInkPatch, decodeCompareSvgBlob, rasterizeCompareTicketSvg, rasterSvgBlob, type CompareRasterPart } from './ticketSvgRaster';
 
 const TRANSPARENT = `:root{background:transparent!important}.ticketCard,.ticketCard__header,.ticketCard__body{background:none!important;box-shadow:none!important}.ticketCard__cell::before{visibility:hidden!important}`;
 type Sprite = { bitmap: HTMLCanvasElement; blob: Blob };
 const sprites = new Map<string, Promise<Sprite>>();
 const packs = new Map<string, Promise<Pack>>();
-type Pack = { numbers: Sprite[][]; badges: Map<string, Sprite>; prefix: string };
+type Pack = { numbers: Sprite[][]; badges: Map<string, Sprite>; headerGlyphs?: HeaderGlyphPack; prefix: string };
 
 function prefix(layout: CatalogLayout, dpr: number): string {
-  return `compare-sprites-v20|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+  const phases = usesSvgText() ? compareGlyphPhaseCount() : 0;
+  return `compare-sprites-v28|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
 }
 
 async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): Promise<Sprite> {
@@ -47,6 +57,25 @@ async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): P
     void pending.catch(() => sprites.delete(key));
   }
   return pending;
+}
+
+function trimSprite(sprite: Sprite): { sprite: Sprite; x: number; y: number } {
+  const { width, height } = sprite.bitmap;
+  const pixels = sprite.bitmap.getContext('2d')!.getImageData(0, 0, width, height).data;
+  let left = width, top = height, right = -1, bottom = -1;
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    if (!pixels[(y * width + x) * 4 + 3]) continue;
+    left = Math.min(left, x); top = Math.min(top, y);
+    right = Math.max(right, x); bottom = Math.max(bottom, y);
+  }
+  if (right < left) return { sprite, x: 0, y: 0 };
+  const w = right - left + 1;
+  const h = bottom - top + 1;
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext('2d')!.drawImage(sprite.bitmap, left, top, w, h, 0, 0, w, h);
+  return { sprite: { bitmap: canvas, blob: sprite.blob }, x: left, y: top };
 }
 
 async function inkPatch(key: string, sprite: Sprite, gold = false, shiftX = 0): Promise<{ sprite: Sprite; x: number; y: number }> {
@@ -103,7 +132,7 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
   pending = (async () => {
     await ensureTicketFontsForLayout(layout.metrics);
     const host = document.createElement('div');
-    host.style.cssText = 'position:fixed;left:-10000px;top:0;pointer-events:none';
+    host.style.cssText = 'position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none';
     host.setAttribute('aria-hidden', 'true');
     const card = new TicketCard();
     host.append(card.dom);
@@ -143,11 +172,17 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
             css: '.ticketCard__body{border-radius:0!important}',
             prepare(root) {
               hideHeader(root);
-              removeOverlay(root);
-              root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell, i) => {
-                for (const node of [...cell.childNodes]) if (node.nodeType === Node.TEXT_NODE) node.textContent = '';
-                if (i !== 1) cell.querySelectorAll<HTMLElement>('.ticketCard__badgeHost').forEach(badge => { badge.style.visibility = 'hidden'; });
-              });
+              if (!usesSvgText()) {
+                removeOverlay(root);
+                root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell, i) => {
+                  for (const node of [...cell.childNodes]) if (node.nodeType === Node.TEXT_NODE) node.textContent = '';
+                  if (i !== 1) cell.querySelectorAll<HTMLElement>('.ticketCard__badgeHost').forEach(badge => { badge.style.visibility = 'hidden'; });
+                });
+              } else {
+                root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell, i) => {
+                  if (i !== 1) cell.style.visibility = 'hidden';
+                });
+              }
             },
           })));
         }
@@ -158,6 +193,66 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
   packs.set(key, pending);
   void pending.catch(() => packs.delete(key));
   return pending;
+}
+
+const headerGlyphWarm = new Map<string, Promise<HeaderGlyphPack>>();
+
+async function ensureHeaderGlyphs(
+  live: HTMLElement,
+  layout: CatalogLayout,
+  dpr: number,
+  pack: Pack,
+): Promise<HeaderGlyphPack> {
+  if (pack.headerGlyphs) return pack.headerGlyphs;
+  let pending = headerGlyphWarm.get(pack.prefix);
+  if (!pending) {
+    pending = (async () => {
+      await ensureTicketFontsForLayout(layout.metrics);
+      const rect = live.getBoundingClientRect();
+      const warmW = Math.max(rect.width, glyphWarmMinCardWidthCss());
+      const host = document.createElement('div');
+      host.style.cssText =
+        `position:fixed;left:${rect.left}px;top:${rect.top}px;width:${warmW}px;height:${rect.height}px;overflow:visible;visibility:hidden;pointer-events:none`;
+      const card = new TicketCard();
+      styleCompareTicketDom(card.dom);
+      host.append(card.dom);
+      document.body.append(host);
+      alignCompareStackOrigin(host);
+      const m = layout.metrics;
+      const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(card.dom, dpr, m, part);
+      const bindFace = (face: 'normal' | 'gold' | 'disabled', idChar: string, winChar: string) => {
+        const ticket = sourceTicket(face === 'disabled');
+        ticket.no = idChar || '0';
+        ticket.win = winChar;
+        if (winChar) ticket.hits = [0, 1];
+        else if (face === 'gold') ticket.hits = [1, 2];
+        else ticket.hits = [];
+        card.bind(ticket, 0, 0, layout);
+      };
+      try {
+        return await warmHeaderGlyphPack(
+          pack.prefix,
+          (cacheKey, cap) => cached(cacheKey, cap),
+          capture,
+          bindFace,
+          () => {
+            prepareCompareCard(card, layout, activeDpr());
+            widenCardForGlyphWarm(card.dom);
+          },
+          card.dom,
+          dpr,
+          m.headerHeight,
+          TRANSPARENT,
+        );
+      } finally {
+        host.remove();
+      }
+    })();
+    headerGlyphWarm.set(pack.prefix, pending);
+    void pending.catch(() => headerGlyphWarm.delete(pack.prefix));
+  }
+  pack.headerGlyphs = await pending;
+  return pack.headerGlyphs;
 }
 
 export async function assembleCompareSprites(live: HTMLElement, ticket: Ticket, layout: CatalogLayout, dpr: number): Promise<HTMLCanvasElement> {
@@ -182,7 +277,9 @@ export async function assembleCompareSprites(live: HTMLElement, ticket: Ticket, 
       root.querySelectorAll<HTMLElement>('.ticketCard__badgeHost').forEach(el => { el.style.visibility = 'hidden'; });
     },
   }));
-  if (usesSvgText()) return assembleWithOverlay(live, ticket, layout, dpr, pack, chrome.bitmap, model.cells.map(c => c.x), model.cellW);
+  if (usesSvgText()) {
+    return assembleWithOverlay(live, ticket, layout, dpr, pack, chrome.bitmap, model.cells.map(c => c.x), model.cellW, liveKey);
+  }
   const headerPart = (selector: string): CompareRasterPart => ({
     crop: { x: 0, y: 0, width: layout.cardWidth, height: m.headerHeight },
     css: TRANSPARENT,
@@ -265,6 +362,7 @@ async function assembleWithOverlay(
   chrome: HTMLCanvasElement,
   cellX: number[],
   cellW: number,
+  liveKey: string,
 ): Promise<HTMLCanvasElement> {
   const m = layout.metrics;
   const face = ticket.disabled ? 'disabled' : isWinTicket(ticket) ? 'gold' : 'normal';
@@ -275,25 +373,28 @@ async function assembleWithOverlay(
   if (!ctx) throw new Error('Compare 2D context unavailable');
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(chrome, 0, 0);
+  const patchInk = (cacheKey: string, sprite: Sprite, gold = false, shiftX = 0) =>
+    inkPatch(cacheKey, sprite, gold, shiftX);
+  const numberPatches = await Promise.all(ticket.balls.map((ball, i) => ticket.hits.includes(i) || ticket.multipliers[i]
+    ? Promise.resolve(null)
+    : patchInk(`${pack.prefix}|number-surface|${face}|${ball}|${i}`, pack.numbers[Number(Boolean(ticket.disabled))]![ball]!, face === 'gold', cellX[i]!)));
   for (let i = 0; i < 6; i++) {
-    // Multiplier discs and labels come from the overlay; only plain dabs here.
-    if (!ticket.hits.includes(i) || ticket.multipliers[i]) continue;
-    const badge = pack.badges.get(`${face}|1`)!;
+    const mult = ticket.multipliers[i] ?? 0;
+    if (!ticket.hits.includes(i) && !mult) continue;
+    const badge = pack.badges.get(`${face}|${mult || 1}`)!;
     const pad = Math.round(16 * dpr);
     const width = Math.round(cellW * dpr);
     ctx.drawImage(badge.bitmap, pad, 0, width, badge.bitmap.height,
       Math.round(cellX[i]! * dpr), Math.round(m.headerHeight * dpr), width, badge.bitmap.height);
   }
-  // Same foreignObject path as the full row (which matches the DOM), with
-  // everything but the overlay hidden and backgrounds transparent.
-  const overlay = await rasterizeCompareTicketSvg(live, dpr, m, {
-    css: TRANSPARENT,
-    prepare(root) {
-      for (const child of [...root.children] as HTMLElement[]) {
-        if (!child.classList.contains(OVERLAY_CLASS)) child.style.visibility = 'hidden';
-      }
-    },
-  });
-  ctx.drawImage(overlay, 0, 0);
+  for (let i = 0; i < 6; i++) {
+    if (ticket.hits.includes(i) || ticket.multipliers[i]) continue;
+    const patch = numberPatches[i]!;
+    ctx.drawImage(patch.sprite.bitmap,
+      Math.round(cellX[i]! * dpr) + patch.x, Math.round(m.headerHeight * dpr) + patch.y);
+  }
+  const glyphs = await ensureHeaderGlyphs(live, layout, dpr, pack);
+  const winText = isWinTicket(ticket) && ticket.win ? ticket.win : '';
+  await stampHeaderGlyphs(ctx, live, ticket.no, winText, face, dpr, glyphs, async (_k, s) => trimSprite(s), liveKey);
   return out;
 }

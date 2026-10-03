@@ -7,6 +7,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { activeDpr, resolveCellBoxModel, setLiveCellBoxModel } from "./cellBoxModel";
 import { compareRasterRatio, type CompareRenderMode } from "./compareRenderMode";
 import {
+  alignCompareStackOrigin,
   layoutCompareRasterCanvas,
   styleCompareTicketDom,
 } from "./compareDomAlign";
@@ -88,36 +89,7 @@ export function CompareSvgStack({
     // layout origin on a whole CSS px in document coordinates. Any device
     // remainder (non-zero only for a fractional ratio) goes in a transform,
     // which DOM and canvas share. Returns the alignment key captures check.
-    const align = () => {
-      wrap.style.left = "0px";
-      wrap.style.top = "0px";
-      wrap.style.transform = "";
-      const rect = wrap.getBoundingClientRect();
-      const x = rect.left + window.scrollX;
-      const y = rect.top + window.scrollY;
-      const lx = Math.round(x);
-      const ly = Math.round(y);
-      // Engines truncate stored offsets to their layout unit (WebKit 1/64 CSS,
-      // Chromium 1/64 device px), so aim a hair past the target and re-check.
-      const aim = (d: number) => (d === 0 ? 0 : d + Math.sign(d) * 1e-3);
-      let ox = aim(lx - x);
-      let oy = aim(ly - y);
-      for (let i = 0; i < 3; i++) {
-        wrap.style.left = `${ox}px`;
-        wrap.style.top = `${oy}px`;
-        const r = wrap.getBoundingClientRect();
-        const ex = lx - (r.left + window.scrollX);
-        const ey = ly - (r.top + window.scrollY);
-        if (Math.abs(ex) < 1e-4 && Math.abs(ey) < 1e-4) break;
-        ox += aim(ex);
-        oy += aim(ey);
-      }
-      const dpr = activeDpr();
-      const rx = Math.round(lx * dpr) / dpr - lx;
-      const ry = Math.round(ly * dpr) / dpr - ly;
-      if (rx || ry) wrap.style.transform = `translate(${rx}px, ${ry}px)`;
-      return `${lx},${ly},${rx},${ry},${rect.width}x${rect.height}`;
-    };
+    const align = () => alignCompareStackOrigin(wrap);
     alignRef.current = align;
     align();
     const observer = new ResizeObserver(align);

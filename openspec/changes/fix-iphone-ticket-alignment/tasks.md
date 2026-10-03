@@ -60,7 +60,7 @@ Planning only: all tasks remain unstarted. Groups preserve the agreed 0–7 orde
 - [x] 8.2 Add `/compare` render modes (HTML zoom, SVG-text multiplier, SVG text: all, raster ratios 1/2/2.5/3); verify every mode renders without errors.
 - [x] 8.3 Fix capture from detached cards and empty cached sprites (cache v20); verify mode switching on DPR 2.
 - [x] 8.4 "SVG text: all" overlay at the card origin, both rows; verify no displacement in Chrome DPR 2/3 and Mac WebKit DPR 3, and on the user's Macs and iPhones.
-- [ ] 8.5 Phone check A: stamp a captured "58" sprite over the full overlay; it must show no displacement before continuing.
-- [ ] 8.6 Phone check B: distinct renderings of one id digit at 1/16-px offsets; record the count as the atlas width.
-- [ ] 8.7 Phone check C: "10" as one sprite vs two stamped glyphs; classify the seam as softness or not, and decide amount strategy.
-- [ ] 8.8 Build the glyph atlas (numbers, multiplier labels, id digits, amounts) for the optimized row; gate against the overlay row on the phone and at 1,000 tickets (capture count, timing).
+- [x] 8.5 Phone check A: stamp a captured "58" sprite over the full overlay; it must show no displacement before continuing.
+- [x] 8.6 Phone check B: distinct renderings of one id digit at 1/16-px offsets; record the count as the atlas width. Result: glyph x floors to the device pixel; one sprite per glyph and fill.
+- [x] 8.7 Phone check C: "10" as one sprite vs two stamped glyphs; classify the seam as softness or not, and decide amount strategy.
+- [ ] 8.8 Build the glyph atlas for the compare optimized row per `docs/iphone-ticket-alignment/atlas-build-plan.md`: whole sprites for numbers and multiplier labels; id and amount glyphs stamped at `floor(x·dpr)` on WebKit and from four quarter-pixel sprites at `round(x·dpr·4)/4` on Chromium. Gate against the overlay row: no displacement on the phone (WebKit `9.`-style shared-edge softness allowed, a 1 px shift is not), byte match for stamped amounts on Chrome, then all presets and faces, then 1,000 tickets with a flat capture count.

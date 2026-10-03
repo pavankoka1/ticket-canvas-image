@@ -55,3 +55,29 @@ Same element, DOM-only then canvas-only screenshot, same scroll position, native
 | 10 | No single multiplier paint layer causes multiplier drift; rotation converts a vertical error into a small horizontal one | S2 (in S6) |
 
 Status labels: whole origins are demonstrated for the **full row**; the optimized row remains a gate. Mobile header F3 is demonstrated in isolation; a shared implementation needs verification. desktopSmall, remaining multiplier drift, `58` and the disc fringe are investigations.
+
+## Glyph-atlas checks (iPhone 16 Pro Max, deployed `/compare`, "SVG text: all", mobileLarge, 2026-10-03)
+
+Runtime-only, harness foreignObject raster at DPR 3, captures on the card's pixel grid, result canvases sized in whole CSS px so screenshots are native and unscaled.
+
+| Check | Result | Evidence |
+|---|---|---|
+| A. "58" captured in column 2, stamped in column 5 (integer pitch 32 px) | No displacement detected against the live DOM; same 6 softness pixels as the reference overlay row | `atlas-checks2/A-*` |
+| B. Digit at sub-pixel offsets | Glyph x is **floored to the device pixel**: offsets 0…0.99 device px are byte-identical; 1.0…1.75 = same image shifted 1 px; 2.0 = 2 px. No sub-pixel phase variants exist | `snap/` |
+| C. "10" as one run vs "1" + "0" stamped at `getStartPositionOfChar` positions | Byte-identical (0 pixels differ); no seam | `atlas-checks2/c*` |
+
+Invalid runs kept for the record: `atlas-checks/` (sprite captures inherited the page's opaque `:root` background), `phase64/` and the 1/16 histogram in `atlas-checks2/bHist.png` (result canvases were not a whole number of CSS px, so the phone screenshot dropped a column and crops drifted, producing false "distinct renderings").
+
+Consequence (WebKit only; superseded for Chromium by the engine table below): one sprite per glyph per fill per preset, stamped at `floor(x × dpr)` with x read from the live `<text>`; the fractional baseline is baked into the sprite.
+
+## Engine placement rules and amount seam (2026-10-03, deployed `/compare`, mobileLarge, 12 px glyphs)
+
+Same page script on every engine (`check2/`, `check2-q4/`):
+
+| Engine | Glyph x placement | `$1,509.31`: one run vs stamped glyphs |
+|---|---|---|
+| iPhone 16 Pro Max (Safari) | floor to device px (0–0.99 identical, 1.0 → +1 px) | byte-identical except the `.` after `9`: 34 px (17 > 32) where the two glyphs share edge pixels; best shift 0, so softness, not movement |
+| Mac WebKit, DPR 3 | floor to device px | same as iPhone (34 px at `9.`) |
+| Chrome, DPR 2 and DPR 3 | 4 sub-pixel renderings: nearest ¼ px (0, ¼, ½, ¾; 0.99 rounds to +1 px) | floor-only stamp: 415 / 948 px differ; **4-phase stamp (round to ¼ px): byte-identical** |
+
+Atlas rule: WebKit = one sprite per glyph and fill, stamp at `floor(x·dpr)`; Chromium = four phase sprites per glyph and fill, stamp at `round(x·dpr·4)/4` (integer part = pixel, fraction = phase). Remaining WebKit residual: anti-aliased edges where adjacent glyph boxes share a pixel (seen at `9.`), a softness difference with no displacement.
