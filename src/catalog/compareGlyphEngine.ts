@@ -14,7 +14,10 @@ export function quantizeGlyphDeviceX(
   startDevice: number,
   phases: number,
 ): { pixel: number; phase: number } {
-  const v = Math.floor(startDevice * phases + PHASE_EPSILON) / phases;
+  const v =
+    phases >= 4
+      ? Math.round(startDevice * phases) / phases
+      : Math.floor(startDevice * phases + PHASE_EPSILON) / phases;
   const pixel = Math.floor(v);
   const phase = Math.round((v - pixel) * phases);
   return { pixel, phase };

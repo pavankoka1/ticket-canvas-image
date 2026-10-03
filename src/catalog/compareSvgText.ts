@@ -39,7 +39,15 @@ function textOf(el: Element | null): string {
     .trim();
 }
 
-function text(value: string, x: number, y: number, anchor: string, fontPx: number, fill: string): SVGTextElement {
+function text(
+  value: string,
+  x: number,
+  y: number,
+  anchor: string,
+  fontPx: number,
+  fill: string,
+  header = false,
+): SVGTextElement {
   const t = svgEl("text", {
     x,
     y,
@@ -48,6 +56,7 @@ function text(value: string, x: number, y: number, anchor: string, fontPx: numbe
     "font-weight": 700,
     "font-size": fontPx,
     fill,
+    ...(header ? { "font-kerning": "none" } : {}),
   });
   t.textContent = value;
   return t;
@@ -74,8 +83,8 @@ export function buildTicketOverlay(root: HTMLElement): SVGSVGElement {
   const headerY = headerH / 2 + BASELINE_EM * metaPx;
   const id = textOf(root.querySelector(".ticketCard__id"));
   const amount = textOf(root.querySelector(".ticketCard__win"));
-  if (id) children.push(text(id, W - padX, headerY, "end", metaPx, COLORS.id[face]));
-  if (amount) children.push(text(amount, padX, headerY, "start", metaPx, COLORS.amount[face]));
+  if (id) children.push(text(id, W - padX, headerY, "end", metaPx, COLORS.id[face], true));
+  if (amount) children.push(text(amount, padX, headerY, "start", metaPx, COLORS.amount[face], true));
 
   let needsDefs = false;
   root.querySelectorAll<HTMLElement>(".ticketCard__cell").forEach((cell, i) => {

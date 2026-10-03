@@ -134,6 +134,7 @@ function isolatedGlyphPart(
         "font-family": HEADER_FONT,
         "font-weight": 700,
         "font-size": metaPx,
+        "font-kerning": "none",
         fill,
       });
       t.textContent = char;
