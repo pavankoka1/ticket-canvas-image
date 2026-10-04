@@ -10,6 +10,8 @@ import type { TicketMetrics } from "./ticketPresets";
 const FONT_URL = "/fonts/onest-700.woff2";
 
 let fontFacePromise: Promise<string> | null = null;
+let cachedComparePageCss: string | null = null;
+let cachedCompareFontCss: string | null = null;
 const imagePromises = new Map<string, Promise<string>>();
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -562,6 +564,10 @@ export async function rasterizeCompareTicketSvg(
 ): Promise<HTMLCanvasElement> {
   await ensureTicketFontsForLayout(metrics);
   const assets = await loadRasterAssets();
+  if (!cachedComparePageCss) cachedComparePageCss = ticketDocumentCss(assets.images);
+  if (!cachedCompareFontCss) cachedCompareFontCss = assets.fontCss;
+  const pageCss = cachedComparePageCss;
+  const fontCss = cachedCompareFontCss;
   const rect = card.getBoundingClientRect();
   // A superseded stack can still be capturing after its card was detached.
   // Never rasterize an element without a layout box: it decodes to 0×0.
@@ -587,7 +593,7 @@ export async function rasterizeCompareTicketSvg(
   holder.style.zoom = String(dpr);
   const style = document.createElement("style");
   // Embedded font declarations must follow page declarations to win the cascade.
-  style.textContent = ticketDocumentCss(assets.images) + assets.fontCss + (part?.css ?? "");
+  style.textContent = pageCss + fontCss + (part?.css ?? "");
   holder.append(style, clone);
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("width", String(Math.round(crop.width * dpr)));
