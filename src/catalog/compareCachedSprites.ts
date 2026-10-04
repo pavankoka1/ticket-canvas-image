@@ -27,7 +27,7 @@ type Pack = { numbers: Sprite[][]; badges: Map<string, Sprite>; headerGlyphs?: H
 
 function prefix(layout: CatalogLayout, dpr: number): string {
   const phases = usesSvgText() ? compareGlyphPhaseCount() : 0;
-  return `compare-sprites-v44|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+  return `compare-sprites-v45|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
 }
 
 async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): Promise<Sprite> {
@@ -389,18 +389,34 @@ async function warmHeaderGlyphsOffscreen(pack: Pack, layout: CatalogLayout, dpr:
   }
 }
 
-/** svg-all: warm numbers, badges, and header glyphs before any compare stack paints. */
+/** svg-all: warm numbers and badges before compare stacks paint. */
+export async function preloadComparePack(layout: CatalogLayout, dpr: number): Promise<Pack> {
+  return warmPack(layout, dpr);
+}
+
+/** Header glyphs after first paint — optimized row awaits this in ensureHeaderGlyphs. */
+export function scheduleCompareGlyphWarm(layout: CatalogLayout, dpr: number, pack: Pack): void {
+  if (!usesSvgText() || pack.headerGlyphs) return;
+  const run = () => {
+    void (async () => {
+      let pending = headerGlyphWarm.get(pack.prefix);
+      if (!pending) {
+        pending = warmHeaderGlyphsOffscreen(pack, layout, dpr);
+        headerGlyphWarm.set(pack.prefix, pending);
+        void pending.catch(() => headerGlyphWarm.delete(pack.prefix));
+      }
+      pack.headerGlyphs = await pending;
+    })();
+  };
+  if (typeof requestIdleCallback === 'function') requestIdleCallback(run);
+  else run();
+}
+
+/** svg-all: pack sync, glyphs in idle time. */
 export async function preloadCompareAtlasWarm(layout: CatalogLayout, dpr: number): Promise<void> {
   if (!usesSvgText()) return;
-  const pack = await warmPack(layout, dpr);
-  if (pack.headerGlyphs) return;
-  let pending = headerGlyphWarm.get(pack.prefix);
-  if (!pending) {
-    pending = warmHeaderGlyphsOffscreen(pack, layout, dpr);
-    headerGlyphWarm.set(pack.prefix, pending);
-    void pending.catch(() => headerGlyphWarm.delete(pack.prefix));
-  }
-  pack.headerGlyphs = await pending;
+  const pack = await preloadComparePack(layout, dpr);
+  scheduleCompareGlyphWarm(layout, dpr, pack);
 }
 
 async function ensureHeaderGlyphs(
