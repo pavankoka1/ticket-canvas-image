@@ -27,7 +27,7 @@ type Pack = { numbers: Sprite[][]; badges: Map<string, Sprite>; headerGlyphs?: H
 
 function prefix(layout: CatalogLayout, dpr: number): string {
   const phases = usesSvgText() ? compareGlyphPhaseCount() : 0;
-  return `compare-sprites-v41|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+  return `compare-sprites-v42|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
 }
 
 async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): Promise<Sprite> {
@@ -106,6 +106,54 @@ function sourceTicket(disabled: boolean, number = 1, badge = 0): Ticket {
   return { id: 'compare-cache-source', no: '0', balls: Array(6).fill(number) as number[], hits: badge ? [0] : [], multipliers: badge > 1 ? { 0: badge } : {}, win: '', disabled };
 }
 
+const BADGE_WARM_VALUES = [1, 2, 3, 5, 10] as const;
+const BADGE_WARM_CELLS = [1, 2, 3, 4, 5] as const;
+
+function forceBadgeFace(card: TicketCard, face: 'normal' | 'gold' | 'disabled'): void {
+  card.dom.classList.remove('ticketCard_win', 'ticketCard_disabled');
+  if (face === 'gold') card.dom.classList.add('ticketCard_win');
+  if (face === 'disabled') card.dom.classList.add('ticketCard_disabled');
+}
+
+function badgeBodyCrop(
+  model: ReturnType<typeof resolveCellBoxModel>,
+  cellIndex: number,
+  headerHeight: number,
+  bodyHeight: number,
+) {
+  return {
+    x: model.cells[cellIndex]!.x - 16,
+    y: headerHeight,
+    width: model.cellW + 32,
+    height: bodyHeight,
+  };
+}
+
+function unionCrops(crops: { x: number; y: number; width: number; height: number }[]) {
+  const x = Math.min(...crops.map((c) => c.x));
+  const y = Math.min(...crops.map((c) => c.y));
+  const right = Math.max(...crops.map((c) => c.x + c.width));
+  const bottom = Math.max(...crops.map((c) => c.y + c.height));
+  return { x, y, width: right - x, height: bottom - y };
+}
+
+function cropFromWarmSheet(
+  sheet: HTMLCanvasElement,
+  union: { x: number; y: number; width: number; height: number },
+  crop: { x: number; y: number; width: number; height: number },
+  dpr: number,
+): HTMLCanvasElement {
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(crop.width * dpr);
+  canvas.height = Math.round(crop.height * dpr);
+  const ctx = canvas.getContext('2d')!;
+  ctx.imageSmoothingEnabled = false;
+  const sx = Math.round((crop.x - union.x) * dpr);
+  const sy = Math.round((crop.y - union.y) * dpr);
+  ctx.drawImage(sheet, sx, sy, canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
 export function prepareCompareCard(card: TicketCard, layout: CatalogLayout, dpr: number): void {
   const model = resolveCellBoxModel(layout, dpr);
   const cells = [...card.dom.querySelectorAll<HTMLElement>('.ticketCard__cell')];
@@ -167,34 +215,48 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
       // Precompose image antialiasing on the real body background. Re-compositing
       // an already rounded transparent image can change its edge colors.
       for (const face of ['normal', 'gold', 'disabled'] as const) {
+        const ticket = sourceTicket(face === 'disabled');
+        ticket.hits = [...BADGE_WARM_CELLS];
+        ticket.multipliers = Object.fromEntries(
+          BADGE_WARM_CELLS.map((cell, i) => [cell, BADGE_WARM_VALUES[i]!]).filter(([, v]) => v > 1),
+        );
+        card.bind(ticket, 0, 0, layout);
+        forceBadgeFace(card, face);
+        prepareCompareCard(card, layout, activeDpr());
+        const cellCrops = BADGE_WARM_CELLS.map((cellIndex) =>
+          badgeBodyCrop(model, cellIndex, m.headerHeight, m.bodyHeight),
+        );
+        const union = unionCrops(cellCrops);
+        captures++;
+        const sheet = await capture({
+          crop: union,
+          css: '.ticketCard__body{border-radius:0!important}',
+          prepare(root) {
+            hideHeader(root);
+            if (!usesSvgText()) {
+              removeOverlay(root);
+              root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell, i) => {
+                for (const node of [...cell.childNodes]) if (node.nodeType === Node.TEXT_NODE) node.textContent = '';
+                if (i === 0 || !BADGE_WARM_CELLS.includes(i as 1 | 2 | 3 | 4 | 5)) {
+                  cell.querySelectorAll<HTMLElement>('.ticketCard__badgeHost').forEach((badge) => {
+                    badge.style.visibility = 'hidden';
+                  });
+                }
+              });
+            } else {
+              root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell, i) => {
+                cell.style.visibility = i > 0 && i <= 5 ? 'visible' : 'hidden';
+              });
+            }
+          },
+        });
         for (const value of [1, ...MULTIPLIER_VALUES]) {
-          const ticket = sourceTicket(face === 'disabled');
-          ticket.hits = face === 'gold' ? [1, 2] : [1];
-          ticket.multipliers = value > 1 ? { 1: value } : {};
-          card.bind(ticket, 0, 0, layout);
-          prepareCompareCard(card, layout, activeDpr());
+          const warmIdx = BADGE_WARM_VALUES.indexOf(value as (typeof BADGE_WARM_VALUES)[number]);
           const badgeKey = `${face}|${value}`;
-          badges.set(badgeKey, await cached(`${key}|badge-body|${badgeKey}`, () => {
-            captures++;
-            return capture({
-            crop: { x: model.cells[1]!.x - 16, y: m.headerHeight, width: model.cellW + 32, height: m.bodyHeight },
-            css: '.ticketCard__body{border-radius:0!important}',
-            prepare(root) {
-              hideHeader(root);
-              if (!usesSvgText()) {
-                removeOverlay(root);
-                root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell, i) => {
-                  for (const node of [...cell.childNodes]) if (node.nodeType === Node.TEXT_NODE) node.textContent = '';
-                  if (i !== 1) cell.querySelectorAll<HTMLElement>('.ticketCard__badgeHost').forEach(badge => { badge.style.visibility = 'hidden'; });
-                });
-              } else {
-                root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell, i) => {
-                  if (i !== 1) cell.style.visibility = 'hidden';
-                });
-              }
-            },
-          });
-          }));
+          const sourceCrop = cellCrops[warmIdx]!;
+          badges.set(badgeKey, await cached(`${key}|badge-body|${badgeKey}`, () =>
+            Promise.resolve(cropFromWarmSheet(sheet, union, sourceCrop, dpr)),
+          ));
         }
       }
       if (import.meta.env.DEV) {
