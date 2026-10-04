@@ -27,7 +27,7 @@ type Pack = { numbers: Sprite[][]; badges: Map<string, Sprite>; headerGlyphs?: H
 
 function prefix(layout: CatalogLayout, dpr: number): string {
   const phases = usesSvgText() ? compareGlyphPhaseCount() : 0;
-  return `compare-sprites-v42|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+  return `compare-sprites-v43|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
 }
 
 async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): Promise<Sprite> {
@@ -137,6 +137,15 @@ function unionCrops(crops: { x: number; y: number; width: number; height: number
   return { x, y, width: right - x, height: bottom - y };
 }
 
+function numberCellCrop(
+  model: ReturnType<typeof resolveCellBoxModel>,
+  cellIndex: number,
+  headerHeight: number,
+  bodyHeight: number,
+) {
+  return { x: model.cells[cellIndex]!.x, y: headerHeight, width: model.cellW, height: bodyHeight };
+}
+
 function cropFromWarmSheet(
   sheet: HTMLCanvasElement,
   union: { x: number; y: number; width: number; height: number },
@@ -196,21 +205,45 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
     let captures = 0;
     try {
       for (const disabled of [false, true]) {
-        for (let n = 1; n <= 60; n++) {
-          card.bind(sourceTicket(disabled, n), 0, 0, layout);
-          prepareCompareCard(card, layout, activeDpr());
-          numbers[Number(disabled)]![n] = await cached(`${key}|number|${disabled}|${n}`, () => {
+        const warmNumberBatch = async (batch: number) => {
+          const balls = Array.from({ length: 6 }, (_, i) => batch * 6 + i + 1);
+          const batchHost = document.createElement('div');
+          batchHost.style.cssText = 'position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none';
+          const batchCard = new TicketCard();
+          batchHost.append(batchCard.dom);
+          document.body.append(batchHost);
+          const batchCapture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(batchCard.dom, dpr, m, part);
+          try {
+            const ticket = sourceTicket(disabled, balls[0]!);
+            ticket.balls = balls as number[];
+            batchCard.bind(ticket, 0, 0, layout);
+            prepareCompareCard(batchCard, layout, activeDpr());
+            const cellCrops = [0, 1, 2, 3, 4, 5].map((cellIndex) =>
+              numberCellCrop(model, cellIndex, m.headerHeight, m.bodyHeight),
+            );
+            const union = unionCrops(cellCrops);
             captures++;
-            return capture({
-            crop: { x: 0, y: m.headerHeight, width: model.cellW, height: m.bodyHeight },
-            css: TRANSPARENT,
-            prepare(root) {
-              hideHeader(root);
-              root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell, i) => { cell.style.visibility = i === 0 ? 'visible' : 'hidden'; });
-            },
-          });
-          });
-        }
+            const sheet = await batchCapture({
+              crop: union,
+              css: TRANSPARENT,
+              prepare(root) {
+                hideHeader(root);
+                root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell) => {
+                  cell.style.visibility = 'visible';
+                });
+              },
+            });
+            for (let cell = 0; cell < 6; cell++) {
+              const n = balls[cell]!;
+              numbers[Number(disabled)]![n] = await cached(`${key}|number|${disabled}|${n}`, () =>
+                Promise.resolve(cropFromWarmSheet(sheet, union, cellCrops[cell]!, dpr)),
+              );
+            }
+          } finally {
+            batchHost.remove();
+          }
+        };
+        for (let batch = 0; batch < 10; batch++) await warmNumberBatch(batch);
       }
       // Precompose image antialiasing on the real body background. Re-compositing
       // an already rounded transparent image can change its edge colors.
