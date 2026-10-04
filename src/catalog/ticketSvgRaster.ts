@@ -4,6 +4,8 @@
  * are only for isolated sprites — they shift full-ticket text in FO.
  */
 
+import { isMobileSafari } from "./compareGlyphEngine";
+import { OVERLAY_CLASS } from "./compareSvgText";
 import { ensureTicketFontsForLayout } from "./ticketFont";
 import type { TicketMetrics } from "./ticketPresets";
 
@@ -554,6 +556,115 @@ export type CompareRasterPart = {
   css?: string;
 };
 
+const compareOverlayInkShiftDevice = new Map<string, number>();
+
+function compareOverlayInkKey(metrics: TicketMetrics, dpr: number): string {
+  return `${metrics.id}|${dpr}`;
+}
+
+function probeOverlayText(card: HTMLElement): SVGTextElement | null {
+  const overlay = card.querySelector(`.${OVERLAY_CLASS}`);
+  if (!overlay) return null;
+  return overlay.querySelector("text");
+}
+
+/** Glyph top in card space, device px (overlay SVG text). */
+function svgOverlayGlyphTopDevice(text: SVGTextElement, card: HTMLElement, dpr: number): number | null {
+  if ((text.textContent?.length ?? 0) < 1) return null;
+  const ext = text.getExtentOfChar(0);
+  const ctm = text.getScreenCTM();
+  if (!ctm) return null;
+  const cardRect = card.getBoundingClientRect();
+  const p = new DOMPoint(ext.x, ext.y).matrixTransform(ctm);
+  return (p.y - cardRect.top) * dpr;
+}
+
+function applyCompareOverlayInkNudge(clone: HTMLElement, shiftDeviceY: number, dpr: number): void {
+  if (!shiftDeviceY) return;
+  const dy = shiftDeviceY / dpr;
+  clone.querySelectorAll<SVGTextElement>(`.${OVERLAY_CLASS} text`).forEach((t) => {
+    const prev = t.getAttribute("transform")?.trim();
+    const nudge = `translate(0 ${dy})`;
+    t.setAttribute("transform", prev ? `${prev} ${nudge}` : nudge);
+  });
+}
+
+/**
+ * Mobile Safari paints SVG overlay text lower in compare FO than on the live card.
+ * Nudge overlay glyphs in the clone so warmed sprites match the visible DOM.
+ */
+async function resolveCompareOverlayInkShiftDevice(
+  live: HTMLElement,
+  dpr: number,
+  metrics: TicketMetrics,
+  assets: RasterAssets,
+): Promise<number> {
+  if (!isMobileSafari()) return 0;
+  const key = compareOverlayInkKey(metrics, dpr);
+  const cached = compareOverlayInkShiftDevice.get(key);
+  if (cached !== undefined) return cached;
+
+  const liveText = probeOverlayText(live);
+  if (!liveText) {
+    compareOverlayInkShiftDevice.set(key, 0);
+    return 0;
+  }
+  await document.fonts.ready;
+  const nativeTop = svgOverlayGlyphTopDevice(liveText, live, dpr);
+  if (nativeTop == null) {
+    compareOverlayInkShiftDevice.set(key, 0);
+    return 0;
+  }
+
+  const rect = live.getBoundingClientRect();
+  const clone = buildStylesheetRasterClone(live, rect, 0, 0);
+  const computed = getComputedStyle(live);
+  for (let i = 0; i < computed.length; i++) {
+    const property = computed.item(i);
+    if (property.startsWith("--")) {
+      clone.style.setProperty(property, computed.getPropertyValue(property));
+    }
+  }
+  clone.style.visibility = "visible";
+
+  const holder = document.createElement("div");
+  holder.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
+  holder.style.cssText = `position:relative;width:${rect.width}px;height:${rect.height}px;margin:0;padding:0;-webkit-text-size-adjust:none;text-size-adjust:none;zoom:${dpr}`;
+  const style = document.createElement("style");
+  style.textContent = ticketDocumentCss(assets.images) + assets.fontCss;
+  holder.append(style, clone);
+
+  const fullWidth = Math.round(rect.width * dpr);
+  const fullHeight = Math.round(rect.height * dpr);
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("width", String(fullWidth));
+  svg.setAttribute("height", String(fullHeight));
+  svg.setAttribute("viewBox", `0 0 ${fullWidth} ${fullHeight}`);
+  const fo = document.createElementNS("http://www.w3.org/2000/svg", "foreignObject");
+  fo.setAttribute("width", String(fullWidth));
+  fo.setAttribute("height", String(fullHeight));
+  fo.append(holder);
+  svg.append(fo);
+
+  const host = foreignObjectInkProbeHost();
+  host.replaceChildren();
+  host.append(svg);
+  void host.offsetWidth;
+
+  const foText = host.querySelector<SVGTextElement>(`.${OVERLAY_CLASS} text`);
+  const foTop = foText ? svgOverlayGlyphTopDevice(foText, clone, dpr) : null;
+  const shift = foTop == null ? 0 : nativeTop - foTop;
+  compareOverlayInkShiftDevice.set(key, shift);
+  console.debug("[compare-overlay-ink]", {
+    layout: metrics.id,
+    dpr,
+    shiftDevice: +shift.toFixed(2),
+    nativeTop: +nativeTop.toFixed(2),
+    foTop: foTop == null ? "n/a" : +foTop.toFixed(2),
+  });
+  return shift;
+}
+
 export async function rasterizeCompareTicketSvg(
   card: HTMLElement,
   dpr: number,
@@ -577,7 +688,11 @@ export async function rasterizeCompareTicketSvg(
     }
   }
   clone.style.visibility = "visible";
+  const overlayShift = await resolveCompareOverlayInkShiftDevice(card, dpr, metrics, assets);
   part?.prepare?.(clone);
+  if (clone.querySelector(`.${OVERLAY_CLASS} text`)) {
+    applyCompareOverlayInkNudge(clone, overlayShift, dpr);
+  }
   const crop = part?.crop ?? { x: 0, y: 0, width: rect.width, height: rect.height };
   const fullWidth = Math.round(rect.width * dpr);
   const fullHeight = Math.round(rect.height * dpr);

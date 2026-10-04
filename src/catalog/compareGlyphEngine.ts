@@ -2,9 +2,22 @@
 
 const PHASE_EPSILON = 1e-3;
 
+function userAgent(): string {
+  return navigator.userAgent;
+}
+
+/** Stock Mobile Safari on iPhone/iPad — not CriOS, FxiOS, or desktop. */
+export function isMobileSafari(): boolean {
+  const ua = userAgent();
+  const ios = /iPhone|iPod|iPad/.test(ua);
+  const webkit = /AppleWebKit/.test(ua);
+  const other = /CriOS|FxiOS|Edg\/|OPR\/|Chrom(e|ium)/.test(ua);
+  return ios && webkit && !other;
+}
+
 /** WebKit: two half-pixel phases; Chromium: four quarter-pixel phases. */
 export function compareGlyphPhaseCount(): number {
-  const ua = navigator.userAgent;
+  const ua = userAgent();
   const chromium =
     /Chrom(e|ium)/.test(ua) || /Edg\//.test(ua) || /OPR\//.test(ua);
   return chromium ? 4 : 2;
