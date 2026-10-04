@@ -27,7 +27,7 @@ type Pack = { numbers: Sprite[][]; badges: Map<string, Sprite>; headerGlyphs?: H
 
 function prefix(layout: CatalogLayout, dpr: number): string {
   const phases = usesSvgText() ? compareGlyphPhaseCount() : 0;
-  return `compare-sprites-v39|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+  return `compare-sprites-v41|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
 }
 
 async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): Promise<Sprite> {
@@ -196,6 +196,38 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
           });
           }));
         }
+      }
+      if (import.meta.env.DEV) {
+        let identicalAcrossCells = true;
+        for (const disabled of [false, true]) {
+          for (let n = 1; n <= 60; n++) {
+            const sprite = numbers[Number(disabled)]![n]!;
+            const bytes: Uint8ClampedArray[] = [];
+            for (let cell = 0; cell < 6; cell++) {
+              const patch = await inkPatch(`${key}|d1|${disabled}|${n}|${cell}`, sprite, false, model.cells[cell]!.x);
+              const { width, height } = patch.sprite.bitmap;
+              bytes.push(patch.sprite.bitmap.getContext('2d')!.getImageData(0, 0, width, height).data);
+            }
+            const first = bytes[0]!;
+            for (let cell = 1; cell < 6; cell++) {
+              const row = bytes[cell]!;
+              if (row.length !== first.length) {
+                identicalAcrossCells = false;
+                break;
+              }
+              for (let i = 0; i < first.length; i++) {
+                if (row[i] !== first[i]) {
+                  identicalAcrossCells = false;
+                  break;
+                }
+              }
+              if (!identicalAcrossCells) break;
+            }
+            if (!identicalAcrossCells) break;
+          }
+          if (!identicalAcrossCells) break;
+        }
+        console.info('[d1] identical across cells:', identicalAcrossCells);
       }
       console.info('[atlas-warm]', { preset, captures, ms: Math.round(performance.now() - warmT0) });
       return { numbers, badges, prefix: key };
