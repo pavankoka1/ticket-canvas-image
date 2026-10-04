@@ -15,6 +15,7 @@ import {
   setCompareRenderMode,
   type CompareRenderMode,
 } from "./compareRenderMode";
+import { preloadCompareAtlasWarm } from "./compareCachedSprites";
 import { CompareSvgStack } from "./compareSvgStack";
 import { loadSvgMultiplierAssets } from "./compareSvgMultiplier";
 import { ensureTicketFontsForLayout } from "./ticketFont";
@@ -107,6 +108,7 @@ export function Compare() {
     void (async () => {
       await ensureTicketFontsForLayout(layout.metrics);
       await loadSvgMultiplierAssets();
+      await preloadCompareAtlasWarm(layout, rasterRatio);
       if (cancelled) return;
       setLiveCellBoxModel(resolveCellBoxModel(layout, rasterRatio));
       setReadyPreset(presetId);

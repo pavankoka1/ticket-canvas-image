@@ -27,7 +27,7 @@ type Pack = { numbers: Sprite[][]; badges: Map<string, Sprite>; headerGlyphs?: H
 
 function prefix(layout: CatalogLayout, dpr: number): string {
   const phases = usesSvgText() ? compareGlyphPhaseCount() : 0;
-  return `compare-sprites-v38|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+  return `compare-sprites-v39|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
 }
 
 async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): Promise<Sprite> {
@@ -48,10 +48,11 @@ async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): P
       const bitmap = await capture();
       if (bitmap.width < 1 || bitmap.height < 1) throw new Error('Compare sprite capture is empty');
       const captured = rasterSvgBlob(bitmap);
-      if (!captured) throw new Error('Compare sprite has no SVG blob');
       const png = await new Promise<Blob | null>(resolve => bitmap.toBlob(resolve, 'image/png'));
-      await saveSprites({ key, blobs: [png ?? captured], meta: { source: captured } });
-      return { bitmap, blob: captured };
+      const source = captured ?? png;
+      if (!source) throw new Error('Compare sprite has no SVG blob');
+      await saveSprites({ key, blobs: [png ?? captured!], meta: captured ? { source: captured } : {} });
+      return { bitmap, blob: source };
     })();
     sprites.set(key, pending);
     void pending.catch(() => sprites.delete(key));
@@ -207,6 +208,62 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
 
 const headerGlyphWarm = new Map<string, Promise<HeaderGlyphPack>>();
 
+async function warmHeaderGlyphsOffscreen(pack: Pack, layout: CatalogLayout, dpr: number): Promise<HeaderGlyphPack> {
+  await ensureTicketFontsForLayout(layout.metrics);
+  const warmW = glyphWarmMinCardWidthCss();
+  const host = document.createElement('div');
+  host.style.cssText =
+    `position:fixed;left:-10000px;top:0;width:${warmW}px;height:${layout.cardHeight}px;overflow:visible;visibility:hidden;pointer-events:none`;
+  const card = new TicketCard();
+  styleCompareTicketDom(card.dom);
+  host.append(card.dom);
+  document.body.append(host);
+  const m = layout.metrics;
+  const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(card.dom, dpr, m, part);
+  const bindFace = (face: 'normal' | 'gold' | 'disabled', idChar: string, winChar: string) => {
+    const ticket = sourceTicket(face === 'disabled');
+    ticket.no = idChar || '0';
+    ticket.win = winChar;
+    if (winChar) ticket.hits = [0, 1];
+    else if (face === 'gold') ticket.hits = [1, 2];
+    else ticket.hits = [];
+    card.bind(ticket, 0, 0, layout);
+  };
+  try {
+    return await warmHeaderGlyphPack(
+      pack.prefix,
+      (cacheKey, cap) => cached(cacheKey, cap),
+      capture,
+      bindFace,
+      () => {
+        prepareCompareCard(card, layout, activeDpr());
+        widenCardForGlyphWarm(card.dom);
+      },
+      card.dom,
+      dpr,
+      m.headerHeight,
+      TRANSPARENT,
+      layout.metrics.id,
+    );
+  } finally {
+    host.remove();
+  }
+}
+
+/** svg-all: warm numbers, badges, and header glyphs before any compare stack paints. */
+export async function preloadCompareAtlasWarm(layout: CatalogLayout, dpr: number): Promise<void> {
+  if (!usesSvgText()) return;
+  const pack = await warmPack(layout, dpr);
+  if (pack.headerGlyphs) return;
+  let pending = headerGlyphWarm.get(pack.prefix);
+  if (!pending) {
+    pending = warmHeaderGlyphsOffscreen(pack, layout, dpr);
+    headerGlyphWarm.set(pack.prefix, pending);
+    void pending.catch(() => headerGlyphWarm.delete(pack.prefix));
+  }
+  pack.headerGlyphs = await pending;
+}
+
 async function ensureHeaderGlyphs(
   live: HTMLElement,
   layout: CatalogLayout,
@@ -217,7 +274,6 @@ async function ensureHeaderGlyphs(
   let pending = headerGlyphWarm.get(pack.prefix);
   if (!pending) {
     pending = (async () => {
-      await ensureTicketFontsForLayout(layout.metrics);
       const rect = live.getBoundingClientRect();
       const warmW = Math.max(rect.width, glyphWarmMinCardWidthCss());
       const host = document.createElement('div');

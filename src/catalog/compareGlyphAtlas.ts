@@ -90,7 +90,7 @@ function measureHeaderGlyphDeviceX(
   return glyphScreenX(root, el, index) * dpr;
 }
 
-function refGlyphCrop(
+export function refGlyphCrop(
   refXCss: number,
   dpr: number,
   headerHeight: number,
@@ -105,19 +105,57 @@ function refGlyphCrop(
   };
 }
 
-function isolatedGlyphPart(
-  char: string,
-  fill: string,
-  refXCss: number,
+type GlyphSlot = { char: string; refXCss: number; fill: string };
+
+function unionGlyphCrops(
+  refXs: number[],
+  dpr: number,
+  headerHeight: number,
+): { x: number; y: number; width: number; height: number } {
+  const crops = refXs.map((x) => refGlyphCrop(x, dpr, headerHeight));
+  const x = Math.min(...crops.map((c) => c.x));
+  const right = Math.max(...crops.map((c) => c.x + c.width));
+  return { x, y: 0, width: right - x, height: headerHeight };
+}
+
+function cropGlyphFromSheet(
+  sheet: HTMLCanvasElement,
+  union: { x: number; y: number; width: number; height: number },
+  glyph: { x: number; y: number; width: number; height: number },
+  dpr: number,
+): HTMLCanvasElement {
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(glyph.width * dpr);
+  canvas.height = Math.round(glyph.height * dpr);
+  const ctx = canvas.getContext("2d")!;
+  ctx.imageSmoothingEnabled = false;
+  const sx = Math.round((glyph.x - union.x) * dpr);
+  const sy = Math.round((glyph.y - union.y) * dpr);
+  ctx.drawImage(
+    sheet,
+    sx,
+    sy,
+    canvas.width,
+    canvas.height,
+    0,
+    0,
+    canvas.width,
+    canvas.height,
+  );
+  return canvas;
+}
+
+function batchedGlyphPart(
+  slots: GlyphSlot[],
   phase: number,
   phases: number,
   dpr: number,
   headerHeight: number,
   transparentCss: string,
 ): CompareRasterPart {
-  const xCss = refXCss + compareGlyphPhaseShiftCss(phase, dpr, phases);
+  const union = unionGlyphCrops(slots.map((s) => s.refXCss), dpr, headerHeight);
   return {
-    crop: refGlyphCrop(refXCss, dpr, headerHeight),
+    crop: union,
     css: transparentCss,
     prepare(root) {
       root.querySelector<HTMLElement>(".ticketCard__body")!.style.visibility = "hidden";
@@ -128,18 +166,21 @@ function isolatedGlyphPart(
       }
       const metaPx = cssVarPx(root, "--ticket-meta-font-size");
       const headerY = headerBaselineY(root);
-      const t = svgEl("text", {
-        x: xCss,
-        y: headerY,
-        "text-anchor": "start",
-        "font-family": HEADER_FONT,
-        "font-weight": 700,
-        "font-size": metaPx,
-        fill,
-      });
-      t.setAttribute("style", HEADER_TEXT_STYLE);
-      t.textContent = char;
-      overlay.append(t);
+      for (const slot of slots) {
+        const xCss = slot.refXCss + compareGlyphPhaseShiftCss(phase, dpr, phases);
+        const t = svgEl("text", {
+          x: xCss,
+          y: headerY,
+          "text-anchor": "start",
+          "font-family": HEADER_FONT,
+          "font-weight": 700,
+          "font-size": metaPx,
+          fill: slot.fill,
+        });
+        t.setAttribute("style", HEADER_TEXT_STYLE);
+        t.textContent = slot.char;
+        overlay.append(t);
+      }
     },
   };
 }
@@ -174,56 +215,80 @@ export async function warmHeaderGlyphPack(
   const warmT0 = performance.now();
   let captures = 0;
 
-  for (const face of ["normal", "gold", "disabled"] as const) {
-    const idFill = ID_FILLS[face];
-    for (let digit = 0; digit <= 9; digit++) {
-      const ch = String(digit);
-      const refX = GLYPH_REF_X0 + digit * GLYPH_REF_STEP;
-      bindFace(face, ch, "");
-      afterBind();
-      for (let phase = 0; phase < phases; phase++) {
-        const part = isolatedGlyphPart(ch, idFill, refX, phase, phases, dpr, headerHeight, transparentCss);
-        const sprite = await cached(`${key}|glyph-id|${idFill}|${ch}|${phase}|iso`, () => {
-          captures++;
-          return capture(part);
-        });
-        id.set(glyphKey(idFill, ch, phase), sprite);
+  const idSlots = (fill: string) =>
+    Array.from({ length: 10 }, (_, digit) => ({
+      char: String(digit),
+      refXCss: GLYPH_REF_X0 + digit * GLYPH_REF_STEP,
+      fill,
+    }));
+
+  const amountSlots = (fill: string) =>
+    [...AMOUNT_GLYPHS].map((ch, i) => ({
+      char: ch,
+      refXCss: GLYPH_REF_X0 + i * GLYPH_REF_STEP,
+      fill,
+    }));
+
+  async function warmGlyphBatch(
+    slots: GlyphSlot[],
+    union: { x: number; y: number; width: number; height: number },
+    cacheStem: (slot: GlyphSlot, phase: number) => string,
+    store: (slot: GlyphSlot, phase: number, sprite: Sprite) => void,
+  ) {
+    for (let phase = 0; phase < phases; phase++) {
+      captures++;
+      const part = batchedGlyphPart(slots, phase, phases, dpr, headerHeight, transparentCss);
+      const sheet = await capture(part);
+      for (const slot of slots) {
+        const glyphCrop = refGlyphCrop(slot.refXCss, dpr, headerHeight);
+        const sprite = await cached(cacheStem(slot, phase), () =>
+          Promise.resolve(cropGlyphFromSheet(sheet, union, glyphCrop, dpr)),
+        );
+        store(slot, phase, sprite);
       }
     }
   }
 
-  const sharedAmountFill = AMOUNT_FILLS.normal;
-  for (let i = 0; i < AMOUNT_GLYPHS.length; i++) {
-    const ch = AMOUNT_GLYPHS[i]!;
-    const refX = GLYPH_REF_X0 + i * GLYPH_REF_STEP;
-    bindFace("gold", "", ch);
+  for (const face of ["normal", "gold", "disabled"] as const) {
+    const idFill = ID_FILLS[face];
+    const slots = idSlots(idFill);
+    const union = unionGlyphCrops(slots.map((s) => s.refXCss), dpr, headerHeight);
+    bindFace(face, "0", "");
     afterBind();
-    for (let phase = 0; phase < phases; phase++) {
-      const part = isolatedGlyphPart(ch, sharedAmountFill, refX, phase, phases, dpr, headerHeight, transparentCss);
-      const sprite = await cached(`${key}|glyph-amt|${sharedAmountFill}|${encodeURIComponent(ch)}|${phase}|iso`, () => {
-        captures++;
-        return capture(part);
-      });
-      amount.set(glyphKey(sharedAmountFill, ch, phase), sprite);
-      amount.set(glyphKey(AMOUNT_FILLS.gold, ch, phase), sprite);
-    }
+    await warmGlyphBatch(
+      slots,
+      union,
+      (slot, phase) => `${key}|glyph-id|${idFill}|${slot.char}|${phase}|iso`,
+      (slot, phase, sprite) => id.set(glyphKey(idFill, slot.char, phase), sprite),
+    );
   }
 
+  const sharedAmountFill = AMOUNT_FILLS.normal;
+  const goldAmountSlots = amountSlots(sharedAmountFill);
+  const goldUnion = unionGlyphCrops(goldAmountSlots.map((s) => s.refXCss), dpr, headerHeight);
+  bindFace("gold", "", "0");
+  afterBind();
+  await warmGlyphBatch(
+    goldAmountSlots,
+    goldUnion,
+    (slot, phase) => `${key}|glyph-amt|${sharedAmountFill}|${encodeURIComponent(slot.char)}|${phase}|iso`,
+    (slot, phase, sprite) => {
+      amount.set(glyphKey(sharedAmountFill, slot.char, phase), sprite);
+      amount.set(glyphKey(AMOUNT_FILLS.gold, slot.char, phase), sprite);
+    },
+  );
+
   const disabledFill = AMOUNT_FILLS.disabled;
-  for (let i = 0; i < AMOUNT_GLYPHS.length; i++) {
-    const ch = AMOUNT_GLYPHS[i]!;
-    const refX = GLYPH_REF_X0 + i * GLYPH_REF_STEP;
-    bindFace("disabled", "", ch);
-    afterBind();
-    for (let phase = 0; phase < phases; phase++) {
-      const part = isolatedGlyphPart(ch, disabledFill, refX, phase, phases, dpr, headerHeight, transparentCss);
-      const sprite = await cached(`${key}|glyph-amt|${disabledFill}|${encodeURIComponent(ch)}|${phase}|iso`, () => {
-        captures++;
-        return capture(part);
-      });
-      amount.set(glyphKey(disabledFill, ch, phase), sprite);
-    }
-  }
+  const disabledSlots = amountSlots(disabledFill);
+  const disabledUnion = unionGlyphCrops(disabledSlots.map((s) => s.refXCss), dpr, headerHeight);
+  bindFace("disabled", "", "0");
+  afterBind();
+  await warmGlyphBatch(
+    disabledSlots,
+    disabledUnion,
+    (slot, phase) => `${key}|glyph-amt|${disabledFill}|${encodeURIComponent(slot.char)}|${phase}|iso`,
+    (slot, phase, sprite) => amount.set(glyphKey(disabledFill, slot.char, phase), sprite),
+  );
 
   console.info("[atlas-warm]", { preset, captures, ms: Math.round(performance.now() - warmT0) });
   return { id, amount, phases };
