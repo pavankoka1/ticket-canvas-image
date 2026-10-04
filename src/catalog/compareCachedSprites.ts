@@ -142,19 +142,25 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
     const numbers: Sprite[][] = [[], []];
     const badges = new Map<string, Sprite>();
     const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(card.dom, dpr, m, part);
+    const preset = layout.metrics.id;
+    const warmT0 = performance.now();
+    let captures = 0;
     try {
       for (const disabled of [false, true]) {
         for (let n = 1; n <= 60; n++) {
           card.bind(sourceTicket(disabled, n), 0, 0, layout);
           prepareCompareCard(card, layout, activeDpr());
-          numbers[Number(disabled)]![n] = await cached(`${key}|number|${disabled}|${n}`, () => capture({
+          numbers[Number(disabled)]![n] = await cached(`${key}|number|${disabled}|${n}`, () => {
+            captures++;
+            return capture({
             crop: { x: 0, y: m.headerHeight, width: model.cellW, height: m.bodyHeight },
             css: TRANSPARENT,
             prepare(root) {
               hideHeader(root);
               root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell, i) => { cell.style.visibility = i === 0 ? 'visible' : 'hidden'; });
             },
-          }));
+          });
+          });
         }
       }
       // Precompose image antialiasing on the real body background. Re-compositing
@@ -167,7 +173,9 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
           card.bind(ticket, 0, 0, layout);
           prepareCompareCard(card, layout, activeDpr());
           const badgeKey = `${face}|${value}`;
-          badges.set(badgeKey, await cached(`${key}|badge-body|${badgeKey}`, () => capture({
+          badges.set(badgeKey, await cached(`${key}|badge-body|${badgeKey}`, () => {
+            captures++;
+            return capture({
             crop: { x: model.cells[1]!.x - 16, y: m.headerHeight, width: model.cellW + 32, height: m.bodyHeight },
             css: '.ticketCard__body{border-radius:0!important}',
             prepare(root) {
@@ -184,9 +192,11 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
                 });
               }
             },
-          })));
+          });
+          }));
         }
       }
+      console.info('[atlas-warm]', { preset, captures, ms: Math.round(performance.now() - warmT0) });
       return { numbers, badges, prefix: key };
     } finally { host.remove(); }
   })();
@@ -243,6 +253,7 @@ async function ensureHeaderGlyphs(
           dpr,
           m.headerHeight,
           TRANSPARENT,
+          layout.metrics.id,
         );
       } finally {
         host.remove();

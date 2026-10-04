@@ -166,10 +166,13 @@ export async function warmHeaderGlyphPack(
   dpr: number,
   headerHeight: number,
   transparentCss: string,
+  preset: string,
 ): Promise<HeaderGlyphPack> {
   const phases = compareGlyphPhaseCount();
   const id = new Map<string, Sprite>();
   const amount = new Map<string, Sprite>();
+  const warmT0 = performance.now();
+  let captures = 0;
 
   for (const face of ["normal", "gold", "disabled"] as const) {
     const idFill = ID_FILLS[face];
@@ -180,7 +183,10 @@ export async function warmHeaderGlyphPack(
       afterBind();
       for (let phase = 0; phase < phases; phase++) {
         const part = isolatedGlyphPart(ch, idFill, refX, phase, phases, dpr, headerHeight, transparentCss);
-        const sprite = await cached(`${key}|glyph-id|${idFill}|${ch}|${phase}|iso`, () => capture(part));
+        const sprite = await cached(`${key}|glyph-id|${idFill}|${ch}|${phase}|iso`, () => {
+          captures++;
+          return capture(part);
+        });
         id.set(glyphKey(idFill, ch, phase), sprite);
       }
     }
@@ -194,9 +200,10 @@ export async function warmHeaderGlyphPack(
     afterBind();
     for (let phase = 0; phase < phases; phase++) {
       const part = isolatedGlyphPart(ch, sharedAmountFill, refX, phase, phases, dpr, headerHeight, transparentCss);
-      const sprite = await cached(`${key}|glyph-amt|${sharedAmountFill}|${encodeURIComponent(ch)}|${phase}|iso`, () =>
-        capture(part),
-      );
+      const sprite = await cached(`${key}|glyph-amt|${sharedAmountFill}|${encodeURIComponent(ch)}|${phase}|iso`, () => {
+        captures++;
+        return capture(part);
+      });
       amount.set(glyphKey(sharedAmountFill, ch, phase), sprite);
       amount.set(glyphKey(AMOUNT_FILLS.gold, ch, phase), sprite);
     }
@@ -210,13 +217,15 @@ export async function warmHeaderGlyphPack(
     afterBind();
     for (let phase = 0; phase < phases; phase++) {
       const part = isolatedGlyphPart(ch, disabledFill, refX, phase, phases, dpr, headerHeight, transparentCss);
-      const sprite = await cached(`${key}|glyph-amt|${disabledFill}|${encodeURIComponent(ch)}|${phase}|iso`, () =>
-        capture(part),
-      );
+      const sprite = await cached(`${key}|glyph-amt|${disabledFill}|${encodeURIComponent(ch)}|${phase}|iso`, () => {
+        captures++;
+        return capture(part);
+      });
       amount.set(glyphKey(disabledFill, ch, phase), sprite);
     }
   }
 
+  console.info("[atlas-warm]", { preset, captures, ms: Math.round(performance.now() - warmT0) });
   return { id, amount, phases };
 }
 
