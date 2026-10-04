@@ -27,7 +27,7 @@ type Pack = { numbers: Sprite[][]; badges: Map<string, Sprite>; headerGlyphs?: H
 
 function prefix(layout: CatalogLayout, dpr: number): string {
   const phases = usesSvgText() ? compareGlyphPhaseCount() : 0;
-  return `compare-sprites-v43|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+  return `compare-sprites-v44|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
 }
 
 async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): Promise<Sprite> {
@@ -146,6 +146,15 @@ function numberCellCrop(
   return { x: model.cells[cellIndex]!.x, y: headerHeight, width: model.cellW, height: bodyHeight };
 }
 
+async function parallelCaptures<T>(jobs: (() => Promise<T>)[], width = 3): Promise<T[]> {
+  const out: T[] = [];
+  for (let i = 0; i < jobs.length; i += width) {
+    const chunk = jobs.slice(i, i + width);
+    out.push(...await Promise.all(chunk.map((job) => job())));
+  }
+  return out;
+}
+
 function cropFromWarmSheet(
   sheet: HTMLCanvasElement,
   union: { x: number; y: number; width: number; height: number },
@@ -243,7 +252,10 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
             batchHost.remove();
           }
         };
-        for (let batch = 0; batch < 10; batch++) await warmNumberBatch(batch);
+        await parallelCaptures(
+          Array.from({ length: 10 }, (_, batch) => () => warmNumberBatch(batch)),
+          3,
+        );
       }
       // Precompose image antialiasing on the real body background. Re-compositing
       // an already rounded transparent image can change its edge colors.
