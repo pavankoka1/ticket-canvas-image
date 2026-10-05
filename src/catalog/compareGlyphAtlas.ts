@@ -118,7 +118,7 @@ function unionGlyphCrops(
   return { x, y: 0, width: right - x, height: headerHeight };
 }
 
-function cropGlyphFromSheet(
+export function cropGlyphFromSheet(
   sheet: HTMLCanvasElement,
   union: { x: number; y: number; width: number; height: number },
   glyph: { x: number; y: number; width: number; height: number },
@@ -197,10 +197,18 @@ const AMOUNT_FILLS = {
   disabled: "#0f6864",
 } as const;
 
+type CssRect = { x: number; y: number; width: number; height: number };
+
 export async function warmHeaderGlyphPack(
   key: string,
   cached: (cacheKey: string, capture: () => Promise<HTMLCanvasElement>) => Promise<Sprite>,
   cachedHasAll: (keys: readonly string[]) => Promise<boolean>,
+  commitWarmSheet: (
+    sheetKey: string,
+    sheet: HTMLCanvasElement,
+    union: CssRect,
+    entries: { spriteKey: string; crop: CssRect }[],
+  ) => void,
   capture: (part: CompareRasterPart) => Promise<HTMLCanvasElement>,
   bindFace: (face: "normal" | "gold" | "disabled", idChar: string, winChar: string) => void,
   afterBind: () => void,
@@ -215,6 +223,9 @@ export async function warmHeaderGlyphPack(
   const amount = new Map<string, Sprite>();
   const warmT0 = performance.now();
   let captures = 0;
+  const resolveSprite = (spriteKey: string) => cached(spriteKey, () =>
+    Promise.reject(new Error('compare glyph cache miss after warm sheet')),
+  );
 
   const idSlots = (fill: string) =>
     Array.from({ length: 10 }, (_, digit) => ({
@@ -232,9 +243,12 @@ export async function warmHeaderGlyphPack(
 
   async function warmGlyphBatch(
     slots: GlyphSlot[],
-    union: { x: number; y: number; width: number; height: number },
+    union: CssRect,
+    sheetKind: 'glyph-id' | 'glyph-amt',
+    sheetFace: string,
     cacheStem: (slot: GlyphSlot, phase: number) => string,
     store: (slot: GlyphSlot, phase: number, sprite: Sprite) => void,
+    resolveSprite: (spriteKey: string) => Promise<Sprite>,
   ) {
     for (let phase = 0; phase < phases; phase++) {
       const keys = slots.map((slot) => cacheStem(slot, phase));
@@ -250,12 +264,14 @@ export async function warmHeaderGlyphPack(
       captures++;
       const part = batchedGlyphPart(slots, phase, phases, dpr, headerHeight, transparentCss);
       const sheet = await capture(part);
+      const entries = slots.map((slot) => ({
+        spriteKey: cacheStem(slot, phase),
+        crop: refGlyphCrop(slot.refXCss, dpr, headerHeight),
+      }));
+      const sheetKey = `sheet|${key}|${sheetKind}|${sheetFace}|${phase}`;
+      commitWarmSheet(sheetKey, sheet, union, entries);
       for (const slot of slots) {
-        const glyphCrop = refGlyphCrop(slot.refXCss, dpr, headerHeight);
-        const sprite = await cached(cacheStem(slot, phase), () =>
-          Promise.resolve(cropGlyphFromSheet(sheet, union, glyphCrop, dpr)),
-        );
-        store(slot, phase, sprite);
+        store(slot, phase, await resolveSprite(cacheStem(slot, phase)));
       }
     }
   }
@@ -269,8 +285,11 @@ export async function warmHeaderGlyphPack(
     await warmGlyphBatch(
       slots,
       union,
+      'glyph-id',
+      idFill,
       (slot, phase) => `${key}|glyph-id|${idFill}|${slot.char}|${phase}|iso`,
       (slot, phase, sprite) => id.set(glyphKey(idFill, slot.char, phase), sprite),
+      (spriteKey) => resolveSprite(spriteKey),
     );
   }
 
@@ -282,11 +301,14 @@ export async function warmHeaderGlyphPack(
   await warmGlyphBatch(
     goldAmountSlots,
     goldUnion,
+    'glyph-amt',
+    sharedAmountFill,
     (slot, phase) => `${key}|glyph-amt|${sharedAmountFill}|${encodeURIComponent(slot.char)}|${phase}|iso`,
     (slot, phase, sprite) => {
       amount.set(glyphKey(sharedAmountFill, slot.char, phase), sprite);
       amount.set(glyphKey(AMOUNT_FILLS.gold, slot.char, phase), sprite);
     },
+    resolveSprite,
   );
 
   const disabledFill = AMOUNT_FILLS.disabled;
@@ -297,8 +319,11 @@ export async function warmHeaderGlyphPack(
   await warmGlyphBatch(
     disabledSlots,
     disabledUnion,
+    'glyph-amt',
+    disabledFill,
     (slot, phase) => `${key}|glyph-amt|${disabledFill}|${encodeURIComponent(slot.char)}|${phase}|iso`,
     (slot, phase, sprite) => amount.set(glyphKey(disabledFill, slot.char, phase), sprite),
+    resolveSprite,
   );
 
   console.info("[atlas-warm]", { preset, prefix: key, captures, ms: Math.round(performance.now() - warmT0) });

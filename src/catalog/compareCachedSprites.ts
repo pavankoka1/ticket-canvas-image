@@ -11,6 +11,7 @@ import { ensureTicketFontsForLayout } from './ticketFont';
 import { isWinTicket, MULTIPLIER_VALUES, type Ticket } from './tickets';
 import { compareGlyphPhaseCount } from './compareGlyphEngine';
 import {
+  cropGlyphFromSheet,
   glyphWarmMinCardWidthCss,
   stampHeaderGlyphs,
   warmHeaderGlyphPack,
@@ -27,8 +28,16 @@ type Pack = { numbers: Sprite[][]; badges: Map<string, Sprite>; headerGlyphs?: H
 
 function prefix(layout: CatalogLayout, dpr: number): string {
   const phases = usesSvgText() ? compareGlyphPhaseCount() : 0;
-  return `compare-sprites-v50|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|cell0-number-ink|badge-no-cell-digits|defer-idb-persist|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+  return `compare-sprites-v51|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|cell0-number-ink|badge-no-cell-digits|defer-idb-persist|sheet-glyphs-badges|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
 }
+
+type CssRect = { x: number; y: number; width: number; height: number };
+type SheetCropRecord = { key: string; x: number; y: number; width: number; height: number };
+type CompareSheetMeta = {
+  source?: Blob;
+  sheetUnion: CssRect;
+  crops: SheetCropRecord[];
+};
 
 type SpritePersistItem = {
   key: string;
@@ -36,7 +45,16 @@ type SpritePersistItem = {
   captured: Blob | null;
 };
 
-const persistQueue: SpritePersistItem[] = [];
+type SheetPersistItem = {
+  sheetKey: string;
+  sheet: HTMLCanvasElement;
+  captured: Blob | null;
+  sheetUnion: CssRect;
+  crops: SheetCropRecord[];
+};
+
+const persistQueue: (SpritePersistItem | SheetPersistItem)[] = [];
+const decodedSheets = new Map<string, Promise<HTMLCanvasElement | null>>();
 const PERSIST_ENCODE_CHUNK = 8;
 let persistDrain: Promise<void> | null = null;
 
@@ -51,6 +69,19 @@ function scheduleFlushPersistQueue(): void {
           const chunk = batch.slice(i, i + PERSIST_ENCODE_CHUNK);
           const encoded = await Promise.all(
             chunk.map(async (item) => {
+              if ('sheetKey' in item) {
+                const captured = item.captured;
+                const png = await new Promise<Blob | null>((resolve) =>
+                  item.sheet.toBlob(resolve, 'image/png'),
+                );
+                if (!png && !captured) throw new Error('Compare sheet persist encode failed');
+                const meta: CompareSheetMeta = {
+                  sheetUnion: item.sheetUnion,
+                  crops: item.crops,
+                  ...(captured ? { source: captured } : {}),
+                };
+                return { key: item.sheetKey, blobs: [png ?? captured!], meta };
+              }
               const captured = item.captured;
               const png = await new Promise<Blob | null>((resolve) =>
                 item.bitmap.toBlob(resolve, 'image/png'),
@@ -79,6 +110,98 @@ function compareD1ProbeEnabled(): boolean {
   return new URLSearchParams(window.location.search).get('d1') === '1';
 }
 
+function compareSheetKey(packPrefix: string, kind: string, faceOrFill: string, phase: number): string {
+  return `sheet|${packPrefix}|${kind}|${faceOrFill}|${phase}`;
+}
+
+function sheetKeyForSprite(spriteKey: string): string | null {
+  const badge = '|badge-body|';
+  const badgeIdx = spriteKey.indexOf(badge);
+  if (badgeIdx >= 0) {
+    const pack = spriteKey.slice(0, badgeIdx);
+    const badgeKey = spriteKey.slice(badgeIdx + badge.length);
+    const face = badgeKey.split('|')[0];
+    if (!face) return null;
+    return compareSheetKey(pack, 'badge-body', face, 0);
+  }
+  const glyphMatch = spriteKey.match(/^(.*)\|(glyph-id|glyph-amt)\|([^|]+)\|[^|]+\|(\d+)\|iso$/);
+  if (!glyphMatch) return null;
+  const [, pack, kind, fill, phase] = glyphMatch;
+  return compareSheetKey(pack!, kind!, fill!, Number(phase));
+}
+
+function isCompareSheetMeta(meta: unknown): meta is CompareSheetMeta {
+  return Boolean(
+    meta &&
+      typeof meta === 'object' &&
+      'crops' in meta &&
+      Array.isArray((meta as CompareSheetMeta).crops) &&
+      'sheetUnion' in meta,
+  );
+}
+
+async function decodeStoredSheet(
+  sheetKey: string,
+  stored: { blobs: Blob[]; meta: unknown },
+): Promise<HTMLCanvasElement | null> {
+  let pending = decodedSheets.get(sheetKey);
+  if (!pending) {
+    const meta = isCompareSheetMeta(stored.meta) ? stored.meta : null;
+    const svg = meta?.source instanceof Blob ? meta.source : null;
+    const blob = stored.blobs[0];
+    pending = (svg ? decodeCompareSvgBlob(svg) : blob ? decodeCompareSvgBlob(blob) : Promise.resolve(null)).catch(
+      () => null,
+    );
+    decodedSheets.set(sheetKey, pending);
+  }
+  return pending;
+}
+
+async function loadSpriteFromSheet(spriteKey: string, dpr: number): Promise<Sprite | null> {
+  const sheetKey = sheetKeyForSprite(spriteKey);
+  if (!sheetKey) return null;
+  const stored = await loadSprites(sheetKey);
+  const blob = stored?.blobs[0];
+  if (!blob || !isCompareSheetMeta(stored.meta)) return null;
+  const crop = stored.meta.crops.find((row) => row.key === spriteKey);
+  if (!crop) return null;
+  const sheetCanvas = await decodeStoredSheet(sheetKey, stored);
+  if (!sheetCanvas || sheetCanvas.width < 1 || sheetCanvas.height < 1) return null;
+  const source = stored.meta.source instanceof Blob ? stored.meta.source : blob;
+  const union = stored.meta.sheetUnion;
+  const bitmap = spriteKey.includes('|glyph-')
+    ? cropGlyphFromSheet(sheetCanvas, union, crop, dpr)
+    : cropFromWarmSheet(sheetCanvas, union, crop, dpr);
+  return { bitmap, blob: source };
+}
+
+type CropFromSheet = (
+  sheet: HTMLCanvasElement,
+  union: CssRect,
+  crop: CssRect,
+  dpr: number,
+) => HTMLCanvasElement;
+
+function commitCompareWarmSheet(
+  sheetKey: string,
+  sheet: HTMLCanvasElement,
+  union: CssRect,
+  dpr: number,
+  entries: { spriteKey: string; crop: CssRect }[],
+  cropFromSheet: CropFromSheet,
+): void {
+  const captured = rasterSvgBlob(sheet);
+  const source = captured;
+  if (!source) throw new Error('Compare warm sheet has no SVG source');
+  const crops: SheetCropRecord[] = [];
+  for (const { spriteKey, crop } of entries) {
+    const bitmap = cropFromSheet(sheet, union, crop, dpr);
+    sprites.set(spriteKey, Promise.resolve({ bitmap, blob: source }));
+    crops.push({ key: spriteKey, ...crop });
+  }
+  persistQueue.push({ sheetKey, sheet, captured, sheetUnion: union, crops });
+}
+
 async function loadCachedIfPresent(key: string): Promise<Sprite | null> {
   const pending = sprites.get(key);
   if (pending) {
@@ -88,6 +211,8 @@ async function loadCachedIfPresent(key: string): Promise<Sprite | null> {
       return null;
     }
   }
+  const fromSheet = await loadSpriteFromSheet(key, activeDpr());
+  if (fromSheet) return fromSheet;
   const stored = await loadSprites(key);
   const blob = stored?.blobs[0];
   if (!blob) return null;
@@ -110,6 +235,8 @@ async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): P
   let pending = sprites.get(key);
   if (!pending) {
     pending = (async () => {
+      const fromSheet = await loadSpriteFromSheet(key, activeDpr());
+      if (fromSheet) return fromSheet;
       const stored = await loadSprites(key);
       const blob = stored?.blobs[0];
       if (blob) {
@@ -341,13 +468,26 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
               }
             },
           });
-          for (const value of badgeValues) {
+          const sheetEntries = badgeValues.map((value) => {
             const warmIdx = BADGE_WARM_VALUES.indexOf(value as (typeof BADGE_WARM_VALUES)[number]);
             const badgeKey = `${face}|${value}`;
-            const sourceCrop = cellCrops[warmIdx]!;
-            badges.set(badgeKey, await cached(`${key}|badge-body|${badgeKey}`, () =>
-              Promise.resolve(cropFromWarmSheet(sheet, union, sourceCrop, dpr)),
-            ));
+            return {
+              spriteKey: `${key}|badge-body|${badgeKey}`,
+              crop: cellCrops[warmIdx]!,
+              badgeKey,
+            };
+          });
+          const sheetKey = compareSheetKey(key, 'badge-body', face, 0);
+          commitCompareWarmSheet(
+            sheetKey,
+            sheet,
+            union,
+            dpr,
+            sheetEntries.map(({ spriteKey, crop }) => ({ spriteKey, crop })),
+            cropFromWarmSheet,
+          );
+          for (const { badgeKey, spriteKey } of sheetEntries) {
+            badges.set(badgeKey, await sprites.get(spriteKey)!);
           }
         }
       }
@@ -440,6 +580,9 @@ async function warmHeaderGlyphsOffscreen(pack: Pack, layout: CatalogLayout, dpr:
       pack.prefix,
       (cacheKey, cap) => cached(cacheKey, cap),
       cachedHasAll,
+      (sheetKey, sheet, union, entries) => {
+        commitCompareWarmSheet(sheetKey, sheet, union, dpr, entries, cropGlyphFromSheet);
+      },
       capture,
       bindFace,
       () => {
@@ -525,6 +668,9 @@ async function ensureHeaderGlyphs(
           pack.prefix,
           (cacheKey, cap) => cached(cacheKey, cap),
           cachedHasAll,
+          (sheetKey, sheet, union, entries) => {
+            commitCompareWarmSheet(sheetKey, sheet, union, dpr, entries, cropGlyphFromSheet);
+          },
           capture,
           bindFace,
           () => {
