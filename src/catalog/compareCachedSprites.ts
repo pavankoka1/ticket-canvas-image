@@ -1,5 +1,5 @@
 /** Compare-only reusable HTML/CSS sprites. No catalog cache or geometry mutation. */
-import { loadSprites, saveSprites } from './atlasStore';
+import { loadSprites, saveSpritesBatch } from './atlasStore';
 import { activeDpr, badgeHostDevice, resolveCellBoxModel } from './cellBoxModel';
 import { alignCompareStackOrigin, styleCompareTicketDom } from './compareDomAlign';
 import { usesSvgMultiplier, usesSvgText } from './compareRenderMode';
@@ -27,7 +27,51 @@ type Pack = { numbers: Sprite[][]; badges: Map<string, Sprite>; headerGlyphs?: H
 
 function prefix(layout: CatalogLayout, dpr: number): string {
   const phases = usesSvgText() ? compareGlyphPhaseCount() : 0;
-  return `compare-sprites-v49|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|cell0-number-ink|badge-no-cell-digits|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+  return `compare-sprites-v50|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|cell0-number-ink|badge-no-cell-digits|defer-idb-persist|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+}
+
+type SpritePersistItem = {
+  key: string;
+  bitmap: HTMLCanvasElement;
+  captured: Blob | null;
+};
+
+const persistQueue: SpritePersistItem[] = [];
+const PERSIST_ENCODE_CHUNK = 8;
+let persistDrain: Promise<void> | null = null;
+
+function scheduleFlushPersistQueue(): void {
+  if (persistDrain) return;
+  persistDrain = (async () => {
+    try {
+      while (persistQueue.length > 0) {
+        const batch = persistQueue.splice(0, persistQueue.length);
+        const records = [];
+        for (let i = 0; i < batch.length; i += PERSIST_ENCODE_CHUNK) {
+          const chunk = batch.slice(i, i + PERSIST_ENCODE_CHUNK);
+          const encoded = await Promise.all(
+            chunk.map(async (item) => {
+              const captured = item.captured;
+              const png = await new Promise<Blob | null>((resolve) =>
+                item.bitmap.toBlob(resolve, 'image/png'),
+              );
+              if (!png && !captured) throw new Error('Compare sprite persist encode failed');
+              return {
+                key: item.key,
+                blobs: [png ?? captured!],
+                meta: captured ? { source: captured } : {},
+              };
+            }),
+          );
+          records.push(...encoded);
+        }
+        await saveSpritesBatch(records);
+      }
+    } finally {
+      persistDrain = null;
+      if (persistQueue.length > 0) scheduleFlushPersistQueue();
+    }
+  })();
 }
 
 function compareD1ProbeEnabled(): boolean {
@@ -53,11 +97,14 @@ async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): P
       const bitmap = await capture();
       if (bitmap.width < 1 || bitmap.height < 1) throw new Error('Compare sprite capture is empty');
       const captured = rasterSvgBlob(bitmap);
-      const png = await new Promise<Blob | null>(resolve => bitmap.toBlob(resolve, 'image/png'));
-      const source = captured ?? png;
-      if (!source) throw new Error('Compare sprite has no SVG blob');
-      await saveSprites({ key, blobs: [png ?? captured!], meta: captured ? { source: captured } : {} });
-      return { bitmap, blob: source };
+      if (captured) {
+        persistQueue.push({ key, bitmap, captured });
+        return { bitmap, blob: captured };
+      }
+      const png = await new Promise<Blob | null>((resolve) => bitmap.toBlob(resolve, 'image/png'));
+      if (!png) throw new Error('Compare sprite has no blob');
+      persistQueue.push({ key, bitmap, captured: null });
+      return { bitmap, blob: png };
     })();
     sprites.set(key, pending);
     void pending.catch(() => sprites.delete(key));
@@ -295,6 +342,7 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
         console.info('[d1] identical across cells:', identicalAcrossCells);
       }
       console.info('[atlas-warm]', { preset, prefix: key, captures, ms: Math.round(performance.now() - warmT0) });
+      scheduleFlushPersistQueue();
       return { numbers, badges, prefix: key };
     } finally { host.remove(); }
 }
@@ -346,7 +394,7 @@ async function warmHeaderGlyphsOffscreen(pack: Pack, layout: CatalogLayout, dpr:
     card.bind(ticket, 0, 0, layout);
   };
   try {
-    return await warmHeaderGlyphPack(
+    const glyphs = await warmHeaderGlyphPack(
       pack.prefix,
       (cacheKey, cap) => cached(cacheKey, cap),
       capture,
@@ -361,6 +409,8 @@ async function warmHeaderGlyphsOffscreen(pack: Pack, layout: CatalogLayout, dpr:
       TRANSPARENT,
       layout.metrics.id,
     );
+    scheduleFlushPersistQueue();
+    return glyphs;
   } finally {
     host.remove();
   }
@@ -428,7 +478,7 @@ async function ensureHeaderGlyphs(
         card.bind(ticket, 0, 0, layout);
       };
       try {
-        return await warmHeaderGlyphPack(
+        const glyphs = await warmHeaderGlyphPack(
           pack.prefix,
           (cacheKey, cap) => cached(cacheKey, cap),
           capture,
@@ -443,6 +493,8 @@ async function ensureHeaderGlyphs(
           TRANSPARENT,
           layout.metrics.id,
         );
+        scheduleFlushPersistQueue();
+        return glyphs;
       } finally {
         host.remove();
       }

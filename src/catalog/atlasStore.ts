@@ -167,12 +167,19 @@ export async function loadSpritesMany(
 }
 
 export async function saveSprites(rec: StoredSprites): Promise<boolean> {
+  return saveSpritesBatch([rec]);
+}
+
+/** One readwrite transaction for many sprite packs. */
+export async function saveSpritesBatch(records: StoredSprites[]): Promise<boolean> {
+  if (records.length === 0) return true;
   try {
     const db = await openDb();
     try {
       await new Promise<void>((resolve, reject) => {
         const tx = db.transaction(STORE, "readwrite");
-        tx.objectStore(STORE).put(rec);
+        const store = tx.objectStore(STORE);
+        for (const rec of records) store.put(rec);
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
         tx.onabort = () => reject(tx.error ?? new Error("idb abort"));
