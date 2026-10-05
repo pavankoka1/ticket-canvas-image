@@ -30,6 +30,11 @@ function prefix(layout: CatalogLayout, dpr: number): string {
   return `compare-sprites-v49|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|cell0-number-ink|badge-no-cell-digits|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
 }
 
+function compareD1ProbeEnabled(): boolean {
+  if (!import.meta.env.DEV) return false;
+  return new URLSearchParams(window.location.search).get('d1') === '1';
+}
+
 async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): Promise<Sprite> {
   let pending = sprites.get(key);
   if (!pending) {
@@ -261,7 +266,7 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
           ));
         }
       }
-      if (import.meta.env.DEV) {
+      if (compareD1ProbeEnabled()) {
         let identicalAcrossCells = true;
         for (const disabled of [false, true]) {
           for (let n = 1; n <= 60; n++) {
