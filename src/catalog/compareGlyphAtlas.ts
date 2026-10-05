@@ -200,6 +200,7 @@ const AMOUNT_FILLS = {
 export async function warmHeaderGlyphPack(
   key: string,
   cached: (cacheKey: string, capture: () => Promise<HTMLCanvasElement>) => Promise<Sprite>,
+  cachedHasAll: (keys: readonly string[]) => Promise<boolean>,
   capture: (part: CompareRasterPart) => Promise<HTMLCanvasElement>,
   bindFace: (face: "normal" | "gold" | "disabled", idChar: string, winChar: string) => void,
   afterBind: () => void,
@@ -236,6 +237,16 @@ export async function warmHeaderGlyphPack(
     store: (slot: GlyphSlot, phase: number, sprite: Sprite) => void,
   ) {
     for (let phase = 0; phase < phases; phase++) {
+      const keys = slots.map((slot) => cacheStem(slot, phase));
+      if (await cachedHasAll(keys)) {
+        for (const slot of slots) {
+          const sprite = await cached(cacheStem(slot, phase), () =>
+            Promise.reject(new Error('compare glyph cache miss after hasAll')),
+          );
+          store(slot, phase, sprite);
+        }
+        continue;
+      }
       captures++;
       const part = batchedGlyphPart(slots, phase, phases, dpr, headerHeight, transparentCss);
       const sheet = await capture(part);

@@ -79,6 +79,33 @@ function compareD1ProbeEnabled(): boolean {
   return new URLSearchParams(window.location.search).get('d1') === '1';
 }
 
+async function loadCachedIfPresent(key: string): Promise<Sprite | null> {
+  const pending = sprites.get(key);
+  if (pending) {
+    try {
+      return await pending;
+    } catch {
+      return null;
+    }
+  }
+  const stored = await loadSprites(key);
+  const blob = stored?.blobs[0];
+  if (!blob) return null;
+  const meta = stored.meta;
+  const source = meta && typeof meta === 'object' && 'source' in meta && meta.source instanceof Blob
+    ? meta.source : blob;
+  const bitmap = await decodeCompareSvgBlob(blob).catch(() => null);
+  if (!bitmap || bitmap.width < 1 || bitmap.height < 1) return null;
+  return { bitmap, blob: source };
+}
+
+async function cachedHasAll(keys: readonly string[]): Promise<boolean> {
+  for (const key of keys) {
+    if (!(await loadCachedIfPresent(key))) return false;
+  }
+  return true;
+}
+
 async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): Promise<Sprite> {
   let pending = sprites.get(key);
   if (!pending) {
@@ -276,37 +303,52 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
           badgeBodyCrop(model, cellIndex, m.headerHeight, m.bodyHeight),
         );
         const union = unionCrops(cellCrops);
-        captures++;
-        const sheet = await capture({
-          crop: union,
-          css: '.ticketCard__body{border-radius:0!important}',
-          prepare(root) {
-            hideHeader(root);
-            if (!usesSvgText()) {
-              removeOverlay(root);
-              root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell, i) => {
-                for (const node of [...cell.childNodes]) if (node.nodeType === Node.TEXT_NODE) node.textContent = '';
-                if (i === 0 || !BADGE_WARM_CELLS.includes(i as 1 | 2 | 3 | 4 | 5)) {
-                  cell.querySelectorAll<HTMLElement>('.ticketCard__badgeHost').forEach((badge) => {
-                    badge.style.visibility = 'hidden';
-                  });
-                }
-              });
-            } else {
-              stripCompareOverlayHeaderAndCellNumbers(root);
-              root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell, i) => {
-                cell.style.visibility = i > 0 && i <= 5 ? 'visible' : 'hidden';
-              });
-            }
-          },
-        });
-        for (const value of [1, ...MULTIPLIER_VALUES]) {
-          const warmIdx = BADGE_WARM_VALUES.indexOf(value as (typeof BADGE_WARM_VALUES)[number]);
+        const badgeValues = [1, ...MULTIPLIER_VALUES];
+        const badgeCacheKeys = badgeValues.map((value) => {
           const badgeKey = `${face}|${value}`;
-          const sourceCrop = cellCrops[warmIdx]!;
-          badges.set(badgeKey, await cached(`${key}|badge-body|${badgeKey}`, () =>
-            Promise.resolve(cropFromWarmSheet(sheet, union, sourceCrop, dpr)),
-          ));
+          return `${key}|badge-body|${badgeKey}`;
+        });
+        if (await cachedHasAll(badgeCacheKeys)) {
+          for (let i = 0; i < badgeValues.length; i++) {
+            const value = badgeValues[i]!;
+            const badgeKey = `${face}|${value}`;
+            const sprite = await loadCachedIfPresent(badgeCacheKeys[i]!);
+            if (!sprite) throw new Error('compare badge cache miss after hasAll');
+            badges.set(badgeKey, sprite);
+          }
+        } else {
+          captures++;
+          const sheet = await capture({
+            crop: union,
+            css: '.ticketCard__body{border-radius:0!important}',
+            prepare(root) {
+              hideHeader(root);
+              if (!usesSvgText()) {
+                removeOverlay(root);
+                root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell, i) => {
+                  for (const node of [...cell.childNodes]) if (node.nodeType === Node.TEXT_NODE) node.textContent = '';
+                  if (i === 0 || !BADGE_WARM_CELLS.includes(i as 1 | 2 | 3 | 4 | 5)) {
+                    cell.querySelectorAll<HTMLElement>('.ticketCard__badgeHost').forEach((badge) => {
+                      badge.style.visibility = 'hidden';
+                    });
+                  }
+                });
+              } else {
+                stripCompareOverlayHeaderAndCellNumbers(root);
+                root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell, i) => {
+                  cell.style.visibility = i > 0 && i <= 5 ? 'visible' : 'hidden';
+                });
+              }
+            },
+          });
+          for (const value of badgeValues) {
+            const warmIdx = BADGE_WARM_VALUES.indexOf(value as (typeof BADGE_WARM_VALUES)[number]);
+            const badgeKey = `${face}|${value}`;
+            const sourceCrop = cellCrops[warmIdx]!;
+            badges.set(badgeKey, await cached(`${key}|badge-body|${badgeKey}`, () =>
+              Promise.resolve(cropFromWarmSheet(sheet, union, sourceCrop, dpr)),
+            ));
+          }
         }
       }
       if (compareD1ProbeEnabled()) {
@@ -397,6 +439,7 @@ async function warmHeaderGlyphsOffscreen(pack: Pack, layout: CatalogLayout, dpr:
     const glyphs = await warmHeaderGlyphPack(
       pack.prefix,
       (cacheKey, cap) => cached(cacheKey, cap),
+      cachedHasAll,
       capture,
       bindFace,
       () => {
@@ -481,6 +524,7 @@ async function ensureHeaderGlyphs(
         const glyphs = await warmHeaderGlyphPack(
           pack.prefix,
           (cacheKey, cap) => cached(cacheKey, cap),
+          cachedHasAll,
           capture,
           bindFace,
           () => {
