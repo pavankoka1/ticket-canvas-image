@@ -139,6 +139,16 @@ export function stripCompareOverlayHeaderAndCellNumbers(root: HTMLElement): void
   overlay.querySelectorAll(":scope > text").forEach((el) => el.remove());
 }
 
+/** Number opaque warm keeps cell digits in the overlay but drops header id/amount. */
+export function stripCompareOverlayHeader(root: HTMLElement, headerHeightCss: number): void {
+  const overlay = root.querySelector(`:scope > .${OVERLAY_CLASS}`);
+  if (!overlay) return;
+  overlay.querySelectorAll<SVGTextElement>(":scope > text").forEach((el) => {
+    const y = Number(el.getAttribute("y"));
+    if (y <= headerHeightCss + 0.01) el.remove();
+  });
+}
+
 /** Swap header, cell and multiplier rendering under `root` to (or back from) the overlay. */
 export function applySvgText(root: HTMLElement, enabled: boolean): void {
   root.querySelector(`:scope > .${OVERLAY_CLASS}`)?.remove();

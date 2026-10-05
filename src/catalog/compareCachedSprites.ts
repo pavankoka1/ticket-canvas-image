@@ -4,7 +4,12 @@ import { activeDpr, badgeHostDevice, resolveCellBoxModel } from './cellBoxModel'
 import { alignCompareStackOrigin, styleCompareTicketDom } from './compareDomAlign';
 import { usesSvgMultiplier, usesSvgText } from './compareRenderMode';
 import { applySvgMultiplier } from './compareSvgMultiplier';
-import { applySvgText, OVERLAY_CLASS, stripCompareOverlayHeaderAndCellNumbers } from './compareSvgText';
+import {
+  applySvgText,
+  OVERLAY_CLASS,
+  stripCompareOverlayHeader,
+  stripCompareOverlayHeaderAndCellNumbers,
+} from './compareSvgText';
 import type { CatalogLayout } from './catalogLayout';
 import { applyTicketCellLayout, TicketCard } from './ticketCardElement';
 import { ensureTicketFontsForLayout } from './ticketFont';
@@ -24,15 +29,29 @@ const TRANSPARENT = `:root{background:transparent!important}.ticketCard,.ticketC
 type Sprite = { bitmap: HTMLCanvasElement; blob: Blob };
 const sprites = new Map<string, Promise<Sprite>>();
 const packs = new Map<string, Promise<Pack>>();
-type Pack = { numbers: Sprite[][]; badges: Map<string, Sprite>; headerGlyphs?: HeaderGlyphPack; prefix: string };
+type NumberPatch = { sprite: Sprite; dx: number; dy: number };
+type Pack = {
+  numberPatches: Map<string, NumberPatch>;
+  badges: Map<string, Sprite>;
+  headerGlyphs?: HeaderGlyphPack;
+  prefix: string;
+};
 
 function prefix(layout: CatalogLayout, dpr: number): string {
   const phases = usesSvgText() ? compareGlyphPhaseCount() : 0;
-  return `compare-sprites-v51|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|cell0-number-ink|badge-no-cell-digits|defer-idb-persist|sheet-glyphs-badges|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+  return `compare-sprites-v52|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|number-sheet-patches|badge-no-cell-digits|defer-idb-persist|sheet-glyphs-badges|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
 }
 
 type CssRect = { x: number; y: number; width: number; height: number };
-type SheetCropRecord = { key: string; x: number; y: number; width: number; height: number };
+type SheetCropRecord = {
+  key: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  dx?: number;
+  dy?: number;
+};
 type CompareSheetMeta = {
   source?: Blob;
   sheetUnion: CssRect;
@@ -55,6 +74,7 @@ type SheetPersistItem = {
 
 const persistQueue: (SpritePersistItem | SheetPersistItem)[] = [];
 const decodedSheets = new Map<string, Promise<HTMLCanvasElement | null>>();
+const numberPatchMeta = new Map<string, { dx: number; dy: number }>();
 const PERSIST_ENCODE_CHUNK = 8;
 let persistDrain: Promise<void> | null = null;
 
@@ -124,10 +144,30 @@ function sheetKeyForSprite(spriteKey: string): string | null {
     if (!face) return null;
     return compareSheetKey(pack, 'badge-body', face, 0);
   }
+  const inkMatch = spriteKey.match(/^(.*)\|number-ink\|([^|]+)\|(\d+)$/);
+  if (inkMatch) {
+    const [, pack, disabled, n] = inkMatch;
+    const batch = Math.floor((Number(n) - 1) / 6);
+    return compareSheetKey(pack!, 'number-ink', disabled!, batch);
+  }
+  const numberMatch = spriteKey.match(/^(.*)\|number-patch\|([^|]+)\|([^|]+)\|(\d+)$/);
+  if (numberMatch) {
+    const [, pack, , face, n] = numberMatch;
+    const batch = Math.floor((Number(n) - 1) / 6);
+    return compareSheetKey(pack!, 'number-opaque', face!, batch);
+  }
   const glyphMatch = spriteKey.match(/^(.*)\|(glyph-id|glyph-amt)\|([^|]+)\|[^|]+\|(\d+)\|iso$/);
   if (!glyphMatch) return null;
   const [, pack, kind, fill, phase] = glyphMatch;
   return compareSheetKey(pack!, kind!, fill!, Number(phase));
+}
+
+function numberPatchSpriteKey(packPrefix: string, disabled: boolean, face: string, n: number): string {
+  return `${packPrefix}|number-patch|${disabled}|${face}|${n}`;
+}
+
+function numberWarmDisabled(face: 'normal' | 'gold' | 'disabled'): boolean {
+  return face === 'disabled';
 }
 
 function isCompareSheetMeta(meta: unknown): meta is CompareSheetMeta {
@@ -187,19 +227,42 @@ function commitCompareWarmSheet(
   sheet: HTMLCanvasElement,
   union: CssRect,
   dpr: number,
-  entries: { spriteKey: string; crop: CssRect }[],
+  entries: { spriteKey: string; crop: CssRect; dx?: number; dy?: number }[],
   cropFromSheet: CropFromSheet,
 ): void {
   const captured = rasterSvgBlob(sheet);
   const source = captured;
   if (!source) throw new Error('Compare warm sheet has no SVG source');
   const crops: SheetCropRecord[] = [];
-  for (const { spriteKey, crop } of entries) {
+  for (const { spriteKey, crop, dx, dy } of entries) {
     const bitmap = cropFromSheet(sheet, union, crop, dpr);
     sprites.set(spriteKey, Promise.resolve({ bitmap, blob: source }));
-    crops.push({ key: spriteKey, ...crop });
+    crops.push({ key: spriteKey, ...crop, ...(dx !== undefined ? { dx } : {}), ...(dy !== undefined ? { dy } : {}) });
+    if (dx !== undefined && dy !== undefined) numberPatchMeta.set(spriteKey, { dx, dy });
   }
   persistQueue.push({ sheetKey, sheet, captured, sheetUnion: union, crops });
+}
+
+async function loadNumberPatch(spriteKey: string, dpr: number): Promise<NumberPatch | null> {
+  const meta = numberPatchMeta.get(spriteKey);
+  const pending = sprites.get(spriteKey);
+  if (meta && pending) {
+    try {
+      return { sprite: await pending, dx: meta.dx, dy: meta.dy };
+    } catch {
+      return null;
+    }
+  }
+  const sheetKey = sheetKeyForSprite(spriteKey);
+  if (!sheetKey) return null;
+  const stored = await loadSprites(sheetKey);
+  if (!stored?.blobs[0] || !isCompareSheetMeta(stored.meta)) return null;
+  const crop = stored.meta.crops.find((row) => row.key === spriteKey);
+  if (!crop || crop.dx === undefined || crop.dy === undefined) return null;
+  const sprite = await loadSpriteFromSheet(spriteKey, dpr);
+  if (!sprite) return null;
+  numberPatchMeta.set(spriteKey, { dx: crop.dx, dy: crop.dy });
+  return { sprite, dx: crop.dx, dy: crop.dy };
 }
 
 async function loadCachedIfPresent(key: string): Promise<Sprite | null> {
@@ -335,6 +398,65 @@ function badgeBodyCrop(
   };
 }
 
+function numberCellCrop(
+  model: ReturnType<typeof resolveCellBoxModel>,
+  cellIndex: number,
+  headerHeight: number,
+  bodyHeight: number,
+) {
+  return { x: model.cells[cellIndex]!.x, y: headerHeight, width: model.cellW, height: bodyHeight };
+}
+
+type DeviceRect = { x: number; y: number; width: number; height: number };
+
+function measureInkBounds(bitmap: HTMLCanvasElement): DeviceRect | null {
+  const { width, height } = bitmap;
+  const pixels = bitmap.getContext('2d')!.getImageData(0, 0, width, height).data;
+  let left = width;
+  let top = height;
+  let right = -1;
+  let bottom = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (!pixels[(y * width + x) * 4 + 3]) continue;
+      left = Math.min(left, x);
+      top = Math.min(top, y);
+      right = Math.max(right, x);
+      bottom = Math.max(bottom, y);
+    }
+  }
+  if (right < left) return null;
+  return { x: left, y: top, width: right - left + 1, height: bottom - top + 1 };
+}
+
+function inkCropInCell(cellCrop: CssRect, ink: DeviceRect, dpr: number): CssRect {
+  return {
+    x: cellCrop.x + ink.x / dpr,
+    y: cellCrop.y + ink.y / dpr,
+    width: ink.width / dpr,
+    height: ink.height / dpr,
+  };
+}
+
+function prepareNumberTransparent(root: HTMLElement, headerHeight: number): void {
+  hideHeader(root);
+  if (usesSvgText()) {
+    stripCompareOverlayHeader(root, headerHeight);
+  } else {
+    removeOverlay(root);
+  }
+  root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell) => {
+    cell.style.visibility = 'visible';
+  });
+  root.querySelectorAll<HTMLElement>('.ticketCard__badgeHost').forEach((host) => {
+    host.style.visibility = 'hidden';
+  });
+}
+
+function prepareNumberOpaque(root: HTMLElement, headerHeight: number): void {
+  prepareNumberTransparent(root, headerHeight);
+}
+
 function unionCrops(crops: { x: number; y: number; width: number; height: number }[]) {
   const x = Math.min(...crops.map((c) => c.x));
   const y = Math.min(...crops.map((c) => c.y));
@@ -390,7 +512,8 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
     document.body.append(host);
     const model = resolveCellBoxModel(layout, dpr);
     const m = layout.metrics;
-    const numbers: Sprite[][] = [[], []];
+    const numberPatches = new Map<string, NumberPatch>();
+    const inkByNumber = new Map<string, DeviceRect>();
     const badges = new Map<string, Sprite>();
     const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(card.dom, dpr, m, part);
     const preset = layout.metrics.id;
@@ -398,20 +521,104 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
     let captures = 0;
     try {
       for (const disabled of [false, true]) {
-        for (let n = 1; n <= 60; n++) {
-          card.bind(sourceTicket(disabled, n), 0, 0, layout);
+        for (let batch = 0; batch < 10; batch++) {
+          const balls = Array.from({ length: 6 }, (_, i) => batch * 6 + i + 1);
+          const inkSheetKey = compareSheetKey(key, 'number-ink', String(disabled), batch);
+          const inkKeys = balls.map((n) => `${key}|number-ink|${disabled}|${n}`);
+          if (!(await cachedHasAll(inkKeys))) {
+            const ticket = sourceTicket(disabled, balls[0]!);
+            ticket.balls = balls as number[];
+            card.bind(ticket, 0, 0, layout);
+            if (disabled) card.dom.classList.add('ticketCard_disabled');
+            else card.dom.classList.remove('ticketCard_disabled', 'ticketCard_win');
+            prepareCompareCard(card, layout, activeDpr());
+            const cellCrops = [0, 1, 2, 3, 4, 5].map((cellIndex) =>
+              numberCellCrop(model, cellIndex, m.headerHeight, m.bodyHeight),
+            );
+            const union = unionCrops(cellCrops);
+            captures++;
+            const sheet = await capture({
+              crop: union,
+              css: TRANSPARENT,
+              prepare(root) {
+                prepareNumberTransparent(root, m.headerHeight);
+              },
+            });
+            const entries = balls.map((n, cell) => {
+              const cellCrop = cellCrops[cell]!;
+              const cellBitmap = cropFromWarmSheet(sheet, union, cellCrop, dpr);
+              const ink = measureInkBounds(cellBitmap);
+              if (!ink) throw new Error(`Compare number ink bounds missing: ${disabled} ${n}`);
+              inkByNumber.set(`${disabled}|${n}`, ink);
+              return {
+                spriteKey: `${key}|number-ink|${disabled}|${n}`,
+                crop: inkCropInCell(cellCrop, ink, dpr),
+                dx: ink.x,
+                dy: ink.y,
+              };
+            });
+            commitCompareWarmSheet(inkSheetKey, sheet, union, dpr, entries, cropFromWarmSheet);
+          } else {
+            for (let cell = 0; cell < 6; cell++) {
+              const n = balls[cell]!;
+              const patch = await loadNumberPatch(`${key}|number-ink|${disabled}|${n}`, dpr);
+              if (!patch) throw new Error('compare number ink cache miss after hasAll');
+              const ink = measureInkBounds(patch.sprite.bitmap);
+              if (!ink) throw new Error(`Compare number ink bounds missing from cache: ${disabled} ${n}`);
+              inkByNumber.set(`${disabled}|${n}`, ink);
+            }
+          }
+        }
+      }
+      for (const face of ['normal', 'gold', 'disabled'] as const) {
+        const disabled = numberWarmDisabled(face);
+        for (let batch = 0; batch < 10; batch++) {
+          const balls = Array.from({ length: 6 }, (_, i) => batch * 6 + i + 1);
+          const patchKeys = balls.map((n) => numberPatchSpriteKey(key, disabled, face, n));
+          if (await cachedHasAll(patchKeys)) {
+            for (let i = 0; i < balls.length; i++) {
+              const n = balls[i]!;
+              const patch = await loadNumberPatch(patchKeys[i]!, dpr);
+              if (!patch) throw new Error('compare number patch cache miss after hasAll');
+              numberPatches.set(`${disabled}|${face}|${n}`, patch);
+            }
+            continue;
+          }
+          const ticket = sourceTicket(disabled, balls[0]!);
+          ticket.balls = balls as number[];
+          card.bind(ticket, 0, 0, layout);
+          forceBadgeFace(card, face);
           prepareCompareCard(card, layout, activeDpr());
+          const cellCrops = [0, 1, 2, 3, 4, 5].map((cellIndex) =>
+            numberCellCrop(model, cellIndex, m.headerHeight, m.bodyHeight),
+          );
+          const union = unionCrops(cellCrops);
           captures++;
-          numbers[Number(disabled)]![n] = await cached(`${key}|number|${disabled}|${n}`, () => capture({
-            crop: { x: 0, y: m.headerHeight, width: model.cellW, height: m.bodyHeight },
-            css: TRANSPARENT,
+          const sheet = await capture({
+            crop: union,
+            css: '.ticketCard__body{border-radius:0!important}',
             prepare(root) {
-              hideHeader(root);
-              root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell, i) => {
-                cell.style.visibility = i === 0 ? 'visible' : 'hidden';
-              });
+              prepareNumberOpaque(root, m.headerHeight);
             },
-          }));
+          });
+          const sheetKey = compareSheetKey(key, 'number-opaque', face, batch);
+          const entries = balls.map((n, cell) => {
+            const ink = inkByNumber.get(`${disabled}|${n}`);
+            if (!ink) throw new Error(`Compare number ink warm missing: ${disabled} ${n}`);
+            const cellCrop = cellCrops[cell]!;
+            return {
+              spriteKey: numberPatchSpriteKey(key, disabled, face, n),
+              crop: inkCropInCell(cellCrop, ink, dpr),
+              dx: ink.x,
+              dy: ink.y,
+            };
+          });
+          commitCompareWarmSheet(sheetKey, sheet, union, dpr, entries, cropFromWarmSheet);
+          for (const { spriteKey, dx, dy } of entries) {
+            const sprite = await sprites.get(spriteKey)!;
+            const n = Number(spriteKey.split('|').pop());
+            numberPatches.set(`${disabled}|${face}|${n}`, { sprite, dx: dx!, dy: dy! });
+          }
         }
       }
       // Precompose image antialiasing on the real body background. Re-compositing
@@ -495,10 +702,30 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
         let identicalAcrossCells = true;
         for (const disabled of [false, true]) {
           for (let n = 1; n <= 60; n++) {
-            const sprite = numbers[Number(disabled)]![n]!;
+            card.bind(sourceTicket(disabled, n), 0, 0, layout);
+            if (disabled) card.dom.classList.add('ticketCard_disabled');
+            else card.dom.classList.remove('ticketCard_disabled', 'ticketCard_win');
+            prepareCompareCard(card, layout, activeDpr());
+            const cell0Sprite = await cached(`${key}|d1-cell0|${disabled}|${n}`, () =>
+              capture({
+                crop: numberCellCrop(model, 0, m.headerHeight, m.bodyHeight),
+                css: TRANSPARENT,
+                prepare(root) {
+                  hideHeader(root);
+                  root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell, i) => {
+                    cell.style.visibility = i === 0 ? 'visible' : 'hidden';
+                  });
+                },
+              }),
+            );
             const bytes: Uint8ClampedArray[] = [];
             for (let cell = 0; cell < 6; cell++) {
-              const patch = await inkPatch(`${key}|d1|${disabled}|${n}|${cell}`, sprite, false, model.cells[cell]!.x);
+              const patch = await inkPatch(
+                `${key}|d1|${disabled}|${n}|${cell}`,
+                cell0Sprite,
+                false,
+                model.cells[cell]!.x,
+              );
               const { width, height } = patch.sprite.bitmap;
               bytes.push(patch.sprite.bitmap.getContext('2d')!.getImageData(0, 0, width, height).data);
             }
@@ -525,7 +752,7 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
       }
       console.info('[atlas-warm]', { preset, prefix: key, captures, ms: Math.round(performance.now() - warmT0) });
       scheduleFlushPersistQueue();
-      return { numbers, badges, prefix: key };
+      return { numberPatches, badges, prefix: key };
     } finally { host.remove(); }
 }
 
@@ -758,9 +985,11 @@ export async function assembleCompareSprites(live: HTMLElement, ticket: Ticket, 
     ? await cached(`${liveKey}|amount|${face}|${ticket.win}`, () => capture(headerPart('.ticketCard__win')))
     : null;
   const amountPatch = amount ? await inkPatch(`${liveKey}|amount|${face}|${ticket.win}`, amount) : null;
-  const numberPatches = await Promise.all(ticket.balls.map((ball, i) => ticket.hits.includes(i) || ticket.multipliers[i]
-    ? Promise.resolve(null)
-    : inkPatch(`${pack.prefix}|number-surface|${face}|${ball}|${i}`, pack.numbers[Number(Boolean(ticket.disabled))]![ball]!, face === 'gold', model.cells[i]!.x))); 
+  const numberPatches = await Promise.all(ticket.balls.map((ball, i) => {
+    if (ticket.hits.includes(i) || ticket.multipliers[i]) return Promise.resolve(null);
+    const patch = pack.numberPatches.get(`${Boolean(ticket.disabled)}|${face}|${ball}`);
+    return patch ? Promise.resolve(patch) : Promise.reject(new Error(`Compare number patch missing: ${face} ${ball}`));
+  }));
   const out = document.createElement('canvas');
   out.width = Math.round(layout.cardWidth * dpr);
   out.height = Math.round(layout.cardHeight * dpr);
@@ -787,8 +1016,11 @@ export async function assembleCompareSprites(live: HTMLElement, ticket: Ticket, 
   for (let i = 0; i < 6; i++) {
     if (ticket.hits.includes(i) || ticket.multipliers[i]) continue;
     const patch = numberPatches[i]!;
-    ctx.drawImage(patch.sprite.bitmap,
-      Math.round(model.cells[i]!.x * dpr) + patch.x, Math.round(m.headerHeight * dpr) + patch.y);
+    ctx.drawImage(
+      patch.sprite.bitmap,
+      Math.round(model.cells[i]!.x * dpr) + patch.dx,
+      Math.round(m.headerHeight * dpr) + patch.dy,
+    );
   }
   return out;
 }
@@ -814,11 +1046,11 @@ async function assembleWithOverlay(
   if (!ctx) throw new Error('Compare 2D context unavailable');
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(chrome, 0, 0);
-  const patchInk = (cacheKey: string, sprite: Sprite, gold = false, shiftX = 0) =>
-    inkPatch(cacheKey, sprite, gold, shiftX);
-  const numberPatches = await Promise.all(ticket.balls.map((ball, i) => ticket.hits.includes(i) || ticket.multipliers[i]
-    ? Promise.resolve(null)
-    : patchInk(`${pack.prefix}|number-surface|${face}|${ball}|${i}`, pack.numbers[Number(Boolean(ticket.disabled))]![ball]!, face === 'gold', cellX[i]!)));
+  const numberPatches = await Promise.all(ticket.balls.map((ball, i) => {
+    if (ticket.hits.includes(i) || ticket.multipliers[i]) return Promise.resolve(null);
+    const patch = pack.numberPatches.get(`${Boolean(ticket.disabled)}|${face}|${ball}`);
+    return patch ? Promise.resolve(patch) : Promise.reject(new Error(`Compare number patch missing: ${face} ${ball}`));
+  }));
   for (let i = 0; i < 6; i++) {
     const mult = ticket.multipliers[i] ?? 0;
     if (!ticket.hits.includes(i) && !mult) continue;
@@ -831,8 +1063,11 @@ async function assembleWithOverlay(
   for (let i = 0; i < 6; i++) {
     if (ticket.hits.includes(i) || ticket.multipliers[i]) continue;
     const patch = numberPatches[i]!;
-    ctx.drawImage(patch.sprite.bitmap,
-      Math.round(cellX[i]! * dpr) + patch.x, Math.round(m.headerHeight * dpr) + patch.y);
+    ctx.drawImage(
+      patch.sprite.bitmap,
+      Math.round(cellX[i]! * dpr) + patch.dx,
+      Math.round(m.headerHeight * dpr) + patch.dy,
+    );
   }
   const glyphs = await ensureHeaderGlyphs(live, layout, dpr, pack);
   const winText = isWinTicket(ticket) && ticket.win ? ticket.win : '';
