@@ -179,11 +179,7 @@ export function prepareCompareCard(card: TicketCard, layout: CatalogLayout, dpr:
   applySvgText(card.dom, usesSvgText());
 }
 
-function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
-  const key = prefix(layout, dpr);
-  let pending = packs.get(key);
-  if (pending) return pending;
-  pending = (async () => {
+async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Promise<Pack> {
     await ensureTicketFontsForLayout(layout.metrics);
     const host = document.createElement('div');
     host.style.cssText = 'position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none';
@@ -298,12 +294,31 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
         }
         console.info('[d1] identical across cells:', identicalAcrossCells);
       }
-      console.info('[atlas-warm]', { preset, captures, ms: Math.round(performance.now() - warmT0) });
+      console.info('[atlas-warm]', { preset, prefix: key, captures, ms: Math.round(performance.now() - warmT0) });
       return { numbers, badges, prefix: key };
     } finally { host.remove(); }
-  })();
+}
+
+function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
+  const key = prefix(layout, dpr);
+  const existing = packs.get(key);
+  if (existing) return existing;
+  let resolvePack!: (pack: Pack) => void;
+  let rejectPack!: (error: unknown) => void;
+  const pending = new Promise<Pack>((resolve, reject) => {
+    resolvePack = resolve;
+    rejectPack = reject;
+  });
   packs.set(key, pending);
   void pending.catch(() => packs.delete(key));
+  void (async () => {
+    try {
+      resolvePack(await warmPackImpl(layout, dpr, key));
+    } catch (error) {
+      packs.delete(key);
+      rejectPack(error);
+    }
+  })();
   return pending;
 }
 
@@ -440,7 +455,7 @@ async function ensureHeaderGlyphs(
 }
 
 export async function assembleCompareSprites(live: HTMLElement, ticket: Ticket, layout: CatalogLayout, dpr: number): Promise<HTMLCanvasElement> {
-  const pack = await warmPack(layout, dpr);
+  const pack = await preloadComparePack(layout, dpr);
   const m = layout.metrics;
   const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(live, dpr, m, part);
   const model = resolveCellBoxModel(layout, dpr);

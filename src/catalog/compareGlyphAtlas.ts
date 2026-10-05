@@ -290,7 +290,7 @@ export async function warmHeaderGlyphPack(
     (slot, phase, sprite) => amount.set(glyphKey(disabledFill, slot.char, phase), sprite),
   );
 
-  console.info("[atlas-warm]", { preset, captures, ms: Math.round(performance.now() - warmT0) });
+  console.info("[atlas-warm]", { preset, prefix: key, captures, ms: Math.round(performance.now() - warmT0) });
   return { id, amount, phases };
 }
 
