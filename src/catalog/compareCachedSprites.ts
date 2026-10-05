@@ -4,7 +4,7 @@ import { activeDpr, badgeHostDevice, resolveCellBoxModel } from './cellBoxModel'
 import { alignCompareStackOrigin, styleCompareTicketDom } from './compareDomAlign';
 import { usesSvgMultiplier, usesSvgText } from './compareRenderMode';
 import { applySvgMultiplier } from './compareSvgMultiplier';
-import { applySvgText, OVERLAY_CLASS } from './compareSvgText';
+import { applySvgText, OVERLAY_CLASS, stripCompareOverlayHeaderAndCellNumbers } from './compareSvgText';
 import type { CatalogLayout } from './catalogLayout';
 import { applyTicketCellLayout, TicketCard } from './ticketCardElement';
 import { ensureTicketFontsForLayout } from './ticketFont';
@@ -27,7 +27,7 @@ type Pack = { numbers: Sprite[][]; badges: Map<string, Sprite>; headerGlyphs?: H
 
 function prefix(layout: CatalogLayout, dpr: number): string {
   const phases = usesSvgText() ? compareGlyphPhaseCount() : 0;
-  return `compare-sprites-v45|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+  return `compare-sprites-v49|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|cell0-number-ink|badge-no-cell-digits|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
 }
 
 async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): Promise<Sprite> {
@@ -137,24 +137,6 @@ function unionCrops(crops: { x: number; y: number; width: number; height: number
   return { x, y, width: right - x, height: bottom - y };
 }
 
-function numberCellCrop(
-  model: ReturnType<typeof resolveCellBoxModel>,
-  cellIndex: number,
-  headerHeight: number,
-  bodyHeight: number,
-) {
-  return { x: model.cells[cellIndex]!.x, y: headerHeight, width: model.cellW, height: bodyHeight };
-}
-
-async function parallelCaptures<T>(jobs: (() => Promise<T>)[], width = 3): Promise<T[]> {
-  const out: T[] = [];
-  for (let i = 0; i < jobs.length; i += width) {
-    const chunk = jobs.slice(i, i + width);
-    out.push(...await Promise.all(chunk.map((job) => job())));
-  }
-  return out;
-}
-
 function cropFromWarmSheet(
   sheet: HTMLCanvasElement,
   union: { x: number; y: number; width: number; height: number },
@@ -214,48 +196,21 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
     let captures = 0;
     try {
       for (const disabled of [false, true]) {
-        const warmNumberBatch = async (batch: number) => {
-          const balls = Array.from({ length: 6 }, (_, i) => batch * 6 + i + 1);
-          const batchHost = document.createElement('div');
-          batchHost.style.cssText = 'position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none';
-          const batchCard = new TicketCard();
-          batchHost.append(batchCard.dom);
-          document.body.append(batchHost);
-          const batchCapture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(batchCard.dom, dpr, m, part);
-          try {
-            const ticket = sourceTicket(disabled, balls[0]!);
-            ticket.balls = balls as number[];
-            batchCard.bind(ticket, 0, 0, layout);
-            prepareCompareCard(batchCard, layout, activeDpr());
-            const cellCrops = [0, 1, 2, 3, 4, 5].map((cellIndex) =>
-              numberCellCrop(model, cellIndex, m.headerHeight, m.bodyHeight),
-            );
-            const union = unionCrops(cellCrops);
-            captures++;
-            const sheet = await batchCapture({
-              crop: union,
-              css: TRANSPARENT,
-              prepare(root) {
-                hideHeader(root);
-                root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell) => {
-                  cell.style.visibility = 'visible';
-                });
-              },
-            });
-            for (let cell = 0; cell < 6; cell++) {
-              const n = balls[cell]!;
-              numbers[Number(disabled)]![n] = await cached(`${key}|number|${disabled}|${n}`, () =>
-                Promise.resolve(cropFromWarmSheet(sheet, union, cellCrops[cell]!, dpr)),
-              );
-            }
-          } finally {
-            batchHost.remove();
-          }
-        };
-        await parallelCaptures(
-          Array.from({ length: 10 }, (_, batch) => () => warmNumberBatch(batch)),
-          3,
-        );
+        for (let n = 1; n <= 60; n++) {
+          card.bind(sourceTicket(disabled, n), 0, 0, layout);
+          prepareCompareCard(card, layout, activeDpr());
+          captures++;
+          numbers[Number(disabled)]![n] = await cached(`${key}|number|${disabled}|${n}`, () => capture({
+            crop: { x: 0, y: m.headerHeight, width: model.cellW, height: m.bodyHeight },
+            css: TRANSPARENT,
+            prepare(root) {
+              hideHeader(root);
+              root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell, i) => {
+                cell.style.visibility = i === 0 ? 'visible' : 'hidden';
+              });
+            },
+          }));
+        }
       }
       // Precompose image antialiasing on the real body background. Re-compositing
       // an already rounded transparent image can change its edge colors.
@@ -267,6 +222,7 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
         );
         card.bind(ticket, 0, 0, layout);
         forceBadgeFace(card, face);
+        for (let i = 0; i < 6; i++) card.clearCellDigit(i);
         prepareCompareCard(card, layout, activeDpr());
         const cellCrops = BADGE_WARM_CELLS.map((cellIndex) =>
           badgeBodyCrop(model, cellIndex, m.headerHeight, m.bodyHeight),
@@ -289,6 +245,7 @@ function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
                 }
               });
             } else {
+              stripCompareOverlayHeaderAndCellNumbers(root);
               root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell, i) => {
                 cell.style.visibility = i > 0 && i <= 5 ? 'visible' : 'hidden';
               });

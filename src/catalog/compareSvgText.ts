@@ -129,6 +129,16 @@ export function buildTicketOverlay(root: HTMLElement): SVGSVGElement {
   );
 }
 
+/**
+ * Badge warm captures must not bake header id/amount or cell ball digits from the
+ * overlay — only multiplier disc + label groups (direct-child `<text>` only).
+ */
+export function stripCompareOverlayHeaderAndCellNumbers(root: HTMLElement): void {
+  const overlay = root.querySelector(`:scope > .${OVERLAY_CLASS}`);
+  if (!overlay) return;
+  overlay.querySelectorAll(":scope > text").forEach((el) => el.remove());
+}
+
 /** Swap header, cell and multiplier rendering under `root` to (or back from) the overlay. */
 export function applySvgText(root: HTMLElement, enabled: boolean): void {
   root.querySelector(`:scope > .${OVERLAY_CLASS}`)?.remove();
