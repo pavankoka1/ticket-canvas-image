@@ -31,5 +31,8 @@ Keep the phone unlocked and untouched while a run is active.
 | `experiments/s4.mjs` … `s9.mjs` | Header paint, header content, badges/backgrounds + multiplier layers, transform origin, layout origin, origin + F3 experiments |
 | `analyze.py` | Fixed-crop displacement analysis (0.25 device-px bilinear search), per-glyph option |
 | `probe.mjs` | canvas-dom-pixels probe, ancestor transform/zoom chain, compare cache state |
+| `golden.mjs` | Canvas golden capture/compare at DPR 2 and 3 (`svg-all`, all presets) |
+| `domcv.mjs` | Chrome DOM-vs-canvas stacks per preset; cold + warm; runs `analyze.py` |
+| `perf.mjs` | Production preview timing (cold IDB clear + reload); logs `[atlas-warm]` |
 
 Experiment scripts are preserved as run; they mutate the page at runtime only. Raw captures are not committed; see the manifest for their location and checksums.

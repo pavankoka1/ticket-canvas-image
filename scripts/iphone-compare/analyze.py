@@ -17,6 +17,7 @@ contrast; `bad` is informational only, never a pass rule.
 --glyphs additionally splits the id region into ink runs (glyphs) and reports
 each glyph's displacement independently.
 """
+import os
 import re
 import sys
 from pathlib import Path
@@ -26,6 +27,7 @@ from PIL import Image
 
 HEADER_CSS = {"desktopMedium": 17, "desktopSmall": 15, "mobile": 15, "mobileLarge": 17, "mobileCompact": 13}
 RES = 0.25
+ANALYZE_DPR = float(os.environ.get("ANALYZE_DPR", "3"))
 
 
 def load(p):
@@ -116,7 +118,7 @@ def main():
             print(f"{tag}: SIZE MISMATCH dom {a.shape} cv {b.shape}")
             continue
         H, W = a.shape[:2]
-        h = HEADER_CSS[preset] * 3
+        h = int(round(HEADER_CSS[preset] * ANALYZE_DPR))
         regs = {"amt": (6, W // 2, 0, h), "id": (W // 2, W - 6, 0, h)}  # inset: skip rounded card corners
         for k in range(6):
             regs[f"c{k}"] = (round(k * W / 6), round((k + 1) * W / 6), h, H)
