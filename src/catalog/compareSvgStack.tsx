@@ -131,7 +131,10 @@ export function CompareSvgStack({
   });
 
   useLayoutEffect(() => {
-    if (paintGen < 1) return;
+    if (paintGen < 1) {
+      setNote("warming atlas…");
+      return;
+    }
 
     let cancelled = false;
     const dpr = compareRasterRatio(renderMode);
@@ -148,7 +151,13 @@ export function CompareSvgStack({
       const c = canvasRef.current;
       const wrap = wrapRef.current;
       if (!card || !c || !wrap || cancelled) return;
-      if (!wrap.contains(card.dom)) return;
+      for (let wait = 0; wait < 8 && !wrap.contains(card.dom); wait++) {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      }
+      if (!wrap.contains(card.dom)) {
+        setNote("live card not attached");
+        return;
+      }
 
       try {
         setNote("rasterizing SVG…");

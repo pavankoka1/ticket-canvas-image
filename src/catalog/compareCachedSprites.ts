@@ -1,5 +1,5 @@
 /** Compare-only reusable HTML/CSS sprites. No catalog cache or geometry mutation. */
-import { loadSprites, saveSpritesBatch } from './atlasStore';
+import { loadSprites, loadSpritesMany, saveSpritesBatch } from './atlasStore';
 import { encodeCompareCanvasPng } from './comparePersistEncodeClient';
 import { activeDpr, badgeHostDevice, resolveCellBoxModel } from './cellBoxModel';
 import { alignCompareStackOrigin, styleCompareTicketDom } from './compareDomAlign';
@@ -79,6 +79,15 @@ const numberPatchMeta = new Map<string, { dx: number; dy: number }>();
 const PERSIST_ENCODE_CHUNK = 8;
 let persistDrain: Promise<void> | null = null;
 
+/** Wait until queued compare atlas IDB writes finish (call after warm). */
+export async function flushComparePersistQueue(): Promise<void> {
+  scheduleFlushPersistQueue();
+  while (persistDrain || persistQueue.length > 0) {
+    if (persistDrain) await persistDrain;
+    else scheduleFlushPersistQueue();
+  }
+}
+
 function scheduleFlushPersistQueue(): void {
   if (persistDrain) return;
   persistDrain = (async () => {
@@ -92,7 +101,7 @@ function scheduleFlushPersistQueue(): void {
             chunk.map(async (item) => {
               if ('sheetKey' in item) {
                 const captured = item.captured;
-                const png = await encodeCompareCanvasPng(item.sheet);
+                const png = captured ? null : await encodeCompareCanvasPng(item.sheet);
                 if (!png && !captured) throw new Error('Compare sheet persist encode failed');
                 const meta: CompareSheetMeta = {
                   sheetUnion: item.sheetUnion,
@@ -102,7 +111,7 @@ function scheduleFlushPersistQueue(): void {
                 return { key: item.sheetKey, blobs: [png ?? captured!], meta };
               }
               const captured = item.captured;
-              const png = await encodeCompareCanvasPng(item.bitmap);
+              const png = captured ? null : await encodeCompareCanvasPng(item.bitmap);
               if (!png && !captured) throw new Error('Compare sprite persist encode failed');
               return {
                 key: item.key,
@@ -177,6 +186,60 @@ function isCompareSheetMeta(meta: unknown): meta is CompareSheetMeta {
   );
 }
 
+function blobIsSvg(blob: Blob): boolean {
+  const t = blob.type;
+  return t.includes('svg') || t.includes('xml');
+}
+
+function compareSheetDecodePreferPng(): boolean {
+  const ua = navigator.userAgent;
+  const webkit = /AppleWebKit/.test(ua);
+  const chromium = /Chrom(e|ium)/.test(ua) || /Edg\//.test(ua) || /OPR\//.test(ua);
+  return webkit && !chromium;
+}
+
+async function decodeCompareSvgBlobWithTimeout(
+  blob: Blob,
+  timeoutMs = 12_000,
+): Promise<HTMLCanvasElement | null> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      decodeCompareSvgBlob(blob).catch(() => null),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function decodeStoredBlobToCanvas(blob: Blob): Promise<HTMLCanvasElement | null> {
+  if (blobIsSvg(blob)) {
+    return compareSheetDecodePreferPng()
+      ? decodeCompareSvgBlobWithTimeout(blob)
+      : decodeCompareSvgBlob(blob).catch(() => null);
+  }
+  try {
+    const bmp = await createImageBitmap(blob);
+    const canvas = document.createElement('canvas');
+    canvas.width = bmp.width;
+    canvas.height = bmp.height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      bmp.close();
+      return null;
+    }
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(bmp, 0, 0);
+    bmp.close();
+    return canvas;
+  } catch {
+    return decodeCompareSvgBlob(blob).catch(() => null);
+  }
+}
+
 async function decodeStoredSheet(
   sheetKey: string,
   stored: { blobs: Blob[]; meta: unknown },
@@ -186,9 +249,20 @@ async function decodeStoredSheet(
     const meta = isCompareSheetMeta(stored.meta) ? stored.meta : null;
     const svg = meta?.source instanceof Blob ? meta.source : null;
     const blob = stored.blobs[0];
-    pending = (svg ? decodeCompareSvgBlob(svg) : blob ? decodeCompareSvgBlob(blob) : Promise.resolve(null)).catch(
-      () => null,
-    );
+    pending = (async () => {
+      if (compareSheetDecodePreferPng() && blob) {
+        const fromPng = await decodeStoredBlobToCanvas(blob);
+        if (fromPng && fromPng.width > 0 && fromPng.height > 0) return fromPng;
+      }
+      if (svg) {
+        const fromSvg = compareSheetDecodePreferPng()
+          ? await decodeCompareSvgBlobWithTimeout(svg)
+          : await decodeCompareSvgBlob(svg).catch(() => null);
+        if (fromSvg && fromSvg.width > 0 && fromSvg.height > 0) return fromSvg;
+      }
+      if (blob) return decodeStoredBlobToCanvas(blob);
+      return null;
+    })();
     decodedSheets.set(sheetKey, pending);
   }
   return pending;
@@ -279,7 +353,7 @@ async function loadCachedIfPresent(key: string): Promise<Sprite | null> {
   const meta = stored.meta;
   const source = meta && typeof meta === 'object' && 'source' in meta && meta.source instanceof Blob
     ? meta.source : blob;
-  const bitmap = await decodeCompareSvgBlob(blob).catch(() => null);
+  const bitmap = await decodeStoredBlobToCanvas(blob);
   if (!bitmap || bitmap.width < 1 || bitmap.height < 1) return null;
   return { bitmap, blob: source };
 }
@@ -303,7 +377,7 @@ async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): P
         const meta = stored.meta;
         const source = meta && typeof meta === 'object' && 'source' in meta && meta.source instanceof Blob
           ? meta.source : blob;
-        const bitmap = await decodeCompareSvgBlob(blob).catch(() => null);
+        const bitmap = await decodeStoredBlobToCanvas(blob);
         // An empty stored sprite (written by an earlier build) is never served;
         // fall through and recapture, overwriting the bad record.
         if (bitmap && bitmap.width > 0 && bitmap.height > 0) return { bitmap, blob: source };
@@ -374,6 +448,86 @@ function sourceTicket(disabled: boolean, number = 1, badge = 0): Ticket {
 
 const BADGE_WARM_VALUES = [1, 2, 3, 5, 10] as const;
 const BADGE_WARM_CELLS = [1, 2, 3, 4, 5] as const;
+/** One opaque patch per face (normal/gold/disabled) × 60 balls — not 2× disabled fills. */
+const COMPARE_NUMBER_PATCH_COUNT = 60 * 3;
+const COMPARE_BADGE_SPRITE_COUNT = 3 * (1 + MULTIPLIER_VALUES.length);
+
+function compareWarmSheetKeys(packPrefix: string): string[] {
+  const keys: string[] = [];
+  for (const disabled of ['false', 'true']) {
+    for (let batch = 0; batch < 10; batch++) {
+      keys.push(compareSheetKey(packPrefix, 'number-ink', disabled, batch));
+    }
+  }
+  for (const face of ['normal', 'gold', 'disabled']) {
+    for (let batch = 0; batch < 10; batch++) {
+      keys.push(compareSheetKey(packPrefix, 'number-opaque', face, batch));
+    }
+  }
+  for (const face of ['normal', 'gold', 'disabled']) {
+    keys.push(compareSheetKey(packPrefix, 'badge-body', face, 0));
+  }
+  return keys;
+}
+
+async function hydratePackFromStoredSheets(
+  packPrefix: string,
+  dpr: number,
+): Promise<{ numberPatches: Map<string, NumberPatch>; badges: Map<string, Sprite> } | null> {
+  const sheetKeys = compareWarmSheetKeys(packPrefix);
+  const rows = await loadSpritesMany(sheetKeys);
+  if (rows.length !== sheetKeys.length) return null;
+
+  const numberPatches = new Map<string, NumberPatch>();
+  const badges = new Map<string, Sprite>();
+
+  for (const stored of rows) {
+    if (!stored?.blobs[0] || !isCompareSheetMeta(stored.meta)) return null;
+  }
+
+  for (let i = 0; i < sheetKeys.length; i++) {
+    const stored = rows[i]!;
+    const sheetKey = sheetKeys[i]!;
+    const meta = stored.meta as CompareSheetMeta;
+
+    const sheetCanvas = await decodeStoredSheet(sheetKey, stored);
+    if (!sheetCanvas || sheetCanvas.width < 1 || sheetCanvas.height < 1) return null;
+
+    const source = meta.source instanceof Blob ? meta.source : stored.blobs[0]!;
+    const union = meta.sheetUnion;
+
+    for (const crop of meta.crops) {
+      const bitmap = crop.key.includes('|glyph-')
+        ? cropGlyphFromSheet(sheetCanvas, union, crop, dpr)
+        : cropFromWarmSheet(sheetCanvas, union, crop, dpr);
+      const sprite: Sprite = { bitmap, blob: source };
+      sprites.set(crop.key, Promise.resolve(sprite));
+
+      const badgeIdx = crop.key.indexOf('|badge-body|');
+      if (badgeIdx >= 0) {
+        badges.set(crop.key.slice(badgeIdx + '|badge-body|'.length), sprite);
+        continue;
+      }
+
+      const patchMatch = crop.key.match(/\|number-patch\|([^|]+)\|([^|]+)\|(\d+)$/);
+      if (patchMatch && crop.dx !== undefined && crop.dy !== undefined) {
+        const [, disabledStr, face, nStr] = patchMatch;
+        numberPatchMeta.set(crop.key, { dx: crop.dx, dy: crop.dy });
+        numberPatches.set(`${disabledStr}|${face}|${nStr}`, {
+          sprite,
+          dx: crop.dx,
+          dy: crop.dy,
+        });
+      } else if (crop.key.includes('|number-ink|') && crop.dx !== undefined && crop.dy !== undefined) {
+        numberPatchMeta.set(crop.key, { dx: crop.dx, dy: crop.dy });
+      }
+    }
+  }
+
+  if (numberPatches.size !== COMPARE_NUMBER_PATCH_COUNT) return null;
+  if (badges.size !== COMPARE_BADGE_SPRITE_COUNT) return null;
+  return { numberPatches, badges };
+}
 
 function forceBadgeFace(card: TicketCard, face: 'normal' | 'gold' | 'disabled'): void {
   card.dom.classList.remove('ticketCard_win', 'ticketCard_disabled');
@@ -462,6 +616,14 @@ function unionCrops(crops: { x: number; y: number; width: number; height: number
   return { x, y, width: right - x, height: bottom - y };
 }
 
+/** WebKit misbehaves with concurrent foreignObject raster captures (Safari desktop + iOS). */
+function compareParallelWarmWidth(): number {
+  const ua = navigator.userAgent;
+  const webkit = /AppleWebKit/.test(ua);
+  const chromium = /Chrom(e|ium)/.test(ua) || /Edg\//.test(ua) || /OPR\//.test(ua);
+  return webkit && !chromium ? 1 : 3;
+}
+
 /** Isolated offscreen cards — safe to run up to `width` raster captures at once. */
 async function parallelCaptures<T>(jobs: (() => Promise<T>)[], width = 3): Promise<T[]> {
   const out: T[] = [];
@@ -511,6 +673,20 @@ export function prepareCompareCard(card: TicketCard, layout: CatalogLayout, dpr:
 
 async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Promise<Pack> {
     await ensureTicketFontsForLayout(layout.metrics);
+    const preset = layout.metrics.id;
+    const warmT0 = performance.now();
+    const hydrated = await hydratePackFromStoredSheets(key, dpr);
+    if (hydrated) {
+      console.info('[atlas-warm]', {
+        preset,
+        prefix: key,
+        captures: 0,
+        ms: Math.round(performance.now() - warmT0),
+        fromIdb: 'sheets',
+      });
+      return { numberPatches: hydrated.numberPatches, badges: hydrated.badges, prefix: key };
+    }
+
     const host = document.createElement('div');
     host.style.cssText = 'position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none';
     host.setAttribute('aria-hidden', 'true');
@@ -523,8 +699,6 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
     const inkByNumber = new Map<string, DeviceRect>();
     const badges = new Map<string, Sprite>();
     const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(card.dom, dpr, m, part);
-    const preset = layout.metrics.id;
-    const warmT0 = performance.now();
     let captures = 0;
     try {
       const warmNumberInkBatch = async (disabled: boolean, batch: number): Promise<number> => {
@@ -738,14 +912,14 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
       for (const disabled of [false, true]) {
         const inkCounts = await parallelCaptures(
           Array.from({ length: 10 }, (_, batch) => () => warmNumberInkBatch(disabled, batch)),
-          3,
+          compareParallelWarmWidth(),
         );
         captures += inkCounts.reduce((sum, n) => sum + n, 0);
       }
       for (const face of ['normal', 'gold', 'disabled'] as const) {
         const opaqueCounts = await parallelCaptures(
           Array.from({ length: 10 }, (_, batch) => () => warmNumberOpaqueBatch(face, batch)),
-          3,
+          compareParallelWarmWidth(),
         );
         captures += opaqueCounts.reduce((sum, n) => sum + n, 0);
       }
@@ -753,7 +927,7 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
       // an already rounded transparent image can change its edge colors.
       const badgeCounts = await parallelCaptures(
         (['normal', 'gold', 'disabled'] as const).map((face) => () => warmBadgeFace(face)),
-        3,
+        compareParallelWarmWidth(),
       );
       captures += badgeCounts.reduce((sum, n) => sum + n, 0);
       if (compareD1ProbeEnabled()) {

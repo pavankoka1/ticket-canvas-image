@@ -103,19 +103,25 @@ export function Compare() {
   useEffect(() => {
     let cancelled = false;
     setReadyPreset(null);
-    setStatus("loading fonts…");
-
     void (async () => {
-      await ensureTicketFontsForLayout(layout.metrics);
-      await loadSvgMultiplierAssets();
-      const pack = await preloadComparePack(layout, rasterRatio);
-      scheduleCompareGlyphWarm(layout, rasterRatio, pack);
-      if (cancelled) return;
-      setLiveCellBoxModel(resolveCellBoxModel(layout, rasterRatio));
-      setReadyPreset(presetId);
-      setStatus(
-        `ready · ${metrics.label} · ${layout.cardWidth}×${layout.cardHeight} css · display DPR ${activeDpr()}`,
-      );
+      try {
+        setStatus("loading fonts…");
+        await ensureTicketFontsForLayout(layout.metrics);
+        await loadSvgMultiplierAssets();
+        setStatus("warming atlas…");
+        const pack = await preloadComparePack(layout, rasterRatio);
+        scheduleCompareGlyphWarm(layout, rasterRatio, pack);
+        if (cancelled) return;
+        setLiveCellBoxModel(resolveCellBoxModel(layout, rasterRatio));
+        setReadyPreset(presetId);
+        setStatus(
+          `ready · ${metrics.label} · ${layout.cardWidth}×${layout.cardHeight} css · display DPR ${activeDpr()}`,
+        );
+      } catch (err) {
+        if (!cancelled) {
+          setStatus(err instanceof Error ? `warm failed: ${err.message}` : "warm failed");
+        }
+      }
     })();
 
     return () => {
