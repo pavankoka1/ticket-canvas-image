@@ -1,5 +1,6 @@
 /** Compare-only reusable HTML/CSS sprites. No catalog cache or geometry mutation. */
 import { loadSprites, saveSpritesBatch } from './atlasStore';
+import { encodeCompareCanvasPng } from './comparePersistEncodeClient';
 import { activeDpr, badgeHostDevice, resolveCellBoxModel } from './cellBoxModel';
 import { alignCompareStackOrigin, styleCompareTicketDom } from './compareDomAlign';
 import { usesSvgMultiplier, usesSvgText } from './compareRenderMode';
@@ -91,9 +92,7 @@ function scheduleFlushPersistQueue(): void {
             chunk.map(async (item) => {
               if ('sheetKey' in item) {
                 const captured = item.captured;
-                const png = await new Promise<Blob | null>((resolve) =>
-                  item.sheet.toBlob(resolve, 'image/png'),
-                );
+                const png = await encodeCompareCanvasPng(item.sheet);
                 if (!png && !captured) throw new Error('Compare sheet persist encode failed');
                 const meta: CompareSheetMeta = {
                   sheetUnion: item.sheetUnion,
@@ -103,9 +102,7 @@ function scheduleFlushPersistQueue(): void {
                 return { key: item.sheetKey, blobs: [png ?? captured!], meta };
               }
               const captured = item.captured;
-              const png = await new Promise<Blob | null>((resolve) =>
-                item.bitmap.toBlob(resolve, 'image/png'),
-              );
+              const png = await encodeCompareCanvasPng(item.bitmap);
               if (!png && !captured) throw new Error('Compare sprite persist encode failed');
               return {
                 key: item.key,
