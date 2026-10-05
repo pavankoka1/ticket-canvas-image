@@ -465,6 +465,16 @@ function unionCrops(crops: { x: number; y: number; width: number; height: number
   return { x, y, width: right - x, height: bottom - y };
 }
 
+/** Isolated offscreen cards — safe to run up to `width` raster captures at once. */
+async function parallelCaptures<T>(jobs: (() => Promise<T>)[], width = 3): Promise<T[]> {
+  const out: T[] = [];
+  for (let i = 0; i < jobs.length; i += width) {
+    const chunk = jobs.slice(i, i + width);
+    out.push(...await Promise.all(chunk.map((job) => job())));
+  }
+  return out;
+}
+
 function cropFromWarmSheet(
   sheet: HTMLCanvasElement,
   union: { x: number; y: number; width: number; height: number },
@@ -520,81 +530,98 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
     const warmT0 = performance.now();
     let captures = 0;
     try {
-      for (const disabled of [false, true]) {
-        for (let batch = 0; batch < 10; batch++) {
-          const balls = Array.from({ length: 6 }, (_, i) => batch * 6 + i + 1);
-          const inkSheetKey = compareSheetKey(key, 'number-ink', String(disabled), batch);
-          const inkKeys = balls.map((n) => `${key}|number-ink|${disabled}|${n}`);
-          if (!(await cachedHasAll(inkKeys))) {
-            const ticket = sourceTicket(disabled, balls[0]!);
-            ticket.balls = balls as number[];
-            card.bind(ticket, 0, 0, layout);
-            if (disabled) card.dom.classList.add('ticketCard_disabled');
-            else card.dom.classList.remove('ticketCard_disabled', 'ticketCard_win');
-            prepareCompareCard(card, layout, activeDpr());
-            const cellCrops = [0, 1, 2, 3, 4, 5].map((cellIndex) =>
-              numberCellCrop(model, cellIndex, m.headerHeight, m.bodyHeight),
-            );
-            const union = unionCrops(cellCrops);
-            captures++;
-            const sheet = await capture({
-              crop: union,
-              css: TRANSPARENT,
-              prepare(root) {
-                prepareNumberTransparent(root, m.headerHeight);
-              },
-            });
-            const entries = balls.map((n, cell) => {
-              const cellCrop = cellCrops[cell]!;
-              const cellBitmap = cropFromWarmSheet(sheet, union, cellCrop, dpr);
-              const ink = measureInkBounds(cellBitmap);
-              if (!ink) throw new Error(`Compare number ink bounds missing: ${disabled} ${n}`);
-              inkByNumber.set(`${disabled}|${n}`, ink);
-              return {
-                spriteKey: `${key}|number-ink|${disabled}|${n}`,
-                crop: inkCropInCell(cellCrop, ink, dpr),
-                dx: ink.x,
-                dy: ink.y,
-              };
-            });
-            commitCompareWarmSheet(inkSheetKey, sheet, union, dpr, entries, cropFromWarmSheet);
-          } else {
-            for (let cell = 0; cell < 6; cell++) {
-              const n = balls[cell]!;
-              const patch = await loadNumberPatch(`${key}|number-ink|${disabled}|${n}`, dpr);
-              if (!patch) throw new Error('compare number ink cache miss after hasAll');
-              const ink = measureInkBounds(patch.sprite.bitmap);
-              if (!ink) throw new Error(`Compare number ink bounds missing from cache: ${disabled} ${n}`);
-              inkByNumber.set(`${disabled}|${n}`, ink);
-            }
+      const warmNumberInkBatch = async (disabled: boolean, batch: number): Promise<number> => {
+        const balls = Array.from({ length: 6 }, (_, i) => batch * 6 + i + 1);
+        const inkSheetKey = compareSheetKey(key, 'number-ink', String(disabled), batch);
+        const inkKeys = balls.map((n) => `${key}|number-ink|${disabled}|${n}`);
+        if (await cachedHasAll(inkKeys)) {
+          for (let cell = 0; cell < 6; cell++) {
+            const n = balls[cell]!;
+            const patch = await loadNumberPatch(`${key}|number-ink|${disabled}|${n}`, dpr);
+            if (!patch) throw new Error('compare number ink cache miss after hasAll');
+            const ink = measureInkBounds(patch.sprite.bitmap);
+            if (!ink) throw new Error(`Compare number ink bounds missing from cache: ${disabled} ${n}`);
+            inkByNumber.set(`${disabled}|${n}`, ink);
           }
+          return 0;
         }
-      }
-      for (const face of ['normal', 'gold', 'disabled'] as const) {
-        const disabled = numberWarmDisabled(face);
-        for (let batch = 0; batch < 10; batch++) {
-          const balls = Array.from({ length: 6 }, (_, i) => batch * 6 + i + 1);
-          const patchKeys = balls.map((n) => numberPatchSpriteKey(key, disabled, face, n));
-          if (await cachedHasAll(patchKeys)) {
-            for (let i = 0; i < balls.length; i++) {
-              const n = balls[i]!;
-              const patch = await loadNumberPatch(patchKeys[i]!, dpr);
-              if (!patch) throw new Error('compare number patch cache miss after hasAll');
-              numberPatches.set(`${disabled}|${face}|${n}`, patch);
-            }
-            continue;
-          }
+        const batchHost = document.createElement('div');
+        batchHost.style.cssText = 'position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none';
+        const batchCard = new TicketCard();
+        batchHost.append(batchCard.dom);
+        document.body.append(batchHost);
+        const batchCapture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(batchCard.dom, dpr, m, part);
+        try {
           const ticket = sourceTicket(disabled, balls[0]!);
           ticket.balls = balls as number[];
-          card.bind(ticket, 0, 0, layout);
-          forceBadgeFace(card, face);
-          prepareCompareCard(card, layout, activeDpr());
+          batchCard.bind(ticket, 0, 0, layout);
+          if (disabled) batchCard.dom.classList.add('ticketCard_disabled');
+          else batchCard.dom.classList.remove('ticketCard_disabled', 'ticketCard_win');
+          prepareCompareCard(batchCard, layout, activeDpr());
           const cellCrops = [0, 1, 2, 3, 4, 5].map((cellIndex) =>
             numberCellCrop(model, cellIndex, m.headerHeight, m.bodyHeight),
           );
           const union = unionCrops(cellCrops);
-          captures++;
-          const sheet = await capture({
+          const sheet = await batchCapture({
+            crop: union,
+            css: TRANSPARENT,
+            prepare(root) {
+              prepareNumberTransparent(root, m.headerHeight);
+            },
+          });
+          const entries = balls.map((n, cell) => {
+            const cellCrop = cellCrops[cell]!;
+            const cellBitmap = cropFromWarmSheet(sheet, union, cellCrop, dpr);
+            const ink = measureInkBounds(cellBitmap);
+            if (!ink) throw new Error(`Compare number ink bounds missing: ${disabled} ${n}`);
+            inkByNumber.set(`${disabled}|${n}`, ink);
+            return {
+              spriteKey: `${key}|number-ink|${disabled}|${n}`,
+              crop: inkCropInCell(cellCrop, ink, dpr),
+              dx: ink.x,
+              dy: ink.y,
+            };
+          });
+          commitCompareWarmSheet(inkSheetKey, sheet, union, dpr, entries, cropFromWarmSheet);
+          return 1;
+        } finally {
+          batchHost.remove();
+        }
+      };
+
+      const warmNumberOpaqueBatch = async (
+        face: 'normal' | 'gold' | 'disabled',
+        batch: number,
+      ): Promise<number> => {
+        const disabled = numberWarmDisabled(face);
+        const balls = Array.from({ length: 6 }, (_, i) => batch * 6 + i + 1);
+        const patchKeys = balls.map((n) => numberPatchSpriteKey(key, disabled, face, n));
+        if (await cachedHasAll(patchKeys)) {
+          for (let i = 0; i < balls.length; i++) {
+            const n = balls[i]!;
+            const patch = await loadNumberPatch(patchKeys[i]!, dpr);
+            if (!patch) throw new Error('compare number patch cache miss after hasAll');
+            numberPatches.set(`${disabled}|${face}|${n}`, patch);
+          }
+          return 0;
+        }
+        const batchHost = document.createElement('div');
+        batchHost.style.cssText = 'position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none';
+        const batchCard = new TicketCard();
+        batchHost.append(batchCard.dom);
+        document.body.append(batchHost);
+        const batchCapture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(batchCard.dom, dpr, m, part);
+        try {
+          const ticket = sourceTicket(disabled, balls[0]!);
+          ticket.balls = balls as number[];
+          batchCard.bind(ticket, 0, 0, layout);
+          forceBadgeFace(batchCard, face);
+          prepareCompareCard(batchCard, layout, activeDpr());
+          const cellCrops = [0, 1, 2, 3, 4, 5].map((cellIndex) =>
+            numberCellCrop(model, cellIndex, m.headerHeight, m.bodyHeight),
+          );
+          const union = unionCrops(cellCrops);
+          const sheet = await batchCapture({
             crop: union,
             css: '.ticketCard__body{border-radius:0!important}',
             prepare(root) {
@@ -619,24 +646,13 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
             const n = Number(spriteKey.split('|').pop());
             numberPatches.set(`${disabled}|${face}|${n}`, { sprite, dx: dx!, dy: dy! });
           }
+          return 1;
+        } finally {
+          batchHost.remove();
         }
-      }
-      // Precompose image antialiasing on the real body background. Re-compositing
-      // an already rounded transparent image can change its edge colors.
-      for (const face of ['normal', 'gold', 'disabled'] as const) {
-        const ticket = sourceTicket(face === 'disabled');
-        ticket.hits = [...BADGE_WARM_CELLS];
-        ticket.multipliers = Object.fromEntries(
-          BADGE_WARM_CELLS.map((cell, i) => [cell, BADGE_WARM_VALUES[i]!]).filter(([, v]) => v > 1),
-        );
-        card.bind(ticket, 0, 0, layout);
-        forceBadgeFace(card, face);
-        for (let i = 0; i < 6; i++) card.clearCellDigit(i);
-        prepareCompareCard(card, layout, activeDpr());
-        const cellCrops = BADGE_WARM_CELLS.map((cellIndex) =>
-          badgeBodyCrop(model, cellIndex, m.headerHeight, m.bodyHeight),
-        );
-        const union = unionCrops(cellCrops);
+      };
+
+      const warmBadgeFace = async (face: 'normal' | 'gold' | 'disabled'): Promise<number> => {
         const badgeValues = [1, ...MULTIPLIER_VALUES];
         const badgeCacheKeys = badgeValues.map((value) => {
           const badgeKey = `${face}|${value}`;
@@ -650,9 +666,29 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
             if (!sprite) throw new Error('compare badge cache miss after hasAll');
             badges.set(badgeKey, sprite);
           }
-        } else {
-          captures++;
-          const sheet = await capture({
+          return 0;
+        }
+        const batchHost = document.createElement('div');
+        batchHost.style.cssText = 'position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none';
+        const batchCard = new TicketCard();
+        batchHost.append(batchCard.dom);
+        document.body.append(batchHost);
+        const batchCapture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(batchCard.dom, dpr, m, part);
+        try {
+          const ticket = sourceTicket(face === 'disabled');
+          ticket.hits = [...BADGE_WARM_CELLS];
+          ticket.multipliers = Object.fromEntries(
+            BADGE_WARM_CELLS.map((cell, i) => [cell, BADGE_WARM_VALUES[i]!]).filter(([, v]) => v > 1),
+          );
+          batchCard.bind(ticket, 0, 0, layout);
+          forceBadgeFace(batchCard, face);
+          for (let i = 0; i < 6; i++) batchCard.clearCellDigit(i);
+          prepareCompareCard(batchCard, layout, activeDpr());
+          const cellCrops = BADGE_WARM_CELLS.map((cellIndex) =>
+            badgeBodyCrop(model, cellIndex, m.headerHeight, m.bodyHeight),
+          );
+          const union = unionCrops(cellCrops);
+          const sheet = await batchCapture({
             crop: union,
             css: '.ticketCard__body{border-radius:0!important}',
             prepare(root) {
@@ -662,7 +698,7 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
                 root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell, i) => {
                   for (const node of [...cell.childNodes]) if (node.nodeType === Node.TEXT_NODE) node.textContent = '';
                   if (i === 0 || !BADGE_WARM_CELLS.includes(i as 1 | 2 | 3 | 4 | 5)) {
-                    cell.querySelectorAll<HTMLElement>('.ticketCard__badgeHost').forEach((badge) => {
+                    root.querySelectorAll<HTMLElement>('.ticketCard__badgeHost').forEach((badge) => {
                       badge.style.visibility = 'hidden';
                     });
                   }
@@ -696,8 +732,33 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
           for (const { badgeKey, spriteKey } of sheetEntries) {
             badges.set(badgeKey, await sprites.get(spriteKey)!);
           }
+          return 1;
+        } finally {
+          batchHost.remove();
         }
+      };
+
+      for (const disabled of [false, true]) {
+        const inkCounts = await parallelCaptures(
+          Array.from({ length: 10 }, (_, batch) => () => warmNumberInkBatch(disabled, batch)),
+          3,
+        );
+        captures += inkCounts.reduce((sum, n) => sum + n, 0);
       }
+      for (const face of ['normal', 'gold', 'disabled'] as const) {
+        const opaqueCounts = await parallelCaptures(
+          Array.from({ length: 10 }, (_, batch) => () => warmNumberOpaqueBatch(face, batch)),
+          3,
+        );
+        captures += opaqueCounts.reduce((sum, n) => sum + n, 0);
+      }
+      // Precompose image antialiasing on the real body background. Re-compositing
+      // an already rounded transparent image can change its edge colors.
+      const badgeCounts = await parallelCaptures(
+        (['normal', 'gold', 'disabled'] as const).map((face) => () => warmBadgeFace(face)),
+        3,
+      );
+      captures += badgeCounts.reduce((sum, n) => sum + n, 0);
       if (compareD1ProbeEnabled()) {
         let identicalAcrossCells = true;
         for (const disabled of [false, true]) {
