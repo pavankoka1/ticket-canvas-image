@@ -76,6 +76,14 @@ function glyphScreenX(root: HTMLElement, el: SVGTextElement, index: number): num
   return p.x - rootRect.left;
 }
 
+function headerGlyphCharCount(el: SVGTextElement): number {
+  try {
+    return el.getNumberOfChars();
+  } catch {
+    return el.textContent?.length ?? 0;
+  }
+}
+
 function measureHeaderGlyphDeviceX(
   root: HTMLElement,
   field: HeaderField,
@@ -83,11 +91,27 @@ function measureHeaderGlyphDeviceX(
   dpr: number,
 ): number {
   const el = overlayHeaderText(root, field);
-  const len = el.textContent?.length ?? 0;
+  const len = headerGlyphCharCount(el);
   if (index < 0 || index >= len) {
     throw new Error(`compare glyph: ${field} index ${index} of ${len}`);
   }
   return glyphScreenX(root, el, index) * dpr;
+}
+
+function tryMeasureHeaderGlyphDeviceX(
+  root: HTMLElement,
+  field: HeaderField,
+  index: number,
+  dpr: number,
+): number | null {
+  try {
+    const el = overlayHeaderText(root, field);
+    const len = headerGlyphCharCount(el);
+    if (index < 0 || index >= len) return null;
+    return glyphScreenX(root, el, index) * dpr;
+  } catch {
+    return null;
+  }
 }
 
 export function refGlyphCrop(
@@ -367,5 +391,44 @@ export async function stampHeaderGlyphs(
     if (!sprite) continue;
     const patch = await inkPatch(`${keyPrefix}|stamp-amt|${face}|${i}|${encodeURIComponent(ch)}|${phase}`, sprite);
     ctx.drawImage(patch.sprite.bitmap, pixel - pad + patch.x, patch.y);
+  }
+}
+
+/** Catalog tile paint — warmed glyph bitmaps are already ink-cropped. */
+export function stampHeaderGlyphsSync(
+  ctx: CanvasRenderingContext2D,
+  live: HTMLElement,
+  ticketNo: string,
+  win: string,
+  face: "normal" | "gold" | "disabled",
+  dpr: number,
+  pack: HeaderGlyphPack,
+  originX: number,
+  originY: number,
+): void {
+  const idFill = ID_FILLS[face];
+  const amountFill = AMOUNT_FILLS[face];
+  const phases = pack.phases;
+  const pad = glyphCapturePad(dpr);
+
+  for (let i = 0; i < ticketNo.length; i++) {
+    const ch = ticketNo[i] ?? "";
+    const start = tryMeasureHeaderGlyphDeviceX(live, "id", i, dpr);
+    if (start === null) continue;
+    const { pixel, phase } = quantizeGlyphDeviceX(start, phases);
+    const sprite = pack.id.get(glyphKey(idFill, ch, phase));
+    if (!sprite) continue;
+    ctx.drawImage(sprite.bitmap, originX + pixel - pad, originY);
+  }
+
+  if (!win) return;
+  for (let i = 0; i < win.length; i++) {
+    const ch = win[i] ?? "";
+    const start = tryMeasureHeaderGlyphDeviceX(live, "amount", i, dpr);
+    if (start === null) continue;
+    const { pixel, phase } = quantizeGlyphDeviceX(start, phases);
+    const sprite = pack.amount.get(glyphKey(amountFill, ch, phase));
+    if (!sprite) continue;
+    ctx.drawImage(sprite.bitmap, originX + pixel - pad, originY);
   }
 }

@@ -13,12 +13,84 @@
  * mirror `index.css` (normal / gold / disabled).
  */
 
-import { discDataUrl, multiplierDefs, multiplierGroup, svgEl } from "./compareSvgMultiplier";
+import { dabDataUrl, discDataUrl, multiplierDefs, multiplierGroup, svgEl } from "./compareSvgMultiplier";
+import { activeDpr, applyBadgeChrome, badgeHostDevice, resolveCellBoxModel } from "./cellBoxModel";
+import { getActiveLayout } from "./catalogLayout";
+import { buildTicketChromeSvg, SVG_CHROME_CLASS } from "./ticketSvgChrome";
 
 /** Baseline below the box centre, in em (Onest cap height ≈ 0.72 em). */
 const BASELINE_EM = 0.36;
 const FONT = "MB-Onest, Onest, sans-serif";
 export const OVERLAY_CLASS = "ticketCard__svgOverlay";
+export const SVG_FACE_CLASS = "ticketCard_svgFace";
+const DRAW_BADGE_HOST_ATTR = "data-draw-badge-host";
+const DRAW_MULT_LABEL_ATTR = "data-draw-mult-label";
+const DRAW_CELL_ATTR = "data-draw-cell";
+
+function badgeHostLayer(
+  cell: number,
+  cx: number,
+  cy: number,
+  size: number,
+  image: SVGElement,
+): SVGGElement {
+  const g = svgEl("g", {
+    [DRAW_BADGE_HOST_ATTR]: "",
+    [DRAW_CELL_ATTR]: String(cell),
+    transform: `translate(${cx} ${cy})`,
+  });
+  g.append(image);
+  image.setAttribute("x", String(-size / 2));
+  image.setAttribute("y", String(-size / 2));
+  image.setAttribute("width", String(size));
+  image.setAttribute("height", String(size));
+  return g;
+}
+
+/** Plain dab: hide overlay dab ink, show HTML dab above the svg-all overlay during WAAPI. */
+export function beginDrawDabMotion(root: HTMLElement, cell: number): void {
+  const overlay = root.querySelector(`:scope > .${OVERLAY_CLASS}`);
+  overlay
+    ?.querySelectorAll<SVGElement>(`g[${DRAW_BADGE_HOST_ATTR}][${DRAW_CELL_ATTR}="${cell}"]`)
+    .forEach((el) => {
+      (el as unknown as HTMLElement).style.visibility = "hidden";
+    });
+  const cellEl = root.querySelectorAll<HTMLElement>(".ticketCard__cell")[cell];
+  const host = cellEl?.querySelector<HTMLElement>(".ticketCard__badgeHost_dab")?.closest<HTMLElement>(
+    ".ticketCard__badgeHost",
+  );
+  if (!host || host.style.display === "none") return;
+  const disabled = root.classList.contains("ticketCard_disabled");
+  host.style.backgroundImage = `url("${disabled ? "/dab-disabled.png" : "/dab-full.png"}")`;
+  const layout = getActiveLayout();
+  const model = resolveCellBoxModel(layout, activeDpr());
+  const cellBox = model.cells[cell];
+  if (cellBox) {
+    const box = badgeHostDevice(cellBox, layout.metrics.dabSize, activeDpr());
+    applyBadgeChrome(host, box, false, activeDpr());
+  }
+  host.style.zIndex = "3";
+}
+
+export type OverlayDrawLayers = { disc: SVGGElement | null; label: SVGGElement | null };
+
+/**
+ * Multiplier draw uses the same svg-all disc + label as the settled DOM (not the
+ * HTML CSS label). Repaint above chrome, then WAAPI targets these groups.
+ */
+export function beginDrawMultiplierMotion(root: HTMLElement, cell: number): OverlayDrawLayers {
+  const overlay = root.querySelector(`:scope > .${OVERLAY_CLASS}`);
+  if (!overlay) return { disc: null, label: null };
+  const disc = overlay.querySelector<SVGGElement>(
+    `g[${DRAW_BADGE_HOST_ATTR}][${DRAW_CELL_ATTR}="${cell}"]`,
+  );
+  const label = overlay.querySelector<SVGGElement>(
+    `g[${DRAW_MULT_LABEL_ATTR}][${DRAW_CELL_ATTR}="${cell}"]`,
+  );
+  if (disc) overlay.append(disc);
+  if (label) overlay.append(label);
+  return { disc, label };
+}
 const HEADER_TEXT_STYLE = "font-kerning:none;font-feature-settings:'kern' 0";
 
 function applyHeaderTextStyle(el: SVGTextElement): void {
@@ -42,6 +114,21 @@ function textOf(el: Element | null): string {
     .map((n) => (n as Text).data)
     .join("")
     .trim();
+}
+
+/** Dab / multiplier cells must not paint the ball digit in the SVG overlay. */
+function cellOverlayNumber(cell: HTMLElement): string {
+  if (cell.classList.contains("ticketCard__cell_hit")) return "";
+  const host = cell.querySelector<HTMLElement>(".ticketCard__badgeHost");
+  if (
+    host &&
+    host.style.display !== "none" &&
+    (host.classList.contains("ticketCard__badgeHost_dab") ||
+      host.classList.contains("ticketCard__badgeHost_multiplier"))
+  ) {
+    return "";
+  }
+  return textOf(cell);
 }
 
 function text(
@@ -84,7 +171,14 @@ export function buildTicketOverlay(root: HTMLElement): SVGSVGElement {
   const numberPx = px(root, "--ticket-number-font-size");
   const dab = px(root, "--ticket-dab-size");
 
+  const cellW = parseFloat(
+    root.querySelector<HTMLElement>(".ticketCard__cell")?.style.width ?? "0",
+  );
   const children: SVGElement[] = [];
+  const chromeId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+  if (root.classList.contains(SVG_FACE_CLASS) && cellW > 0) {
+    children.push(...buildTicketChromeSvg(W, getActiveLayout().metrics, face, cellW, chromeId));
+  }
   const headerY = headerH / 2 + BASELINE_EM * metaPx;
   const id = textOf(root.querySelector(".ticketCard__id"));
   const amount = textOf(root.querySelector(".ticketCard__win"));
@@ -97,9 +191,29 @@ export function buildTicketOverlay(root: HTMLElement): SVGSVGElement {
     const cellH = parseFloat(cell.style.height);
     const x0 = i * (cellW + sep);
     const y0 = headerH + padY;
-    const value = textOf(cell);
+    const value = cellOverlayNumber(cell);
     if (value) {
       children.push(text(value, x0 + cellW / 2, y0 + cellH / 2 + BASELINE_EM * numberPx, "middle", numberPx, COLORS.number[face]));
+    }
+    const dabHost = cell.querySelector<HTMLElement>(".ticketCard__badgeHost_dab");
+    if (dabHost && dabHost.style.display !== "none") {
+      const size = parseFloat(dabHost.style.width);
+      const hx = x0 + parseFloat(dabHost.style.left);
+      const hy = y0 + parseFloat(dabHost.style.top);
+      const cx = hx + size / 2;
+      const cy = hy + size / 2;
+      const dab = dabDataUrl(face === "disabled");
+      if (dab) {
+        children.push(
+          badgeHostLayer(
+            i,
+            cx,
+            cy,
+            size,
+            svgEl("image", { href: dab, preserveAspectRatio: "none" }),
+          ),
+        );
+      }
     }
     const host = cell.querySelector<HTMLElement>(".ticketCard__badgeHost_multiplier");
     if (!host || host.style.display === "none") return;
@@ -107,9 +221,29 @@ export function buildTicketOverlay(root: HTMLElement): SVGSVGElement {
     const size = parseFloat(host.style.width);
     const hx = x0 + parseFloat(host.style.left);
     const hy = y0 + parseFloat(host.style.top);
+    const cx = hx + size / 2;
+    const cy = hy + size / 2;
     const disc = discDataUrl(face === "disabled");
-    if (disc) children.push(svgEl("image", { href: disc, x: hx, y: hy, width: size, height: size, preserveAspectRatio: "none" }));
-    children.push(multiplierGroup(label, hx + size / 2, hy + size / 2, (13 * dab) / 24, face === "disabled"));
+    if (disc) {
+      children.push(
+        badgeHostLayer(
+          i,
+          cx,
+          cy,
+          size,
+          svgEl("image", { href: disc, preserveAspectRatio: "none" }),
+        ),
+      );
+    }
+    const labelWrap = svgEl("g", {
+      [DRAW_MULT_LABEL_ATTR]: "",
+      [DRAW_CELL_ATTR]: String(i),
+      transform: `translate(${cx} ${cy})`,
+    });
+    labelWrap.append(
+      multiplierGroup(label, 0, 0, (13 * dab) / 24, face === "disabled"),
+    );
+    children.push(labelWrap);
     if (face !== "disabled") needsDefs = true;
   });
 
@@ -139,6 +273,16 @@ export function stripCompareOverlayHeaderAndCellNumbers(root: HTMLElement): void
   overlay.querySelectorAll(":scope > text").forEach((el) => el.remove());
 }
 
+/** Catalog chrome warm: keep vector chrome, drop ink (text / multiplier art). */
+export function stripOverlayInkKeepChrome(root: HTMLElement): void {
+  const overlay = root.querySelector(`:scope > .${OVERLAY_CLASS}`);
+  if (!overlay) return;
+  overlay.querySelectorAll(":scope > text, :scope > image, :scope > g:not(." + SVG_CHROME_CLASS + ")").forEach((el) => {
+    if (el.classList.contains(SVG_CHROME_CLASS)) return;
+    el.remove();
+  });
+}
+
 /** Number opaque warm keeps cell digits in the overlay but drops header id/amount. */
 export function stripCompareOverlayHeader(root: HTMLElement, headerHeightCss: number): void {
   const overlay = root.querySelector(`:scope > .${OVERLAY_CLASS}`);
@@ -149,6 +293,12 @@ export function stripCompareOverlayHeader(root: HTMLElement, headerHeightCss: nu
   });
 }
 
+/** Rebuild svg-all overlay ink after draw settle (e.g. cleared cell digit). */
+export function refreshSvgOverlayInk(root: HTMLElement): void {
+  if (!root.querySelector(`:scope > .${OVERLAY_CLASS}`)) return;
+  applySvgText(root, true);
+}
+
 /** Swap header, cell and multiplier rendering under `root` to (or back from) the overlay. */
 export function applySvgText(root: HTMLElement, enabled: boolean): void {
   root.querySelector(`:scope > .${OVERLAY_CLASS}`)?.remove();
@@ -157,6 +307,7 @@ export function applySvgText(root: HTMLElement, enabled: boolean): void {
   const hosts = root.querySelectorAll<HTMLElement>(".ticketCard__badgeHost");
   hosts.forEach((h) => {
     h.style.removeProperty("background-image");
+    h.style.removeProperty("z-index");
     h.querySelector<HTMLElement>(".ticketCard__badgeLabel")?.style.removeProperty("visibility");
   });
   if (!enabled) {
@@ -165,9 +316,14 @@ export function applySvgText(root: HTMLElement, enabled: boolean): void {
   }
   textEls.forEach((el) => el.style.setProperty("-webkit-text-fill-color", "transparent"));
   hosts.forEach((h) => {
-    if (!h.classList.contains("ticketCard__badgeHost_multiplier")) return;
-    h.style.setProperty("background-image", "none");
-    h.querySelector<HTMLElement>(".ticketCard__badgeLabel")?.style.setProperty("visibility", "hidden");
+    if (h.classList.contains("ticketCard__badgeHost_multiplier")) {
+      h.style.setProperty("background-image", "none");
+      h.querySelector<HTMLElement>(".ticketCard__badgeLabel")?.style.setProperty("visibility", "hidden");
+      return;
+    }
+    if (h.classList.contains("ticketCard__badgeHost_dab")) {
+      h.style.setProperty("background-image", "none");
+    }
   });
   root.append(buildTicketOverlay(root));
 }

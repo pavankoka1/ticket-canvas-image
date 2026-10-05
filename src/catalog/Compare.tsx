@@ -8,7 +8,6 @@ import {
   setLiveCellBoxModel,
 } from "./cellBoxModel";
 import { CompareDiagnostics } from "./compareDiagnostics";
-import { CompareMinimalFoProbe } from "./compareMinimalFoProbe";
 import {
   COMPARE_RENDER_MODES,
   isCompareRenderMode,
@@ -81,7 +80,7 @@ export function Compare() {
   const [canvasOpacity, setCanvasOpacity] = useState(1);
   const [blend, setBlend] = useState<"normal" | "difference">("difference");
   const [showDom, setShowDom] = useState(true);
-  const [renderMode, setRenderMode] = useState<CompareRenderMode>("html");
+  const [renderMode, setRenderMode] = useState<CompareRenderMode>("svg-all");
   // Module state read by the shared capture path; set before children render.
   setCompareRenderMode(renderMode);
   const rasterRatio = activeDpr();
@@ -222,31 +221,8 @@ export function Compare() {
         </p>
       </header>
 
-      <div className="compare__cases compare__cases_probes">
-        <CompareMinimalFoProbe
-          rasterRatio={rasterRatio}
-          paintGen={paintGen}
-          canvasOpacity={canvasOpacity}
-          blend={blend}
-          showDom={showDom}
-          showCanvas={stackProps.showCanvas}
-        />
-      </div>
-
       <CompareDiagnostics />
-      <h2 className="compare__rowTitle">Full ticket blob</h2>
-      <div className="compare__cases">
-        {COMPARE_TICKETS.map(({ title, ticket }) => (
-          <CompareSvgStack
-            key={`${renderMode}:${presetId}:${ticket.id}`}
-            {...stackProps}
-            ticket={ticket}
-            title={`${title} (#${ticket.no})`}
-          />
-        ))}
-      </div>
-
-      <h2 className="compare__rowTitle">Optimized · reusable cached sprites</h2>
+      <h2 className="compare__rowTitle">Cached sprite stack</h2>
       <div className="compare__cases">
         {COMPARE_TICKETS.map(({ title, ticket }) => (
           <CompareSvgStack

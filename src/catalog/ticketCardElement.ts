@@ -260,6 +260,21 @@ export class TicketCard {
     return sx === this.slotX && sy === this.slotY;
   }
 
+  /**
+   * Atlas warm only: force chrome/overlay face on the DOM and sync internal
+   * class flags so a later `bind` does not resurrect `ticketCard_win` on
+   * disabled badge captures (multi-hit warm tickets).
+   */
+  applyForcedFace(face: "normal" | "gold" | "disabled"): void {
+    const win = face === "gold";
+    const disabled = face === "disabled";
+    this.winClass = win;
+    this.disabledClass = disabled;
+    this.dom.classList.remove("ticketCard_win", "ticketCard_disabled");
+    if (win) this.dom.classList.add("ticketCard_win");
+    if (disabled) this.dom.classList.add("ticketCard_disabled");
+  }
+
   bind(ticket: Ticket, x?: number, y?: number, layout?: CatalogLayout): void {
     if (layout) this.applyCardLayout(layout);
     else this.applyCardWidth(getActiveLayout().cardWidth);
@@ -284,12 +299,12 @@ export class TicketCard {
       this.applyCellBadge(i, hit, mult);
     }
 
-    const win = isWinTicket(ticket);
+    const disabled = Boolean(ticket.disabled);
+    const win = isWinTicket(ticket) && !disabled;
     if (win !== this.winClass) {
       this.winClass = win;
       this.dom.classList.toggle("ticketCard_win", win);
     }
-    const disabled = Boolean(ticket.disabled);
     if (disabled !== this.disabledClass) {
       this.disabledClass = disabled;
       this.dom.classList.toggle("ticketCard_disabled", disabled);

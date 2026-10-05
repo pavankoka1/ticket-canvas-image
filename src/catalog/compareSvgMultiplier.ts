@@ -52,31 +52,45 @@ export function multiplierDefs(): SVGDefsElement {
 }
 
 const DISC_URLS = { normal: "/badge-circle.png", disabled: "/badge-circle-disabled.png" } as const;
+const DAB_URLS = { normal: "/dab-full.png", disabled: "/dab-disabled.png" } as const;
 const discData: Partial<Record<keyof typeof DISC_URLS, string>> = {};
+const dabData: Partial<Record<keyof typeof DAB_URLS, string>> = {};
 let discLoad: Promise<void> | null = null;
 
-/**
- * Disc PNGs as data URLs: an SVG drawn as an image cannot fetch files, so the
- * raster clone needs them inline. Await before the first SVG-disc capture.
- */
-export function loadSvgMultiplierAssets(): Promise<void> {
-  discLoad ??= Promise.all(
-    (Object.keys(DISC_URLS) as (keyof typeof DISC_URLS)[]).map(async (k) => {
-      const blob = await (await fetch(DISC_URLS[k])).blob();
-      discData[k] = await new Promise<string>((resolve, reject) => {
+async function loadPngDataUrls(urls: Record<string, string>, into: Record<string, string>): Promise<void> {
+  await Promise.all(
+    Object.entries(urls).map(async ([k, url]) => {
+      const blob = await (await fetch(url)).blob();
+      into[k] = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
         reader.onload = () => resolve(String(reader.result));
-        reader.onerror = () => reject(reader.error ?? new Error(DISC_URLS[k]));
+        reader.onerror = () => reject(reader.error ?? new Error(url));
         reader.readAsDataURL(blob);
       });
     }),
-  ).then(() => undefined);
+  );
+}
+
+/**
+ * Disc + dab PNGs as data URLs: overlay SVG and raster clones cannot fetch
+ * files reliably. Await before the first svg-all capture.
+ */
+export function loadSvgMultiplierAssets(): Promise<void> {
+  discLoad ??= Promise.all([
+    loadPngDataUrls(DISC_URLS, discData as Record<string, string>),
+    loadPngDataUrls(DAB_URLS, dabData as Record<string, string>),
+  ]).then(() => undefined);
   return discLoad;
 }
 
 /** Data URL of the disc PNG, once `loadSvgMultiplierAssets` has resolved. */
 export function discDataUrl(disabled: boolean): string | undefined {
   return discData[disabled ? "disabled" : "normal"];
+}
+
+/** Data URL of the dab PNG, once `loadSvgMultiplierAssets` has resolved. */
+export function dabDataUrl(disabled: boolean): string | undefined {
+  return dabData[disabled ? "disabled" : "normal"];
 }
 
 /** Rotated three-layer label centred on (cx, cy), in the caller's coordinates. */

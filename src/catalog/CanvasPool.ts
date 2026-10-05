@@ -6,6 +6,7 @@ import {
   getMultiplierLabelPlace,
 } from "./badgeAtlas";
 import { catalogCellBoxes, paintCatalogTicket } from "./catalogPaint";
+import { isCatalogSvgPaintReady, paintCatalogTicketSvgAll } from "./catalogSvgPaint";
 import { contentWidth, getActiveLayout } from "./catalogLayout";
 import { getCellBitmap } from "./cellAtlas";
 import {
@@ -347,7 +348,11 @@ export class CanvasPool {
       const sy = Math.round(slot.y * dpr) / dpr;
       const originX = Math.round((screenLeft + sx) * dpr) - x0;
       const originY = Math.round((parent.top + sy) * dpr) - y0;
-      paintCatalogTicket(ctx, ticket, originX, originY, cardWidth, dpr, boxes);
+      if (isCatalogSvgPaintReady()) {
+        paintCatalogTicketSvgAll(ctx, ticket, originX, originY, layout, dpr);
+      } else {
+        paintCatalogTicket(ctx, ticket, originX, originY, cardWidth, dpr, boxes);
+      }
     }
   }
 }

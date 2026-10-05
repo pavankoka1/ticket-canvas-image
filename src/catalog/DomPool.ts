@@ -2,6 +2,7 @@ import { playTicketAppear } from './appear';
 import { getActiveLayout } from './catalogLayout';
 import { playTicketDraw } from './drawGesture';
 import { DOM_POOL_SIZE } from './layout';
+import { prepareCatalogDomCard } from './catalogSvgPaint';
 import {
   attachTicketCard,
   probeSlotPlacementDrift,
@@ -69,6 +70,7 @@ export class DomPool {
       // Unchanged band members keep their DOM as-is — bind only new/moved/updated.
       if (!isNew && card.shows(ticket, slot.x, slot.y)) continue;
       card.bind(ticket, slot.x, slot.y);
+      prepareCatalogDomCard(card);
       probeSlotPlacementDrift(card.dom, this.host, slot.x, slot.y);
       if (isNew && appearIds?.has(slot.id)) playAppear(card, slot.x, slot.y);
     }

@@ -1,0 +1,74 @@
+[
+  {
+    "dpr": 2,
+    "preset": "desktopMedium",
+    "captures": 23,
+    "ms": 1318
+  },
+  {
+    "dpr": 2,
+    "preset": "desktopMedium",
+    "captures": 23,
+    "ms": 1194
+  },
+  {
+    "dpr": 2,
+    "preset": "desktopMedium",
+    "captures": 20,
+    "ms": 3815
+  },
+  {
+    "dpr": 2,
+    "preset": "desktopMedium",
+    "captures": 20,
+    "ms": 3738
+  },
+  {
+    "dpr": 2,
+    "preset": "desktopSmall",
+    "captures": 23,
+    "ms": 1210
+  },
+  {
+    "dpr": 2,
+    "preset": "desktopSmall",
+    "captures": 20,
+    "ms": 3822
+  },
+  {
+    "dpr": 2,
+    "preset": "mobile",
+    "captures": 23,
+    "ms": 2098
+  },
+  {
+    "dpr": 2,
+    "preset": "mobile",
+    "captures": 20,
+    "ms": 3807
+  },
+  {
+    "dpr": 2,
+    "preset": "mobileLarge",
+    "captures": 23,
+    "ms": 2143
+  },
+  {
+    "dpr": 2,
+    "preset": "mobileLarge",
+    "captures": 20,
+    "ms": 3812
+  },
+  {
+    "dpr": 2,
+    "preset": "mobileCompact",
+    "captures": 23,
+    "ms": 13136
+  },
+  {
+    "dpr": 2,
+    "preset": "mobileCompact",
+    "captures": 20,
+    "ms": 3837
+  }
+]

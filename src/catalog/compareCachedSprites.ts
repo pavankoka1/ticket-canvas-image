@@ -5,11 +5,15 @@ import { activeDpr, badgeHostDevice, resolveCellBoxModel } from './cellBoxModel'
 import { alignCompareStackOrigin, styleCompareTicketDom } from './compareDomAlign';
 import { usesSvgMultiplier, usesSvgText } from './compareRenderMode';
 import { applySvgMultiplier } from './compareSvgMultiplier';
+import { paintSvgAllCompareTicket } from './compareSvgAllPaint';
+import { CATALOG_FIGMA_DESKTOP_LOCK } from './catalogFigmaDesktop';
 import {
   applySvgText,
   OVERLAY_CLASS,
   stripCompareOverlayHeader,
   stripCompareOverlayHeaderAndCellNumbers,
+  stripOverlayInkKeepChrome,
+  SVG_FACE_CLASS,
 } from './compareSvgText';
 import type { CatalogLayout } from './catalogLayout';
 import { applyTicketCellLayout, TicketCard } from './ticketCardElement';
@@ -31,16 +35,19 @@ type Sprite = { bitmap: HTMLCanvasElement; blob: Blob };
 const sprites = new Map<string, Promise<Sprite>>();
 const packs = new Map<string, Promise<Pack>>();
 type NumberPatch = { sprite: Sprite; dx: number; dy: number };
-type Pack = {
+export type ComparePaintPack = {
   numberPatches: Map<string, NumberPatch>;
   badges: Map<string, Sprite>;
   headerGlyphs?: HeaderGlyphPack;
+  catalogChrome: Map<string, Sprite>;
   prefix: string;
 };
 
+type Pack = ComparePaintPack;
+
 function prefix(layout: CatalogLayout, dpr: number): string {
   const phases = usesSvgText() ? compareGlyphPhaseCount() : 0;
-  return `compare-sprites-v52|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|number-sheet-patches|badge-no-cell-digits|defer-idb-persist|sheet-glyphs-badges|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+  return `compare-sprites-v54|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|number-sheet-patches|badge-no-cell-digits|overlay-dab|disabled-face-no-win|defer-idb-persist|sheet-glyphs-badges|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
 }
 
 type CssRect = { x: number; y: number; width: number; height: number };
@@ -530,9 +537,7 @@ async function hydratePackFromStoredSheets(
 }
 
 function forceBadgeFace(card: TicketCard, face: 'normal' | 'gold' | 'disabled'): void {
-  card.dom.classList.remove('ticketCard_win', 'ticketCard_disabled');
-  if (face === 'gold') card.dom.classList.add('ticketCard_win');
-  if (face === 'disabled') card.dom.classList.add('ticketCard_disabled');
+  card.applyForcedFace(face);
 }
 
 function badgeBodyCrop(
@@ -684,7 +689,12 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
         ms: Math.round(performance.now() - warmT0),
         fromIdb: 'sheets',
       });
-      return { numberPatches: hydrated.numberPatches, badges: hydrated.badges, prefix: key };
+      return {
+        numberPatches: hydrated.numberPatches,
+        badges: hydrated.badges,
+        catalogChrome: new Map(),
+        prefix: key,
+      };
     }
 
     const host = document.createElement('div');
@@ -851,6 +861,8 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
           ticket.multipliers = Object.fromEntries(
             BADGE_WARM_CELLS.map((cell, i) => [cell, BADGE_WARM_VALUES[i]!]).filter(([, v]) => v > 1),
           );
+          ticket.disabled = face === 'disabled';
+          ticket.win = '';
           batchCard.bind(ticket, 0, 0, layout);
           forceBadgeFace(batchCard, face);
           for (let i = 0; i < 6; i++) batchCard.clearCellDigit(i);
@@ -984,8 +996,83 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
       }
       console.info('[atlas-warm]', { preset, prefix: key, captures, ms: Math.round(performance.now() - warmT0) });
       scheduleFlushPersistQueue();
-      return { numberPatches, badges, prefix: key };
+      return { numberPatches, badges, catalogChrome: new Map(), prefix: key };
     } finally { host.remove(); }
+}
+
+function catalogChromeCacheKey(packPrefix: string, face: string): string {
+  const variant = CATALOG_FIGMA_DESKTOP_LOCK ? "svgface-v3" : "html";
+  return `${packPrefix}|catalog-chrome|${variant}|${face}`;
+}
+
+/** Face chrome for catalog tiles (stable key — no live layout-origin fraction). */
+export async function warmCatalogChromeSprites(
+  layout: CatalogLayout,
+  dpr: number,
+  pack: ComparePaintPack,
+): Promise<void> {
+  const host = document.createElement('div');
+  host.style.cssText = 'position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none';
+  const card = new TicketCard();
+  styleCompareTicketDom(card.dom);
+  host.append(card.dom);
+  document.body.append(host);
+  const m = layout.metrics;
+  const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(card.dom, dpr, m, part);
+  try {
+    for (const face of ['normal', 'gold', 'disabled'] as const) {
+      const cacheKey = catalogChromeCacheKey(pack.prefix, face);
+      const sprite = await cached(cacheKey, async () => {
+        const ticket = sourceTicket(face === 'disabled');
+        if (face === 'gold') {
+          ticket.hits = [0, 1];
+          ticket.win = '$0';
+        }
+        card.bind(ticket, 0, 0, layout);
+        forceBadgeFace(card, face);
+        if (CATALOG_FIGMA_DESKTOP_LOCK) card.dom.classList.add(SVG_FACE_CLASS);
+        prepareCompareCard(card, layout, activeDpr());
+        return capture({
+          css: CATALOG_FIGMA_DESKTOP_LOCK
+            ? '.ticketCard__cell::before{visibility:hidden!important}'
+            : '.ticketCard__cell::before{visibility:visible!important}',
+          prepare(root) {
+            hideHeader(root);
+            root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell) => {
+              for (const node of [...cell.childNodes]) if (node.nodeType === Node.TEXT_NODE) node.textContent = '';
+            });
+            root.querySelectorAll<HTMLElement>('.ticketCard__badgeHost').forEach((el) => {
+              el.style.visibility = 'hidden';
+            });
+            if (CATALOG_FIGMA_DESKTOP_LOCK) {
+              root.classList.add(SVG_FACE_CLASS);
+              stripOverlayInkKeepChrome(root);
+            } else {
+              removeOverlay(root);
+            }
+          },
+        });
+      });
+      pack.catalogChrome.set(face, sprite);
+    }
+    scheduleFlushPersistQueue();
+  } finally {
+    host.remove();
+  }
+}
+
+/** svg-all atlas for catalog canvas: number/badge sheets + chrome + header glyphs. */
+export async function warmCatalogCompareAtlas(
+  layout: CatalogLayout,
+  dpr: number,
+): Promise<ComparePaintPack> {
+  const pack = await preloadComparePack(layout, dpr);
+  if (!pack.catalogChrome) pack.catalogChrome = new Map();
+  await warmCatalogChromeSprites(layout, dpr, pack);
+  if (!pack.headerGlyphs) {
+    pack.headerGlyphs = await warmHeaderGlyphsOffscreen(pack, layout, dpr);
+  }
+  return pack;
 }
 
 function warmPack(layout: CatalogLayout, dpr: number): Promise<Pack> {
@@ -1243,8 +1330,6 @@ export async function assembleCompareSprites(live: HTMLElement, ticket: Ticket, 
         x, y, width, badge.bitmap.height);
     }
   }
-  // Paint numbers after the padded badge backgrounds, so padding never erases
-  // adjacent numbers.
   for (let i = 0; i < 6; i++) {
     if (ticket.hits.includes(i) || ticket.multipliers[i]) continue;
     const patch = numberPatches[i]!;
@@ -1269,7 +1354,6 @@ async function assembleWithOverlay(
   cellW: number,
   liveKey: string,
 ): Promise<HTMLCanvasElement> {
-  const m = layout.metrics;
   const face = ticket.disabled ? 'disabled' : isWinTicket(ticket) ? 'gold' : 'normal';
   const out = document.createElement('canvas');
   out.width = Math.round(layout.cardWidth * dpr);
@@ -1278,29 +1362,7 @@ async function assembleWithOverlay(
   if (!ctx) throw new Error('Compare 2D context unavailable');
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(chrome, 0, 0);
-  const numberPatches = await Promise.all(ticket.balls.map((ball, i) => {
-    if (ticket.hits.includes(i) || ticket.multipliers[i]) return Promise.resolve(null);
-    const patch = pack.numberPatches.get(`${Boolean(ticket.disabled)}|${face}|${ball}`);
-    return patch ? Promise.resolve(patch) : Promise.reject(new Error(`Compare number patch missing: ${face} ${ball}`));
-  }));
-  for (let i = 0; i < 6; i++) {
-    const mult = ticket.multipliers[i] ?? 0;
-    if (!ticket.hits.includes(i) && !mult) continue;
-    const badge = pack.badges.get(`${face}|${mult || 1}`)!;
-    const pad = Math.round(16 * dpr);
-    const width = Math.round(cellW * dpr);
-    ctx.drawImage(badge.bitmap, pad, 0, width, badge.bitmap.height,
-      Math.round(cellX[i]! * dpr), Math.round(m.headerHeight * dpr), width, badge.bitmap.height);
-  }
-  for (let i = 0; i < 6; i++) {
-    if (ticket.hits.includes(i) || ticket.multipliers[i]) continue;
-    const patch = numberPatches[i]!;
-    ctx.drawImage(
-      patch.sprite.bitmap,
-      Math.round(cellX[i]! * dpr) + patch.dx,
-      Math.round(m.headerHeight * dpr) + patch.dy,
-    );
-  }
+  paintSvgAllCompareTicket(ctx, ticket, pack, layout, cellX, cellW, face, 0, 0, dpr);
   const glyphs = await ensureHeaderGlyphs(live, layout, dpr, pack);
   const winText = isWinTicket(ticket) && ticket.win ? ticket.win : '';
   await stampHeaderGlyphs(ctx, live, ticket.no, winText, face, dpr, glyphs, async (_k, s) => trimSprite(s), liveKey);

@@ -1,0 +1,6 @@
+{
+  "phase": "warm",
+  "url": "http://localhost:5174/compare",
+  "dpr": 2,
+  "mode": "svg-all"
+}

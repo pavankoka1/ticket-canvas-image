@@ -32,8 +32,13 @@ import {
 } from "./catalogLayout";
 import { resolveLiveCellBoxModel } from "./cellAtlas";
 import { ensureTicketFontsForLayout } from "./ticketFont";
-import { warmCellBitmaps } from "./cellBitmaps";
-import { warmIdDigits } from "./headerGlyphs";
+import {
+  CATALOG_FIGMA_DESKTOP_LOCK,
+  FIGMA_DESKTOP_CATALOG_FRAME_WIDTH,
+  figmaDesktopCatalogMetrics,
+} from "./catalogFigmaDesktop";
+import { ensureCatalogSvgAtlasWarm } from "./catalogSvgPaint";
+import { setCompareRenderMode } from "./compareRenderMode";
 import { DomPool } from "./DomPool";
 import { MAX_TICKETS, ROW_BUFFER, SCROLL_BAND_SETTLE_MS, domPoolSize } from "./layout";
 import {
@@ -91,7 +96,9 @@ export function Catalog() {
   const [canvasReady, setCanvasReady] = useState(false);
   const [domCount, setDomCount] = useState(0);
   const [tileCount, setTileCount] = useState(0);
-  const [presetMode, setPresetMode] = useState<PresetMode>("auto");
+  const [presetMode, setPresetMode] = useState<PresetMode>(
+    CATALOG_FIGMA_DESKTOP_LOCK ? "desktopMedium" : "auto",
+  );
   const [drawRound, setDrawRound] = useState(0);
   const [lastDraw, setLastDraw] = useState("");
   const drawnBallsRef = useRef<number[]>([]);
@@ -103,21 +110,34 @@ export function Catalog() {
     h: typeof window !== "undefined" ? window.innerHeight : 768,
   }));
 
-  const metrics =
-    presetMode === "auto"
+  const metrics = CATALOG_FIGMA_DESKTOP_LOCK
+    ? figmaDesktopCatalogMetrics()
+    : presetMode === "auto"
       ? resolvePresetFromViewport(viewport.w, viewport.h)
       : getPreset(presetMode);
-  const isMobile = metrics.id.startsWith("mobile");
+  const isMobile = CATALOG_FIGMA_DESKTOP_LOCK ? false : metrics.id.startsWith("mobile");
   const poolSize = domPoolSize(isMobile);
   const isLandscape = viewport.w > viewport.h;
-  const frame = useMemo(
-    () => resolveTicketFrame(viewport.w, viewport.h),
-    [viewport],
-  );
+  const frame = useMemo(() => {
+    if (CATALOG_FIGMA_DESKTOP_LOCK) {
+      return { width: FIGMA_DESKTOP_CATALOG_FRAME_WIDTH, height: 231 };
+    }
+    return resolveTicketFrame(viewport.w, viewport.h);
+  }, [viewport]);
   const layout = useMemo(
-    () => resolveCatalogLayout(isMobile, isLandscape, frame.width, metrics),
+    () =>
+      resolveCatalogLayout(
+        isMobile,
+        CATALOG_FIGMA_DESKTOP_LOCK ? false : isLandscape,
+        frame.width,
+        metrics,
+      ),
     [isMobile, isLandscape, frame.width, metrics],
   );
+
+  useEffect(() => {
+    if (CATALOG_FIGMA_DESKTOP_LOCK) setCompareRenderMode("svg-all");
+  }, []);
 
   useLayoutEffect(() => {
     setActiveLayout(layout);
@@ -242,9 +262,7 @@ export function Catalog() {
     applyTicketCssVars(host, layout.metrics);
     applyCellBoxCssVars(host, model, layout.metrics);
     try {
-      await ensureTicketFontsForLayout(layout.metrics);
-      await warmCellBitmaps(host);
-      await warmIdDigits(host);
+      await ensureCatalogSvgAtlasWarm(layout);
     } finally {
       setActiveLayout(prev);
       if (prevModel) setLiveCellBoxModel(prevModel);
@@ -283,14 +301,9 @@ export function Catalog() {
     const layoutNow = getActiveLayout();
     const gen = ++atlasGenRef.current;
     void (async () => {
-      const host = atlasHostRef.current;
       await ensureTicketFontsForLayout(layoutNow.metrics);
       if (gen !== atlasGenRef.current) return;
-      if (host) {
-        await warmCellBitmaps(host);
-        if (gen !== atlasGenRef.current) return;
-        await warmIdDigits(host);
-      }
+      await ensureCatalogSvgAtlasWarm(layoutNow);
       if (gen !== atlasGenRef.current) return;
       setCanvasReady(true);
       syncCellBoxCssVarsOnHosts();
@@ -589,7 +602,7 @@ export function Catalog() {
         <p className="toolbar__hint">
           +1 and +5 play the catalog appear gesture, then scroll to the bottom.
           +25 and +100 only scroll. Live rows stay DOM. Scrolled-away rows use
-          layered sprite paint (<code>paintCatalogTicket</code>). Up to{" "}
+          svg-all sprite paint (compare atlas). Up to{" "}
           {MAX_TICKETS} tickets.
           {" · "}
           <a href="/compare">DOM↔Canvas compare</a>

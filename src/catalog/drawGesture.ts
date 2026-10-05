@@ -10,6 +10,11 @@
  * The card's slot stays in `translate` for the dip; `transform` is `none` while
  * it scales, then the resting `translate3d` comes back.
  */
+import {
+  beginDrawDabMotion,
+  beginDrawMultiplierMotion,
+  refreshSvgOverlayInk,
+} from "./compareSvgText";
 import type { TicketCard } from "./ticketCardElement";
 
 const EASE_OUT = "cubic-bezier(0.33, 1, 0.68, 1)";
@@ -73,6 +78,65 @@ function play(
   return anim;
 }
 
+function overlayTranslatePrefix(el: SVGGElement): string {
+  const match = /translate\(([-\d.]+)\s+([-\d.]+)\)/.exec(el.getAttribute("transform") ?? "");
+  if (!match) return "";
+  return `translate(${match[1]}px, ${match[2]}px) `;
+}
+
+function playOverlayPop(el: SVGGElement, isMult: boolean): void {
+  const start = isMult ? MULT_DISC_START : DAB_START;
+  const at = overlayTranslatePrefix(el);
+  const anim = el.animate(
+    [
+      { transform: `${at}scale(${start})`, opacity: 0 },
+      { transform: `${at}scale(1)`, opacity: 1, easing: EASE_OUT },
+    ],
+    { duration: DAB_MS, easing: isMult ? "linear" : EASE_OUT, fill: "forwards" },
+  );
+  void anim.finished.then(
+    () => {
+      anim.cancel();
+      el.style.removeProperty("opacity");
+      el.style.removeProperty("transform");
+    },
+    () => undefined,
+  );
+}
+
+function playOverlayMultLabel(el: SVGGElement): void {
+  const end = MULT_TEXT_END;
+  const at = overlayTranslatePrefix(el);
+  const anim = el.animate(
+    [
+      { transform: `${at}scale(${MULT_TEXT_START})`, opacity: 0, offset: 0 },
+      {
+        transform: `${at}scale(${MULT_TEXT_START})`,
+        opacity: 0,
+        offset: DAB_MS / end,
+        easing: "linear",
+      },
+      { transform: `${at}scale(1)`, opacity: 1, offset: MULT_TEXT_LAND / end, easing: EASE_OUT },
+      {
+        transform: `${at}scale(${MULT_TEXT_PUNCH_SCALE})`,
+        opacity: 1,
+        offset: MULT_TEXT_PUNCH / end,
+        easing: EASE_OUT,
+      },
+      { transform: `${at}scale(1)`, opacity: 1, offset: 1, easing: EASE_OUT },
+    ],
+    { duration: end, easing: "linear", fill: "forwards" },
+  );
+  void anim.finished.then(
+    () => {
+      anim.cancel();
+      el.style.removeProperty("opacity");
+      el.style.removeProperty("transform");
+    },
+    () => undefined,
+  );
+}
+
 function dipKeyframes(at: string, multiplier: boolean): Keyframe[] {
   const end = multiplier ? MULT_TEXT_END : DIP_END;
   const start = multiplier ? MULT_TEXT_LAND : DIP_START;
@@ -125,7 +189,6 @@ export function playTicketDraw(
   const hasWin = root.classList.contains("ticketCard_win");
   const playShine = kind === "win" || (isMult && hasWin);
 
-  // One subtree cancel only when prior motion was marked — no unconditional flush.
   card.cancelMotion();
   const token = card.beginMotion();
 
@@ -135,53 +198,65 @@ export function playTicketDraw(
   });
 
   const host = card.badgeHostAt(cell);
-  if (host) {
-    play(
-      host,
-      isMult
-        ? [
-            { scale: String(MULT_DISC_START), opacity: 0 },
-            { scale: "1", opacity: 1, easing: EASE_OUT },
-          ]
-        : [
-            { scale: String(DAB_START), opacity: 0 },
-            { scale: "1", opacity: 1, easing: EASE_OUT },
-          ],
-      { duration: DAB_MS, easing: isMult ? "linear" : EASE_OUT },
-    );
-  }
-
   if (isMult) {
-    const label = card.badgeLabelAt(cell);
-    if (label) {
-      const end = MULT_TEXT_END;
+    const { disc, label } = beginDrawMultiplierMotion(root, cell);
+    if (disc) playOverlayPop(disc, true);
+    else if (host) {
       play(
-        label,
+        host,
         [
-          { transform: `scale(${MULT_TEXT_START})`, opacity: 0, offset: 0 },
-          {
-            transform: `scale(${MULT_TEXT_START})`,
-            opacity: 0,
-            offset: DAB_MS / end,
-            easing: "linear",
-          },
-          { transform: "scale(1)", opacity: 1, offset: MULT_TEXT_LAND / end, easing: EASE_OUT },
-          {
-            transform: `scale(${MULT_TEXT_PUNCH_SCALE})`,
-            opacity: 1,
-            offset: MULT_TEXT_PUNCH / end,
-            easing: EASE_OUT,
-          },
-          { transform: "scale(1)", opacity: 1, offset: 1, easing: EASE_OUT },
+          { scale: String(MULT_DISC_START), opacity: 0 },
+          { scale: "1", opacity: 1, easing: EASE_OUT },
         ],
-        { duration: end, easing: "linear" },
-        true,
+        { duration: DAB_MS, easing: "linear" },
+      );
+    }
+    if (label) playOverlayMultLabel(label);
+    else {
+      const htmlLabel = card.badgeLabelAt(cell);
+      if (htmlLabel) {
+        const end = MULT_TEXT_END;
+        play(
+          htmlLabel,
+          [
+            { transform: `scale(${MULT_TEXT_START})`, opacity: 0, offset: 0 },
+            {
+              transform: `scale(${MULT_TEXT_START})`,
+              opacity: 0,
+              offset: DAB_MS / end,
+              easing: "linear",
+            },
+            { transform: "scale(1)", opacity: 1, offset: MULT_TEXT_LAND / end, easing: EASE_OUT },
+            {
+              transform: `scale(${MULT_TEXT_PUNCH_SCALE})`,
+              opacity: 1,
+              offset: MULT_TEXT_PUNCH / end,
+              easing: EASE_OUT,
+            },
+            { transform: "scale(1)", opacity: 1, offset: 1, easing: EASE_OUT },
+          ],
+          { duration: end, easing: "linear" },
+          true,
+        );
+      }
+    }
+  } else {
+    beginDrawDabMotion(root, cell);
+    if (host) {
+      play(
+        host,
+        [
+          { scale: String(DAB_START), opacity: 0 },
+          { scale: "1", opacity: 1, easing: EASE_OUT },
+        ],
+        { duration: DAB_MS, easing: EASE_OUT },
       );
     }
   }
 
   const settle = () => {
     card.clearCellDigit(cell);
+    refreshSvgOverlayInk(root);
     card.hideShine();
     card.endMotion(token);
   };
@@ -211,7 +286,6 @@ export function playTicketDraw(
   sparks.forEach((spark, index) => {
     const left = SPARKLE_LEFT[index] ?? 50;
     spark.style.left = `${left}%`;
-    // Peaks stagger across the 600ms multiplier shine (drawPhase sparkle windows).
     const progress = [0.28, 0.55, 0.85][index] ?? 0.5;
     const peakAt = delay + progress * duration;
     const start = peakAt - SPARKLE_MS / 2;

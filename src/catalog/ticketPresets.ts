@@ -43,9 +43,9 @@ export const DESKTOP_MEDIUM: TicketMetrics = {
   separatorMarginTop: 4.5,
   separatorWidth: 1,
   separatorHeight: 12,
-  radius: 5,
+  radius: 4,
   dabSize: 24,
-  cardShadow: "",
+  cardShadow: "0 2px 1px rgb(0 0 0 / 42%)",
 };
 
 /** 1024–1365 — desktopSmall. */

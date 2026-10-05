@@ -280,7 +280,7 @@ button:disabled {
   left: calc(-1 * var(--ticket-separator-width, 1px));
   width: var(--ticket-separator-width, 1px);
   height: var(--ticket-separator-height, 12px);
-  border-radius: 1px;
+  border-radius: 2px;
   background: rgb(177 151 151 / 50%);
   pointer-events: none;
   transform: translate(
@@ -749,6 +749,21 @@ button:disabled {
 
 
 /* Ticket typography must not be autosized differently by iOS in the page and SVG. */
+/* Catalog svg-all: chrome + separators live in the overlay SVG (Figma desktop). */
+.ticketCard_svgFace {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.ticketCard_svgFace .ticketCard__header,
+.ticketCard_svgFace .ticketCard__body {
+  background: transparent !important;
+}
+
+.ticketCard_svgFace .ticketCard__cell:not(:first-child)::before {
+  visibility: hidden;
+}
+
 .ticketCard_compare,
 .ticketCard_compare *,
 .compare__foProbeBox {

@@ -14,7 +14,7 @@ import { activeDpr } from "./cellBoxModel";
 export const COMPARE_RENDER_MODES = [
   { id: "html", label: "HTML zoom · display ratio" },
   { id: "svg-mult", label: "SVG-text multiplier · display ratio" },
-  { id: "svg-all", label: "SVG text: all (id, amount, numbers, multiplier + disc)" },
+  { id: "svg-all", label: "SVG overlay · full ticket (recommended)" },
   { id: "ratio-1", label: "Raster ratio 1" },
   { id: "ratio-2", label: "Raster ratio 2" },
   { id: "ratio-2.5", label: "Raster ratio 2.5" },
