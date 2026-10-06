@@ -14,7 +14,13 @@
  */
 
 import { dabDataUrl, discDataUrl, multiplierDefs, multiplierGroup, svgEl } from "./compareSvgMultiplier";
-import { activeDpr, applyBadgeChrome, badgeHostDevice, resolveCellBoxModel } from "./cellBoxModel";
+import {
+  activeDpr,
+  applyBadgeChrome,
+  badgeHostDevice,
+  badgeHostInCardCss,
+  resolveCellBoxModel,
+} from "./cellBoxModel";
 import { getActiveLayout } from "./catalogLayout";
 import { buildTicketChromeSvg, SVG_CHROME_CLASS } from "./ticketSvgChrome";
 
@@ -165,19 +171,18 @@ export function buildTicketOverlay(root: HTMLElement): SVGSVGElement {
   const H = px(root, "--ticket-card-height") || parseFloat(root.style.height);
   const headerH = px(root, "--ticket-header-height");
   const padX = px(root, "--ticket-header-pad-x");
-  const padY = px(root, "--ticket-body-padding-y");
-  const sep = px(root, "--ticket-separator-width");
   const metaPx = px(root, "--ticket-meta-font-size");
   const numberPx = px(root, "--ticket-number-font-size");
   const dab = px(root, "--ticket-dab-size");
 
-  const cellW = parseFloat(
-    root.querySelector<HTMLElement>(".ticketCard__cell")?.style.width ?? "0",
-  );
+  const layout = getActiveLayout();
+  const dpr = activeDpr();
+  const model = resolveCellBoxModel(layout, dpr);
+  const cellW = model.cellW;
   const children: SVGElement[] = [];
   const chromeId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
   if (root.classList.contains(SVG_FACE_CLASS) && cellW > 0) {
-    children.push(...buildTicketChromeSvg(W, getActiveLayout().metrics, face, cellW, chromeId));
+    children.push(...buildTicketChromeSvg(W, layout.metrics, face, cellW, chromeId));
   }
   const headerY = headerH / 2 + BASELINE_EM * metaPx;
   const id = textOf(root.querySelector(".ticketCard__id"));
@@ -187,54 +192,36 @@ export function buildTicketOverlay(root: HTMLElement): SVGSVGElement {
 
   let needsDefs = false;
   root.querySelectorAll<HTMLElement>(".ticketCard__cell").forEach((cell, i) => {
-    const cellW = parseFloat(cell.style.width);
-    const cellH = parseFloat(cell.style.height);
-    const x0 = i * (cellW + sep);
-    const y0 = headerH + padY;
+    const cellBox = model.cells[i]!;
+    const x0 = cellBox.x;
+    const y0 = cellBox.y;
     const value = cellOverlayNumber(cell);
     if (value) {
-      children.push(text(value, x0 + cellW / 2, y0 + cellH / 2 + BASELINE_EM * numberPx, "middle", numberPx, COLORS.number[face]));
-    }
-    const dabHost = cell.querySelector<HTMLElement>(".ticketCard__badgeHost_dab");
-    if (dabHost && dabHost.style.display !== "none") {
-      const size = parseFloat(dabHost.style.width);
-      const hx = x0 + parseFloat(dabHost.style.left);
-      const hy = y0 + parseFloat(dabHost.style.top);
-      const cx = hx + size / 2;
-      const cy = hy + size / 2;
-      const dab = dabDataUrl(face === "disabled");
-      if (dab) {
-        children.push(
-          badgeHostLayer(
-            i,
-            cx,
-            cy,
-            size,
-            svgEl("image", { href: dab, preserveAspectRatio: "none" }),
-          ),
-        );
-      }
-    }
-    const host = cell.querySelector<HTMLElement>(".ticketCard__badgeHost_multiplier");
-    if (!host || host.style.display === "none") return;
-    const label = host.querySelector(".ticketCard__multiplierFill > span")?.textContent ?? "";
-    const size = parseFloat(host.style.width);
-    const hx = x0 + parseFloat(host.style.left);
-    const hy = y0 + parseFloat(host.style.top);
-    const cx = hx + size / 2;
-    const cy = hy + size / 2;
-    const disc = discDataUrl(face === "disabled");
-    if (disc) {
       children.push(
-        badgeHostLayer(
-          i,
-          cx,
-          cy,
-          size,
-          svgEl("image", { href: disc, preserveAspectRatio: "none" }),
+        text(
+          value,
+          x0 + cellW / 2,
+          y0 + cellBox.h / 2 + BASELINE_EM * numberPx,
+          "middle",
+          numberPx,
+          COLORS.number[face],
         ),
       );
     }
+    const placeBadgeInk = (host: HTMLElement | null, imageHref: string | undefined) => {
+      if (!host || host.style.display === "none" || !imageHref) return;
+      const { cx, cy, size } = badgeHostInCardCss(i, layout, dpr);
+      children.push(
+        badgeHostLayer(i, cx, cy, size, svgEl("image", { href: imageHref, preserveAspectRatio: "none" })),
+      );
+    };
+    const dabHost = cell.querySelector<HTMLElement>(".ticketCard__badgeHost_dab");
+    placeBadgeInk(dabHost, dabDataUrl(face === "disabled"));
+    const host = cell.querySelector<HTMLElement>(".ticketCard__badgeHost_multiplier");
+    if (!host || host.style.display === "none") return;
+    const label = host.querySelector(".ticketCard__multiplierFill > span")?.textContent ?? "";
+    placeBadgeInk(host, discDataUrl(face === "disabled"));
+    const { cx, cy } = badgeHostInCardCss(i, layout, dpr);
     const labelWrap = svgEl("g", {
       [DRAW_MULT_LABEL_ATTR]: "",
       [DRAW_CELL_ATTR]: String(i),

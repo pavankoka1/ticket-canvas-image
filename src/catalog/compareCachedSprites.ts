@@ -47,7 +47,7 @@ type Pack = ComparePaintPack;
 
 function prefix(layout: CatalogLayout, dpr: number): string {
   const phases = usesSvgText() ? compareGlyphPhaseCount() : 0;
-  return `compare-sprites-v54|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|number-sheet-patches|badge-no-cell-digits|overlay-dab|disabled-face-no-win|defer-idb-persist|sheet-glyphs-badges|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+  return `compare-sprites-v55|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|number-sheet-patches|badge-no-cell-digits|overlay-dab|disabled-face-no-win|body-pad-snap|defer-idb-persist|sheet-glyphs-badges|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
 }
 
 type CssRect = { x: number; y: number; width: number; height: number };

@@ -7,7 +7,7 @@
  */
 
 import { getActiveLayout, type CatalogLayout } from "./catalogLayout";
-import { activeDpr, type CellBox } from "./cellBoxModel";
+import { activeDpr, snapCss, type CellBox } from "./cellBoxModel";
 
 /** Horizontal pad on dab/multiplier SVG capture (rotated N× label). */
 export const BADGE_CAPTURE_PAD_X = 16;
@@ -34,7 +34,8 @@ export function resolveTicketCellGeometry(
   const cardW = layout.cardWidth;
   const cellW = Math.max(1, Math.floor((cardW - 5 * sep) / 6));
   const cellH = Math.round(m.cellHeight);
-  const numberTop = m.headerHeight + m.bodyPaddingY;
+  const numberTop = snapCss(m.headerHeight + m.bodyPaddingY, dpr);
+  const bodyPaddingY = numberTop - m.headerHeight;
   const badgeTop = m.headerHeight;
   const padX = 0;
   const stride = cellW + sep;
@@ -53,7 +54,7 @@ export function resolveTicketCellGeometry(
     padX,
     numberTop,
     badgeTop,
-    bodyPaddingY: m.bodyPaddingY,
+    bodyPaddingY,
     numbers,
   };
 }

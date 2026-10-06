@@ -3,6 +3,8 @@
  * `TicketCatalog.module.css` + `Ticket.module.css`.
  */
 
+import { activeDpr, snapCss } from "./cellBoxModel";
+
 export type TicketPresetId =
   "desktopMedium" | "desktopSmall" | "mobile" | "mobileLarge" | "mobileCompact";
 
@@ -167,13 +169,23 @@ export function resolvePresetFromViewport(
   return DESKTOP_MEDIUM;
 }
 
+/** Body band top in CSS px on the active DPR grid (header + pad, snapped once). */
+export function snappedTicketNumberTop(m: TicketMetrics, dpr = activeDpr()): number {
+  return snapCss(m.headerHeight + m.bodyPaddingY, dpr);
+}
+
+/** `--ticket-body-padding-y` that matches `snappedTicketNumberTop` (header is integer). */
+export function snappedTicketBodyPaddingY(m: TicketMetrics, dpr = activeDpr()): number {
+  return snappedTicketNumberTop(m, dpr) - m.headerHeight;
+}
+
 /** Apply fortunamania CSS custom properties onto a host. */
-export function applyTicketCssVars(el: HTMLElement, m: TicketMetrics): void {
+export function applyTicketCssVars(el: HTMLElement, m: TicketMetrics, dpr = activeDpr()): void {
   const s = el.style;
   s.setProperty("--ticket-card-height", `${m.cardHeight}px`);
   s.setProperty("--ticket-header-height", `${m.headerHeight}px`);
   s.setProperty("--ticket-body-height", `${m.bodyHeight}px`);
-  s.setProperty("--ticket-body-padding-y", `${m.bodyPaddingY}px`);
+  s.setProperty("--ticket-body-padding-y", `${snappedTicketBodyPaddingY(m, dpr)}px`);
   s.setProperty("--ticket-header-pad-x", `${m.headerPadX}px`);
   // Cell w/h come from applyCellBoxCssVars (fixed-px model) — do not set here.
   s.setProperty("--ticket-number-line-height", `${m.numberLineHeight}px`);

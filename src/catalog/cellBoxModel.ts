@@ -176,10 +176,28 @@ export function badgeHostDevice(
     y,
     w: size,
     h: size,
-    leftCss: (x - x0) / dpr,
-    topCss: (y - y0) / dpr,
-    sizeCss: size / dpr,
+    leftCss: snapCss((x - x0) / dpr, dpr),
+    topCss: snapCss((y - y0) / dpr, dpr),
+    sizeCss: snapCss(size / dpr, dpr),
   };
+}
+
+/** Dab / multiplier host in card CSS px — same device grid as canvas `badgeHostDevice`. */
+export function badgeHostInCardCss(
+  cellIndex: number,
+  layout: CatalogLayout = getActiveLayout(),
+  dpr = activeDpr(),
+): { hx: number; hy: number; size: number; cx: number; cy: number } {
+  const model = resolveCellBoxModel(layout, dpr);
+  const cell = model.cells[cellIndex]!;
+  const box = badgeHostDevice(cell, layout.metrics.dabSize, dpr);
+  // Do not reconstruct from cell.y + topCss — fractional numberTop double-snaps at DPR 2.
+  const hx = box.x / dpr;
+  const hy = box.y / dpr;
+  const size = box.w / dpr;
+  const cx = (box.x + box.w / 2) / dpr;
+  const cy = (box.y + box.h / 2) / dpr;
+  return { hx, hy, size, cx, cy };
 }
 
 export function containDeviceRect(
