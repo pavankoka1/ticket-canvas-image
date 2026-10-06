@@ -2,7 +2,6 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { resolveCatalogLayout, setActiveLayout } from "./catalogLayout";
 import {
-  activeDpr,
   applyCellBoxCssVars,
   resolveCellBoxModel,
   setLiveCellBoxModel,
@@ -10,6 +9,7 @@ import {
 import { CompareDiagnostics } from "./compareDiagnostics";
 import {
   COMPARE_RENDER_MODES,
+  compareRasterRatio,
   isCompareRenderMode,
   setCompareRenderMode,
   type CompareRenderMode,
@@ -83,7 +83,7 @@ export function Compare() {
   const [renderMode, setRenderMode] = useState<CompareRenderMode>("svg-all");
   // Module state read by the shared capture path; set before children render.
   setCompareRenderMode(renderMode);
-  const rasterRatio = activeDpr();
+  const rasterRatio = compareRasterRatio(renderMode);
 
   const metrics = getPreset(presetId);
   const layout = useMemo(() => layoutForPreset(metrics), [metrics]);
@@ -94,10 +94,10 @@ export function Compare() {
     setLiveCellBoxModel(model);
     const host = cssHostRef.current;
     if (host) {
-      applyTicketCssVars(host, layout.metrics);
+      applyTicketCssVars(host, layout.metrics, rasterRatio);
       applyCellBoxCssVars(host, model, layout.metrics);
     }
-  }, [layout, rasterRatio]);
+  }, [layout, rasterRatio, renderMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -114,7 +114,7 @@ export function Compare() {
         setLiveCellBoxModel(resolveCellBoxModel(layout, rasterRatio));
         setReadyPreset(presetId);
         setStatus(
-          `ready · ${metrics.label} · ${layout.cardWidth}×${layout.cardHeight} css · display DPR ${activeDpr()}`,
+          `ready · ${metrics.label} · ${layout.cardWidth}×${layout.cardHeight} css · raster DPR ${rasterRatio}`,
         );
       } catch (err) {
         if (!cancelled) {
@@ -126,7 +126,7 @@ export function Compare() {
     return () => {
       cancelled = true;
     };
-  }, [layout, metrics.label, presetId, rasterRatio]);
+  }, [layout, metrics.label, presetId, rasterRatio, renderMode]);
 
   const stackProps = {
     renderMode,

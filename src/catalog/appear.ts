@@ -107,12 +107,19 @@ export function playTicketAppear(
   cardWidth: number,
   gap: number,
   numberFontSize: number,
+  onSettled?: () => void,
 ): void {
-  if (prefersReducedMotion()) return;
+  if (prefersReducedMotion()) {
+    onSettled?.();
+    return;
+  }
   const cellWidth = cardWidth > 0 ? cardWidth / TICKET_CELL_COUNT : 0;
   const font = numberFontSize > 0 ? numberFontSize : 18;
   const scales = resolveAppearScales(cardWidth, gap, cellWidth, font);
-  if (!Number.isFinite(scales.start) || !Number.isFinite(scales.overshoot)) return;
+  if (!Number.isFinite(scales.start) || !Number.isFinite(scales.overshoot)) {
+    onSettled?.();
+    return;
+  }
 
   const el = card.dom;
   // Cancel prior motion without an unconditional getAnimations flush.
@@ -134,9 +141,11 @@ export function playTicketAppear(
       el.style.removeProperty("translate");
       el.style.removeProperty("scale");
       card.endMotion(token);
+      onSettled?.();
     },
     () => {
       card.endMotion(token);
+      onSettled?.();
     },
   );
 }

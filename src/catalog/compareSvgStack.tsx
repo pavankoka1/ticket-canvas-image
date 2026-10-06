@@ -111,24 +111,25 @@ export function CompareSvgStack({
     const wrap = wrapRef.current;
     const canvas = canvasRef.current;
     if (!wrap || !canvas) return;
+    const compareDpr = compareRasterRatio(renderMode);
     let card = cardRef.current;
     if (!card) {
       card = new TicketCard();
       cardRef.current = card;
     }
     setActiveLayout(layout);
-    setLiveCellBoxModel(resolveCellBoxModel(layout, activeDpr()));
+    setLiveCellBoxModel(resolveCellBoxModel(layout, compareDpr));
     card.bind(ticket, 0, 0, layout);
     card.dom.classList.add("ticketCard_compare");
     styleCompareTicketDom(card.dom);
     // Live DOM and captured cells share the same geometry at the chosen ratio.
-    prepareCompareCard(card, layout, activeDpr());
+    if (paintGen >= 1) prepareCompareCard(card, layout, compareDpr);
     card.dom.style.visibility = showDom ? "visible" : "hidden";
     card.dom.style.zIndex = "1";
     if (!wrap.contains(card.dom)) {
       wrap.insertBefore(card.dom, canvas);
     }
-  });
+  }, [ticket, layout, renderMode, showDom, paintGen]);
 
   useLayoutEffect(() => {
     if (paintGen < 1) {
@@ -182,6 +183,14 @@ export function CompareSvgStack({
           setNote("layout kept moving during capture");
           return;
         }
+
+        console.debug("[compare-dpr]", {
+          windowDevicePixelRatio: window.devicePixelRatio,
+          activeDpr: activeDpr(),
+          rasterDpr: dpr,
+          rawPx: `${raw.width}×${raw.height}`,
+        });
+
         c.dataset.alignKey = alignKey;
         if (raw.width < 1 || raw.height < 1) {
           setNote("svg raster: empty bitmap");

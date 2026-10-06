@@ -13,7 +13,14 @@
  * mirror `index.css` (normal / gold / disabled).
  */
 
-import { dabDataUrl, discDataUrl, multiplierDefs, multiplierGroup, svgEl } from "./compareSvgMultiplier";
+import {
+  dabDataUrl,
+  discDataUrl,
+  multiplierDefs,
+  multiplierGroup,
+  svgEl,
+  svgMultiplierAssetsReady,
+} from "./compareSvgMultiplier";
 import {
   activeDpr,
   applyBadgeChrome,
@@ -161,7 +168,7 @@ function text(
 }
 
 /** Build the overlay for `root` from its CSS variables and inline geometry. */
-export function buildTicketOverlay(root: HTMLElement): SVGSVGElement {
+export function buildTicketOverlay(root: HTMLElement, dpr = activeDpr()): SVGSVGElement {
   const face = root.classList.contains("ticketCard_disabled")
     ? "disabled"
     : root.classList.contains("ticketCard_win")
@@ -176,7 +183,6 @@ export function buildTicketOverlay(root: HTMLElement): SVGSVGElement {
   const dab = px(root, "--ticket-dab-size");
 
   const layout = getActiveLayout();
-  const dpr = activeDpr();
   const model = resolveCellBoxModel(layout, dpr);
   const cellW = model.cellW;
   const children: SVGElement[] = [];
@@ -287,7 +293,7 @@ export function refreshSvgOverlayInk(root: HTMLElement): void {
 }
 
 /** Swap header, cell and multiplier rendering under `root` to (or back from) the overlay. */
-export function applySvgText(root: HTMLElement, enabled: boolean): void {
+export function applySvgText(root: HTMLElement, enabled: boolean, dpr = activeDpr()): void {
   root.querySelector(`:scope > .${OVERLAY_CLASS}`)?.remove();
   const textEls = root.querySelectorAll<HTMLElement>(".ticketCard__id, .ticketCard__win, .ticketCard__cell");
   // Hosts are reused (dab ↔ multiplier), so every host is reset first.
@@ -301,6 +307,8 @@ export function applySvgText(root: HTMLElement, enabled: boolean): void {
     textEls.forEach((el) => el.style.removeProperty("-webkit-text-fill-color"));
     return;
   }
+  // Keep HTML badge backgrounds until PNG data URLs exist (compare mounts before warm).
+  if (!svgMultiplierAssetsReady()) return;
   textEls.forEach((el) => el.style.setProperty("-webkit-text-fill-color", "transparent"));
   hosts.forEach((h) => {
     if (h.classList.contains("ticketCard__badgeHost_multiplier")) {
@@ -312,5 +320,5 @@ export function applySvgText(root: HTMLElement, enabled: boolean): void {
       h.style.setProperty("background-image", "none");
     }
   });
-  root.append(buildTicketOverlay(root));
+  root.append(buildTicketOverlay(root, dpr));
 }

@@ -93,6 +93,13 @@ export function dabDataUrl(disabled: boolean): string | undefined {
   return dabData[disabled ? "disabled" : "normal"];
 }
 
+/** True once disc + dab PNGs are inlined for svg-all overlay `<image>` nodes. */
+export function svgMultiplierAssetsReady(): boolean {
+  return Boolean(
+    dabDataUrl(false) && dabDataUrl(true) && discDataUrl(false) && discDataUrl(true),
+  );
+}
+
 /** Rotated three-layer label centred on (cx, cy), in the caller's coordinates. */
 export function multiplierGroup(value: string, cx: number, cy: number, fontPx: number, disabled: boolean): SVGGElement {
   const layer = (fill: string, stroke: string | null, dy: number) => {

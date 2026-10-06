@@ -394,6 +394,63 @@ export async function stampHeaderGlyphs(
   }
 }
 
+export function measureHeaderGlyphDeviceXs(
+  root: HTMLElement,
+  ticketNo: string,
+  win: string,
+  dpr: number,
+): { id: number[]; amt: number[] } {
+  const id: number[] = [];
+  for (let i = 0; i < ticketNo.length; i++) {
+    id.push(tryMeasureHeaderGlyphDeviceX(root, "id", i, dpr) ?? 0);
+  }
+  const amt: number[] = [];
+  for (let i = 0; i < win.length; i++) {
+    amt.push(tryMeasureHeaderGlyphDeviceX(root, "amount", i, dpr) ?? 0);
+  }
+  return { id, amt };
+}
+
+/** Catalog tile paint — device X from warm-time or cached measure (no live DOM reads). */
+export function stampHeaderGlyphsAtDeviceX(
+  ctx: CanvasRenderingContext2D,
+  ticketNo: string,
+  win: string,
+  face: "normal" | "gold" | "disabled",
+  dpr: number,
+  pack: HeaderGlyphPack,
+  originX: number,
+  originY: number,
+  idDeviceX: readonly number[],
+  amtDeviceX: readonly number[],
+): void {
+  const idFill = ID_FILLS[face];
+  const amountFill = AMOUNT_FILLS[face];
+  const phases = pack.phases;
+  const pad = glyphCapturePad(dpr);
+
+  for (let i = 0; i < ticketNo.length; i++) {
+    const ch = ticketNo[i] ?? "";
+    const start = idDeviceX[i];
+    if (start === undefined) continue;
+    const { pixel, phase } = quantizeGlyphDeviceX(start, phases);
+    const sprite = pack.id.get(glyphKey(idFill, ch, phase));
+    if (!sprite) continue;
+    ctx.drawImage(sprite.bitmap, originX + pixel - pad, originY);
+  }
+
+  if (!win) return;
+  for (let i = 0; i < win.length; i++) {
+    const ch = win[i] ?? "";
+    const start = amtDeviceX[i];
+    if (start === undefined) continue;
+    const { pixel, phase } = quantizeGlyphDeviceX(start, phases);
+    const sprite = pack.amount.get(glyphKey(amountFill, ch, phase));
+    if (!sprite) continue;
+    ctx.drawImage(sprite.bitmap, originX + pixel - pad, originY);
+  }
+}
+
 /** Catalog tile paint — warmed glyph bitmaps are already ink-cropped. */
 export function stampHeaderGlyphsSync(
   ctx: CanvasRenderingContext2D,

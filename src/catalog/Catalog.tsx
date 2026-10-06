@@ -218,12 +218,14 @@ export function Catalog() {
     setDomCount(slots.length);
   }, [bandForScroll]);
 
-  /** Paint every ticket that is not on a live DOM card. */
+  /** Push slot/ticket data to the canvas pool and paint dirty tiles. */
   const syncCanvas = useCallback(() => {
     const canvas = canvasPoolRef.current;
     const container = scrollRef.current;
     if (!canvas?.isReady) return;
-    const ids = new Set(bandForScroll(container?.scrollTop ?? 0).dom.map((s) => s.id));
+    const ids = new Set(
+      bandForScroll(container?.scrollTop ?? 0).dom.map((s) => s.id),
+    );
     canvas.setCatalog(slotsRef.current, ticketsByIdRef.current, ids);
     setTileCount(canvas.tileCount);
   }, [bandForScroll]);
@@ -307,6 +309,7 @@ export function Catalog() {
       if (gen !== atlasGenRef.current) return;
       setCanvasReady(true);
       syncCellBoxCssVarsOnHosts();
+      domPoolRef.current?.refreshSvgDomOverlays();
       syncCanvas();
       syncDom();
       revealCanvas();
@@ -433,8 +436,10 @@ export function Catalog() {
     freshIdsRef.current = new Set(animate ? added.slice(-TICKET_ANIMATED_COUNT) : []);
     const from = prevSlotsRef.current;
     syncDom();
-    syncCanvas();
-    domPoolRef.current?.playMoves(from, slotsRef.current, shuffleMsRef.current);
+    requestAnimationFrame(() => {
+      domPoolRef.current?.playMoves(from, slotsRef.current, shuffleMsRef.current);
+      syncCanvas();
+    });
     prevSlotsRef.current = new Map(slotsRef.current.map((slot) => [slot.id, { x: slot.x, y: slot.y }]));
     const scroll = scrollRef.current;
     if (added.length === 0 || !scroll) return;
@@ -453,9 +458,7 @@ export function Catalog() {
     };
   }, []);
 
-  // Freeze DOM band + canvas skip during scroll. Native overflow carries the
-  // content (and existing canvas holes) for free. Resync once after settle —
-  // scrollend when available, else a short debounce (not SETTLE_MS).
+  // Resync DOM band + canvas skip holes once after scroll settles (not mid-scroll).
   useEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
@@ -529,12 +532,6 @@ export function Catalog() {
     startCanvasWarm();
   };
 
-  useEffect(() => {
-    if (!canvasReady || tickets.length === 0) return;
-    canvasPoolRef.current?.refresh();
-    syncCanvas();
-  }, [tickets, layout, syncCanvas, canvasReady]);
-
   const refreshStates = useCallback(() => {
     canvasPoolRef.current?.refresh();
     syncDom();
@@ -559,10 +556,15 @@ export function Catalog() {
         ? `${ball} · ${spec.multiplier}× · ${hits.length} tickets`
         : `${ball} · dab · ${hits.length} tickets`,
     );
-    refreshStates();
-    domPoolRef.current?.playDraws(hits);
-    canvasPoolRef.current?.refresh();
-    syncCanvas();
+    syncDom();
+    const changedIds =
+      nextRound >= DRAW_ROUND_COUNT
+        ? new Set(tickets.map((t) => t.id))
+        : new Set(hits.map((h) => h.id));
+    requestAnimationFrame(() => {
+      domPoolRef.current?.playDraws(hits);
+      canvasPoolRef.current?.refreshForTicketIds(changedIds);
+    });
     if (shuffleTimerRef.current) window.clearTimeout(shuffleTimerRef.current);
     const delay = shuffleDelayMs(hits, tickets);
     shuffleTimerRef.current = window.setTimeout(() => {

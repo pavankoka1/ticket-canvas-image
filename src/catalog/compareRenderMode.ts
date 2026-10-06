@@ -9,7 +9,7 @@
  * - `svg-all`: also header id/amount, cell numbers and the multiplier disc.
  */
 
-import { activeDpr } from "./cellBoxModel";
+import { DPR_CAP } from "./cellBoxModel";
 
 export const COMPARE_RENDER_MODES = [
   { id: "html", label: "HTML zoom · display ratio" },
@@ -33,9 +33,10 @@ export function compareRenderMode(): CompareRenderMode {
   return mode;
 }
 
-/** Raster scale for canvas capture. DOM geometry always uses `activeDpr()`. */
+/** Raster scale for canvas capture (display modes use actual `devicePixelRatio`). */
 export function compareRasterRatio(m: CompareRenderMode = mode): number {
-  return m.startsWith("ratio-") ? Number(m.slice("ratio-".length)) : activeDpr();
+  if (m.startsWith("ratio-")) return Number(m.slice("ratio-".length));
+  return Math.min(DPR_CAP, window.devicePixelRatio);
 }
 
 export function usesSvgMultiplier(m: CompareRenderMode = mode): boolean {

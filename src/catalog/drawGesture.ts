@@ -178,9 +178,11 @@ export function playTicketDraw(
   kind: DrawKind,
   cardWidth: number,
   cardHeight: number,
+  onSettled?: () => void,
 ): void {
   if (reduced()) {
     card.clearCellDigit(cell);
+    onSettled?.();
     return;
   }
   const root = card.dom;
@@ -259,6 +261,7 @@ export function playTicketDraw(
     refreshSvgOverlayInk(root);
     card.hideShine();
     card.endMotion(token);
+    onSettled?.();
   };
 
   if (!playShine) {

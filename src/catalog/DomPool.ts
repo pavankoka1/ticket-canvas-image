@@ -11,6 +11,11 @@ import {
 } from './ticketCardElement';
 import type { DrawHit, Ticket, TicketSlot } from './tickets';
 
+export type DomPoolMotionHooks = {
+  onMotionStart?: () => void;
+  onMotionEnd?: () => void;
+};
+
 /** Fixed viewport DOM pool — never grows with catalog size. */
 export class DomPool {
   private cards: TicketCard[] = [];
@@ -18,6 +23,7 @@ export class DomPool {
   private free: number[] = [];
   private ready = false;
   private readonly host: HTMLElement;
+  private motionHooks: DomPoolMotionHooks = {};
   readonly size: number;
 
   constructor(host: HTMLElement, size: number = DOM_POOL_SIZE) {
@@ -39,6 +45,10 @@ export class DomPool {
 
   get isReady(): boolean {
     return this.ready;
+  }
+
+  setMotionHooks(hooks: DomPoolMotionHooks): void {
+    this.motionHooks = hooks;
   }
 
   rebind(
@@ -72,8 +82,23 @@ export class DomPool {
       card.bind(ticket, slot.x, slot.y);
       prepareCatalogDomCard(card);
       probeSlotPlacementDrift(card.dom, this.host, slot.x, slot.y);
-      if (isNew && appearIds?.has(slot.id)) playAppear(card, slot.x, slot.y);
+      if (isNew && appearIds?.has(slot.id)) this.playAppear(card, slot.x, slot.y);
     }
+  }
+
+  private playAppear(card: TicketCard, x: number, y: number): void {
+    const layout = getActiveLayout();
+    const slot = snapSlot(x, y);
+    this.motionHooks.onMotionStart?.();
+    playTicketAppear(
+      card,
+      slot.x,
+      slot.y,
+      layout.cardWidth,
+      layout.gap,
+      layout.metrics.numberFontSize,
+      () => this.motionHooks.onMotionEnd?.(),
+    );
   }
 
   /** Stop dab, dip, and shine. Used when draws are cleared. */
@@ -98,6 +123,7 @@ export class DomPool {
     if (typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches) {
       return;
     }
+    const moves: { card: TicketCard; el: HTMLElement; token: number; anim: Animation }[] = [];
     for (const slot of slots) {
       const prev = from.get(slot.id);
       const idx = this.byId.get(slot.id);
@@ -115,14 +141,26 @@ export class DomPool {
         [{ translate: `${dx}px ${dy}px` }, { translate: "0px 0px" }],
         { duration: durationMs, easing: "cubic-bezier(0.65, 0, 0.35, 1)", fill: "forwards" },
       );
+      moves.push({ card, el, token, anim });
+    }
+    if (moves.length === 0) return;
+    this.motionHooks.onMotionStart?.();
+    let pending = moves.length;
+    const oneDone = () => {
+      pending -= 1;
+      if (pending === 0) this.motionHooks.onMotionEnd?.();
+    };
+    for (const { card, el, token, anim } of moves) {
       void anim.finished.then(
         () => {
           anim.cancel();
           el.style.removeProperty("translate");
           card.endMotion(token);
+          oneDone();
         },
         () => {
           card.endMotion(token);
+          oneDone();
         },
       );
     }
@@ -132,10 +170,27 @@ export class DomPool {
   playDraws(hits: readonly DrawHit[]): void {
     if (!this.ready || hits.length === 0) return;
     const layout = getActiveLayout();
+    const pending: DrawHit[] = [];
     for (const hit of hits) {
-      const idx = this.byId.get(hit.id);
-      if (idx === undefined) continue;
-      playTicketDraw(this.cards[idx]!, hit.cell, hit.kind, layout.cardWidth, layout.cardHeight);
+      if (this.byId.has(hit.id)) pending.push(hit);
+    }
+    if (pending.length === 0) return;
+    this.motionHooks.onMotionStart?.();
+    let remaining = pending.length;
+    const oneDone = () => {
+      remaining -= 1;
+      if (remaining === 0) this.motionHooks.onMotionEnd?.();
+    };
+    for (const hit of pending) {
+      const idx = this.byId.get(hit.id)!;
+      playTicketDraw(
+        this.cards[idx]!,
+        hit.cell,
+        hit.kind,
+        layout.cardWidth,
+        layout.cardHeight,
+        oneDone,
+      );
     }
   }
 
@@ -144,20 +199,13 @@ export class DomPool {
     for (const card of this.cards) card.applyCardWidth(w, true);
   }
 
+  /** Re-apply svg-all overlay after atlas warm (bind may have skipped earlier). */
+  refreshSvgDomOverlays(): void {
+    if (!this.ready) return;
+    for (const idx of this.byId.values()) prepareCatalogDomCard(this.cards[idx]!);
+  }
+
   setVisible(visible: boolean): void {
     this.host.style.opacity = visible ? '1' : '0';
   }
-}
-
-function playAppear(card: TicketCard, x: number, y: number): void {
-  const layout = getActiveLayout();
-  const slot = snapSlot(x, y);
-  playTicketAppear(
-    card,
-    slot.x,
-    slot.y,
-    layout.cardWidth,
-    layout.gap,
-    layout.metrics.numberFontSize,
-  );
 }

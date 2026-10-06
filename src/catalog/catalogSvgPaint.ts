@@ -11,19 +11,40 @@ import {
   prepareCompareCard,
   warmCatalogCompareAtlas,
 } from "./compareCachedSprites";
-import { SVG_FACE_CLASS } from "./compareSvgText";
+import { refreshSvgOverlayInk, SVG_FACE_CLASS } from "./compareSvgText";
 import { setCompareRenderMode } from "./compareRenderMode";
 import { paintSvgAllCompareTicket } from "./compareSvgAllPaint";
 import { loadSvgMultiplierAssets } from "./compareSvgMultiplier";
-import { stampHeaderGlyphsSync } from "./compareGlyphAtlas";
+import { measureHeaderGlyphDeviceXs, stampHeaderGlyphsAtDeviceX } from "./compareGlyphAtlas";
 import { styleCompareTicketDom } from "./compareDomAlign";
 import { TicketCard } from "./ticketCardElement";
+import { MAX_TICKETS } from "./layout";
 import { isWinTicket, type Ticket } from "./tickets";
 import { paintCatalogTicket } from "./catalogPaint";
 
 let paintPack: ComparePaintPack | null = null;
 let measureCard: TicketCard | null = null;
 let measureHost: HTMLElement | null = null;
+let measureCardPrepared = false;
+let measureLayoutKey = "";
+
+type HeaderDeviceLayout = { id: number[]; amt: number[] };
+const headerDeviceLayoutCache = new Map<string, HeaderDeviceLayout>();
+
+function headerLayoutCacheKey(
+  layout: CatalogLayout,
+  face: string,
+  ticketNo: string,
+  win: string,
+): string {
+  return `${layout.metrics.id}|${layout.cardWidth}|${face}|${ticketNo}|${win}`;
+}
+
+function resetHeaderMeasureState(): void {
+  headerDeviceLayoutCache.clear();
+  measureCardPrepared = false;
+  measureLayoutKey = "";
+}
 
 function ensureMeasureCardHost(layout: CatalogLayout): TicketCard {
   if (!measureHost) {
@@ -58,7 +79,71 @@ export async function ensureCatalogSvgAtlasWarm(
   await loadSvgMultiplierAssets();
   const dpr = activeDpr();
   paintPack = await warmCatalogCompareAtlas(layout, dpr);
+  resetHeaderMeasureState();
   ensureMeasureCardHost(layout);
+  await warmCatalogHeaderDeviceLayouts(layout, dpr, MAX_TICKETS);
+}
+
+function ensureMeasureCardPrepared(layout: CatalogLayout, dpr: number): TicketCard {
+  const card = ensureMeasureCardHost(layout);
+  const key = `${layout.metrics.id}|${layout.cardWidth}`;
+  if (measureCardPrepared && measureLayoutKey === key) return card;
+  card.dom.classList.add("ticketCard_compare", SVG_FACE_CLASS);
+  prepareCompareCard(card, layout, dpr);
+  measureCardPrepared = true;
+  measureLayoutKey = key;
+  return card;
+}
+
+function measureHeaderDeviceLayout(
+  ticket: Ticket,
+  layout: CatalogLayout,
+  face: "normal" | "gold" | "disabled",
+  dpr: number,
+): HeaderDeviceLayout {
+  const winText = isWinTicket(ticket) && ticket.win ? ticket.win : "";
+  const cacheKey = headerLayoutCacheKey(layout, face, ticket.no, winText);
+  const cached = headerDeviceLayoutCache.get(cacheKey);
+  if (cached) return cached;
+
+  const card = ensureMeasureCardPrepared(layout, dpr);
+  card.bind(ticket, 0, 0, layout);
+  refreshSvgOverlayInk(card.dom);
+  const layoutEntry = measureHeaderGlyphDeviceXs(card.dom, ticket.no, winText, dpr);
+  headerDeviceLayoutCache.set(cacheKey, layoutEntry);
+  return layoutEntry;
+}
+
+const WARM_HEADER_BATCH = 40;
+
+function yieldWarm(): Promise<void> {
+  const sched = (globalThis as { scheduler?: { yield?: () => Promise<void> } })
+    .scheduler;
+  if (sched?.yield) return sched.yield();
+  return new Promise((r) => setTimeout(r, 0));
+}
+
+/** Pre-measure header glyph X for catalog ticket numbers (paint path stays DOM-free). */
+async function warmCatalogHeaderDeviceLayouts(
+  layout: CatalogLayout,
+  dpr: number,
+  maxNo: number,
+): Promise<void> {
+  ensureMeasureCardPrepared(layout, dpr);
+  const balls = [1, 2, 3, 4, 5, 6] as const;
+  for (let n = 1; n <= maxNo; n++) {
+    const no = String(n);
+    const ticket: Ticket = {
+      id: `warm-${n}`,
+      no,
+      balls: [...balls],
+      hits: [],
+      multipliers: {},
+      win: "",
+    };
+    measureHeaderDeviceLayout(ticket, layout, "normal", dpr);
+    if (n % WARM_HEADER_BATCH === 0) await yieldWarm();
+  }
 }
 
 export function prepareCatalogDomCard(card: TicketCard): void {
@@ -89,11 +174,6 @@ export function paintCatalogTicketSvgAll(
   const chrome = pack.catalogChrome.get(face);
   if (!chrome) return;
 
-  const card = ensureMeasureCardHost(layout);
-  card.bind(ticket, 0, 0, layout);
-  card.dom.classList.add("ticketCard_compare", SVG_FACE_CLASS);
-  prepareCompareCard(card, layout, dpr);
-
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(chrome.bitmap, originX, originY);
@@ -114,9 +194,9 @@ export function paintCatalogTicketSvgAll(
   );
 
   const winText = isWinTicket(ticket) && ticket.win ? ticket.win : "";
-  stampHeaderGlyphsSync(
+  const headerLayout = measureHeaderDeviceLayout(ticket, layout, face, dpr);
+  stampHeaderGlyphsAtDeviceX(
     ctx,
-    card.dom,
     ticket.no,
     winText,
     face,
@@ -124,5 +204,7 @@ export function paintCatalogTicketSvgAll(
     pack.headerGlyphs,
     originX,
     originY,
+    headerLayout.id,
+    headerLayout.amt,
   );
 }

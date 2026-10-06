@@ -18,6 +18,7 @@ import {
 import type { CatalogLayout } from './catalogLayout';
 import { applyTicketCellLayout, TicketCard } from './ticketCardElement';
 import { ensureTicketFontsForLayout } from './ticketFont';
+import { applyTicketCssVars } from './ticketPresets';
 import { isWinTicket, MULTIPLIER_VALUES, type Ticket } from './tickets';
 import { compareGlyphPhaseCount } from './compareGlyphEngine';
 import {
@@ -657,6 +658,7 @@ function cropFromWarmSheet(
 }
 
 export function prepareCompareCard(card: TicketCard, layout: CatalogLayout, dpr: number): void {
+  applyTicketCssVars(card.dom, layout.metrics, dpr);
   const model = resolveCellBoxModel(layout, dpr);
   const cells = [...card.dom.querySelectorAll<HTMLElement>('.ticketCard__cell')];
   applyTicketCellLayout(card.dom, cells, model, layout.metrics, layout.cardHeight);
@@ -673,7 +675,7 @@ export function prepareCompareCard(card: TicketCard, layout: CatalogLayout, dpr:
   });
   // svg-all draws the label inside the card overlay instead.
   applySvgMultiplier(card.dom, usesSvgMultiplier() && !usesSvgText());
-  applySvgText(card.dom, usesSvgText());
+  applySvgText(card.dom, usesSvgText(), dpr);
 }
 
 async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Promise<Pack> {
@@ -738,7 +740,7 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
           batchCard.bind(ticket, 0, 0, layout);
           if (disabled) batchCard.dom.classList.add('ticketCard_disabled');
           else batchCard.dom.classList.remove('ticketCard_disabled', 'ticketCard_win');
-          prepareCompareCard(batchCard, layout, activeDpr());
+          prepareCompareCard(batchCard, layout, dpr);
           const cellCrops = [0, 1, 2, 3, 4, 5].map((cellIndex) =>
             numberCellCrop(model, cellIndex, m.headerHeight, m.bodyHeight),
           );
@@ -797,7 +799,7 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
           ticket.balls = balls as number[];
           batchCard.bind(ticket, 0, 0, layout);
           forceBadgeFace(batchCard, face);
-          prepareCompareCard(batchCard, layout, activeDpr());
+          prepareCompareCard(batchCard, layout, dpr);
           const cellCrops = [0, 1, 2, 3, 4, 5].map((cellIndex) =>
             numberCellCrop(model, cellIndex, m.headerHeight, m.bodyHeight),
           );
@@ -866,7 +868,7 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
           batchCard.bind(ticket, 0, 0, layout);
           forceBadgeFace(batchCard, face);
           for (let i = 0; i < 6; i++) batchCard.clearCellDigit(i);
-          prepareCompareCard(batchCard, layout, activeDpr());
+          prepareCompareCard(batchCard, layout, dpr);
           const cellCrops = BADGE_WARM_CELLS.map((cellIndex) =>
             badgeBodyCrop(model, cellIndex, m.headerHeight, m.bodyHeight),
           );
@@ -949,7 +951,7 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
             card.bind(sourceTicket(disabled, n), 0, 0, layout);
             if (disabled) card.dom.classList.add('ticketCard_disabled');
             else card.dom.classList.remove('ticketCard_disabled', 'ticketCard_win');
-            prepareCompareCard(card, layout, activeDpr());
+            prepareCompareCard(card, layout, dpr);
             const cell0Sprite = await cached(`${key}|d1-cell0|${disabled}|${n}`, () =>
               capture({
                 crop: numberCellCrop(model, 0, m.headerHeight, m.bodyHeight),
@@ -1031,7 +1033,7 @@ export async function warmCatalogChromeSprites(
         card.bind(ticket, 0, 0, layout);
         forceBadgeFace(card, face);
         if (CATALOG_FIGMA_DESKTOP_LOCK) card.dom.classList.add(SVG_FACE_CLASS);
-        prepareCompareCard(card, layout, activeDpr());
+        prepareCompareCard(card, layout, dpr);
         return capture({
           css: CATALOG_FIGMA_DESKTOP_LOCK
             ? '.ticketCard__cell::before{visibility:hidden!important}'
@@ -1132,7 +1134,7 @@ async function warmHeaderGlyphsOffscreen(pack: Pack, layout: CatalogLayout, dpr:
       capture,
       bindFace,
       () => {
-        prepareCompareCard(card, layout, activeDpr());
+        prepareCompareCard(card, layout, dpr);
         widenCardForGlyphWarm(card.dom);
       },
       card.dom,
@@ -1220,7 +1222,7 @@ async function ensureHeaderGlyphs(
           capture,
           bindFace,
           () => {
-            prepareCompareCard(card, layout, activeDpr());
+            prepareCompareCard(card, layout, dpr);
             widenCardForGlyphWarm(card.dom);
           },
           card.dom,

@@ -71,7 +71,7 @@ export class CanvasPool {
   private ready = false;
   private slots: TicketSlot[] = [];
   private ticketsById: Map<string, Ticket> = new Map();
-  /** Tickets the live DOM is showing. Those slots stay blank on the canvas. */
+  /** Tickets the live DOM band is showing — left unpainted on canvas tiles. */
   private skipIds: Set<string> = new Set();
   private readonly host: HTMLElement;
   private paintGen = 0;
@@ -141,7 +141,6 @@ export class CanvasPool {
     this.skipIds = new Set(skipIds);
     this.syncTiles();
     this.markContentDirty(prevSlots, prevSkipIds);
-    this.blankTiles();
     void this.paintDirtyTiles();
   }
 
@@ -168,12 +167,16 @@ export class CanvasPool {
     }
   }
 
-  /** Live DOM band changed — repaint affected tiles (full paintTile, scroll-safe). */
+  /**
+   * DOM band changed after scroll settled — repaint only tiles whose skip
+   * membership flipped. Never call mid-scroll.
+   */
   setSkip(skipIds: ReadonlySet<string>): void {
     if (sameIds(this.skipIds, skipIds)) return;
     const prev = this.skipIds;
     this.skipIds = new Set(skipIds);
     for (const tile of this.tiles) {
+      if (tile.dirty) continue;
       for (let i = tile.start; i < tile.end; i++) {
         const id = this.slots[i]?.id;
         if (!id) continue;
@@ -194,13 +197,44 @@ export class CanvasPool {
 
   private async flushDirtyTiles(): Promise<void> {
     const gen = ++this.paintGen;
+    const parent = this.host.getBoundingClientRect();
+    let painted = false;
     for (const tile of this.tiles) {
       if (gen !== this.paintGen) return;
       if (!tile.dirty) continue;
-      await this.paintTile(tile, gen);
+      if (painted) await yieldToMain();
+      await this.paintTile(tile, gen, parent);
       tile.dirty = false;
-      await yieldToMain();
+      painted = true;
     }
+  }
+
+  /** Dirty and paint tiles that contain any of the given catalog slot indices. */
+  refreshForSlotIndices(indices: readonly number[]): void {
+    if (!this.ready || indices.length === 0) return;
+    const indexSet = new Set(indices);
+    for (const tile of this.tiles) {
+      if (tile.dirty) continue;
+      for (let i = tile.start; i < tile.end; i++) {
+        if (indexSet.has(i)) {
+          tile.dirty = true;
+          break;
+        }
+      }
+    }
+    if (this.paused) return;
+    this.paintNow();
+  }
+
+  /** Dirty and paint tiles covering these ticket ids (draw / face updates). */
+  refreshForTicketIds(ids: ReadonlySet<string>): void {
+    if (!this.ready || ids.size === 0) return;
+    const indices: number[] = [];
+    for (let i = 0; i < this.slots.length; i++) {
+      const id = this.slots[i]?.id;
+      if (id && ids.has(id)) indices.push(i);
+    }
+    this.refreshForSlotIndices(indices);
   }
 
   /**
@@ -224,7 +258,7 @@ export class CanvasPool {
 
   private syncTiles(): void {
     const layout = getActiveLayout();
-    const { cardHeight } = layout;
+    const { cardHeight, gap } = layout;
     const n = this.slots.length;
     const budget = canvasTileTickets(activeDpr());
 
@@ -247,7 +281,7 @@ export class CanvasPool {
       const first = this.slots[start]!;
       const last = this.slots[end - 1]!;
       const minY = first.y;
-      const cssH = Math.max(1, last.y + cardHeight - minY);
+      const cssH = Math.max(1, last.y + cardHeight + gap - minY);
 
       let tile = this.tiles[i];
       if (!tile) {
@@ -280,21 +314,12 @@ export class CanvasPool {
     }
   }
 
-  /** Blank only dirty tiles so a stale frame never shows while they await paint. */
-  private blankTiles(): void {
-    for (const tile of this.tiles) {
-      if (!tile.dirty) continue;
-      tile.ctx.setTransform(1, 0, 0, 1, 0, 0);
-      tile.ctx.clearRect(0, 0, tile.canvas.width, tile.canvas.height);
-    }
-  }
-
   private async paintDirtyTiles(): Promise<void> {
     if (this.paused) return;
     await this.flushDirtyTiles();
   }
 
-  private async paintTile(tile: Tile, gen: number): Promise<void> {
+  private async paintTile(tile: Tile, gen: number, parent: DOMRect): Promise<void> {
     const c = tile.canvas;
     const ctx = tile.ctx;
     const layout = getActiveLayout();
@@ -306,7 +331,6 @@ export class CanvasPool {
     // and the browser then scales the bitmap. A tall tile turns that into a
     // visible multiplier shift. Compare never hits it: its canvas is the card.
     const minY = Math.round(tile.minY * dpr) / dpr;
-    const parent = this.host.getBoundingClientRect();
     const screenTop = parent.top + minY;
     const screenLeft = parent.left;
     const y0 = Math.round(screenTop * dpr);
