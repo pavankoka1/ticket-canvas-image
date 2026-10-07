@@ -760,7 +760,8 @@ button:disabled {
   background: transparent !important;
 }
 
-.ticketCard_svgFace .ticketCard__cell:not(:first-child)::before {
+.ticketCard_svgFace .ticketCard__cell:not(:first-child)::before,
+.ticketCard_svgSeps .ticketCard__cell:not(:first-child)::before {
   visibility: hidden;
 }
 

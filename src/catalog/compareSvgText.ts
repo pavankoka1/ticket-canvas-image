@@ -29,13 +29,18 @@ import {
   resolveCellBoxModel,
 } from "./cellBoxModel";
 import { getActiveLayout } from "./catalogLayout";
-import { buildTicketChromeSvg, SVG_CHROME_CLASS } from "./ticketSvgChrome";
+import {
+  buildTicketChromeSvg,
+  buildTicketSeparatorSvg,
+  SVG_CHROME_CLASS,
+} from "./ticketSvgChrome";
 
 /** Baseline below the box centre, in em (Onest cap height ≈ 0.72 em). */
 const BASELINE_EM = 0.36;
 const FONT = "MB-Onest, Onest, sans-serif";
 export const OVERLAY_CLASS = "ticketCard__svgOverlay";
 export const SVG_FACE_CLASS = "ticketCard_svgFace";
+export const SVG_SEPS_CLASS = "ticketCard_svgSeps";
 const DRAW_BADGE_HOST_ATTR = "data-draw-badge-host";
 const DRAW_MULT_LABEL_ATTR = "data-draw-mult-label";
 const DRAW_CELL_ATTR = "data-draw-cell";
@@ -188,7 +193,9 @@ export function buildTicketOverlay(root: HTMLElement, dpr = activeDpr()): SVGSVG
   const children: SVGElement[] = [];
   const chromeId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
   if (root.classList.contains(SVG_FACE_CLASS) && cellW > 0) {
-    children.push(...buildTicketChromeSvg(W, layout.metrics, face, cellW, chromeId));
+    children.push(...buildTicketChromeSvg(W, layout.metrics, face, cellW, chromeId, dpr));
+  } else if (cellW > 0) {
+    children.push(...buildTicketSeparatorSvg(layout.metrics, cellW, face, dpr));
   }
   const headerY = headerH / 2 + BASELINE_EM * metaPx;
   const id = textOf(root.querySelector(".ticketCard__id"));
@@ -304,6 +311,7 @@ export function applySvgText(root: HTMLElement, enabled: boolean, dpr = activeDp
     h.querySelector<HTMLElement>(".ticketCard__badgeLabel")?.style.removeProperty("visibility");
   });
   if (!enabled) {
+    root.classList.remove(SVG_SEPS_CLASS);
     textEls.forEach((el) => el.style.removeProperty("-webkit-text-fill-color"));
     return;
   }
@@ -320,5 +328,6 @@ export function applySvgText(root: HTMLElement, enabled: boolean, dpr = activeDp
       h.style.setProperty("background-image", "none");
     }
   });
+  root.classList.add(SVG_SEPS_CLASS);
   root.append(buildTicketOverlay(root, dpr));
 }

@@ -574,8 +574,17 @@ export async function rasterizeCompareTicketSvg(
   if (!card.isConnected || rect.width < 1 || rect.height < 1) {
     throw new Error("compare raster: card is not laid out");
   }
-  const clone = buildStylesheetRasterClone(card, rect, 0, 0);
   const computed = getComputedStyle(card);
+  const cssWidth =
+    parseFloat(card.style.width) ||
+    parseFloat(computed.getPropertyValue("--ticket-card-width")) ||
+    rect.width;
+  const cssHeight =
+    parseFloat(card.style.height) ||
+    parseFloat(computed.getPropertyValue("--ticket-card-height")) ||
+    rect.height;
+  const layoutRect = { ...rect, width: cssWidth, height: cssHeight };
+  const clone = buildStylesheetRasterClone(card, layoutRect, 0, 0);
   for (let i = 0; i < computed.length; i++) {
     const property = computed.item(i);
     if (property.startsWith("--")) {
@@ -584,12 +593,12 @@ export async function rasterizeCompareTicketSvg(
   }
   clone.style.visibility = "visible";
   part?.prepare?.(clone);
-  const crop = part?.crop ?? { x: 0, y: 0, width: rect.width, height: rect.height };
-  const fullWidth = Math.round(rect.width * dpr);
-  const fullHeight = Math.round(rect.height * dpr);
+  const crop = part?.crop ?? { x: 0, y: 0, width: cssWidth, height: cssHeight };
+  const fullWidth = Math.round(cssWidth * dpr);
+  const fullHeight = Math.round(cssHeight * dpr);
   const holder = document.createElement("div");
   holder.setAttribute("xmlns", "http://www.w3.org/1999/xhtml");
-  holder.style.cssText = `position:relative;width:${rect.width}px;height:${rect.height}px;margin:0;padding:0;-webkit-text-size-adjust:none;text-size-adjust:none`;
+  holder.style.cssText = `position:relative;width:${cssWidth}px;height:${cssHeight}px;margin:0;padding:0;-webkit-text-size-adjust:none;text-size-adjust:none`;
   holder.style.zoom = String(dpr);
   const style = document.createElement("style");
   // Embedded font declarations must follow page declarations to win the cascade.

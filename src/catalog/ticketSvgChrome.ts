@@ -3,6 +3,7 @@
  * Painted inside the svg-all overlay on catalog home.
  */
 
+import { snapCss } from "./cellBoxModel";
 import { svgEl } from "./compareSvgMultiplier";
 import type { TicketMetrics } from "./ticketPresets";
 
@@ -38,6 +39,50 @@ function sepX(cellIndex: number, cellW: number, sep: number): number {
   return cellIndex * (cellW + sep) - sep;
 }
 
+/** One device pixel as a CSS length at `dpr`. */
+export function deviceSepWidthCss(dpr: number): number {
+  return Math.round(1 * dpr) / dpr;
+}
+
+function separatorFill(face: Face): string {
+  return face === "gold"
+    ? PALETTE.gold.separator
+    : face === "disabled"
+      ? PALETTE.disabled.separator
+      : PALETTE.normal.separator;
+}
+
+/** Five column separators with device-snapped x and width (card CSS px). */
+export function buildTicketSeparatorSvg(
+  metrics: TicketMetrics,
+  cellW: number,
+  face: Face,
+  dpr: number,
+): SVGElement[] {
+  const headerH = metrics.headerHeight;
+  const padY = metrics.bodyPaddingY;
+  const sepH = metrics.separatorHeight;
+  const sepTop = metrics.separatorMarginTop;
+  const sep = metrics.separatorWidth;
+  const separator = separatorFill(face);
+  const sepWidth = deviceSepWidthCss(dpr);
+  const parts: SVGElement[] = [];
+  for (let i = 1; i < 6; i++) {
+    parts.push(
+      svgEl("rect", {
+        x: snapCss(sepX(i, cellW, sep), dpr),
+        y: headerH + padY + sepTop,
+        width: sepWidth,
+        height: sepH,
+        rx: 2,
+        ry: 2,
+        fill: separator,
+      }),
+    );
+  }
+  return parts;
+}
+
 /** Chrome + separators behind overlay text (card CSS px). `idSuffix` avoids duplicate gradient/filter ids across tickets. */
 export function buildTicketChromeSvg(
   cardWidth: number,
@@ -45,14 +90,11 @@ export function buildTicketChromeSvg(
   face: Face,
   cellW: number,
   idSuffix: string,
+  dpr: number,
 ): SVGElement[] {
   const r = metrics.radius;
   const headerH = metrics.headerHeight;
   const bodyH = metrics.bodyHeight;
-  const padY = metrics.bodyPaddingY;
-  const sepH = metrics.separatorHeight;
-  const sepTop = metrics.separatorMarginTop;
-  const sep = metrics.separatorWidth;
   const suf = idSuffix.replace(/[^a-zA-Z0-9_-]/g, "") || "0";
   const shadowId = `cmpTicketShadow-${suf}`;
   const parts: SVGElement[] = [];
@@ -178,21 +220,7 @@ export function buildTicketChromeSvg(
     );
   }
 
-  const separator =
-    face === "gold" ? PALETTE.gold.separator : face === "disabled" ? PALETTE.disabled.separator : PALETTE.normal.separator;
-  for (let i = 1; i < 6; i++) {
-    parts.push(
-      svgEl("rect", {
-        x: sepX(i, cellW, sep),
-        y: headerH + padY + sepTop,
-        width: sep,
-        height: sepH,
-        rx: 2,
-        ry: 2,
-        fill: separator,
-      }),
-    );
-  }
+  parts.push(...buildTicketSeparatorSvg(metrics, cellW, face, dpr));
 
   return [svgEl("g", { class: SVG_CHROME_CLASS }, ...parts)];
 }

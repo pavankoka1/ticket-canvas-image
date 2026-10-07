@@ -222,13 +222,12 @@ export function Compare() {
       </header>
 
       <CompareDiagnostics />
-      <h2 className="compare__rowTitle">Cached sprite stack</h2>
+      <h2 className="compare__rowTitle">Live DOM + canvas capture</h2>
       <div className="compare__cases">
         {COMPARE_TICKETS.map(({ title, ticket }) => (
           <CompareSvgStack
-            key={`optimized:${renderMode}:${presetId}:${ticket.id}`}
+            key={`full:${renderMode}:${presetId}:${ticket.id}`}
             {...stackProps}
-            optimized
             ticket={ticket}
             title={`${title} (#${ticket.no})`}
           />
