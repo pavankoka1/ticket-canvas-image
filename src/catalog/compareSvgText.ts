@@ -16,7 +16,6 @@
 import {
   dabDataUrl,
   discDataUrl,
-  multiplierDefs,
   multiplierGroup,
   svgEl,
   svgMultiplierAssetsReady,
@@ -203,7 +202,6 @@ export function buildTicketOverlay(root: HTMLElement, dpr = activeDpr()): SVGSVG
   if (id) children.push(text(id, W - padX, headerY, "end", metaPx, COLORS.id[face], true));
   if (amount) children.push(text(amount, padX, headerY, "start", metaPx, COLORS.amount[face], true));
 
-  let needsDefs = false;
   root.querySelectorAll<HTMLElement>(".ticketCard__cell").forEach((cell, i) => {
     const cellBox = model.cells[i]!;
     const x0 = cellBox.x;
@@ -244,7 +242,6 @@ export function buildTicketOverlay(root: HTMLElement, dpr = activeDpr()): SVGSVG
       multiplierGroup(label, 0, 0, (13 * dab) / 24, face === "disabled"),
     );
     children.push(labelWrap);
-    if (face !== "disabled") needsDefs = true;
   });
 
   return svgEl(
@@ -258,7 +255,6 @@ export function buildTicketOverlay(root: HTMLElement, dpr = activeDpr()): SVGSVG
       "aria-hidden": "true",
       style: "position:absolute;left:0;top:0;z-index:2;pointer-events:none",
     },
-    ...(needsDefs ? [multiplierDefs()] : []),
     ...children,
   );
 }
@@ -308,7 +304,7 @@ export function applySvgText(root: HTMLElement, enabled: boolean, dpr = activeDp
   hosts.forEach((h) => {
     h.style.removeProperty("background-image");
     h.style.removeProperty("z-index");
-    h.querySelector<HTMLElement>(".ticketCard__badgeLabel")?.style.removeProperty("visibility");
+    h.querySelector<HTMLElement>(".ticketCard__badgeLabel")?.style.removeProperty("display");
   });
   if (!enabled) {
     root.classList.remove(SVG_SEPS_CLASS);
@@ -321,7 +317,8 @@ export function applySvgText(root: HTMLElement, enabled: boolean, dpr = activeDp
   hosts.forEach((h) => {
     if (h.classList.contains("ticketCard__badgeHost_multiplier")) {
       h.style.setProperty("background-image", "none");
-      h.querySelector<HTMLElement>(".ticketCard__badgeLabel")?.style.setProperty("visibility", "hidden");
+      // FO capture can still paint gradient HTML labels; keep them out of layout entirely.
+      h.querySelector<HTMLElement>(".ticketCard__badgeLabel")?.style.setProperty("display", "none");
       return;
     }
     if (h.classList.contains("ticketCard__badgeHost_dab")) {

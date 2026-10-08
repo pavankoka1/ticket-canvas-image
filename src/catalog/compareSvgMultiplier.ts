@@ -28,15 +28,22 @@ export function svgEl<K extends keyof SVGElementTagNameMap>(
   return node;
 }
 
-/** Gradient defs referenced by the gold label layers (ids are shared). */
-export function multiplierDefs(): SVGDefsElement {
+/** Mid stops from the CSS/SVG gold gradients — used as flat paints (FO raster drops `url(#)`). */
+const GOLD_FILL = "#ffda6c";
+const GOLD_STROKE = "#801a1c";
+
+export const MULT_FILL_ID = "cmpMultFill";
+export const MULT_STROKE_ID = "cmpMultStroke";
+
+/** Gradient defs for legacy callers; svg-all overlay uses flat gold paints instead. */
+export function multiplierDefs(fillId = MULT_FILL_ID, strokeId = MULT_STROKE_ID): SVGDefsElement {
   const stop = (offset: string, color: string) => svgEl("stop", { offset, "stop-color": color });
   return svgEl(
     "defs",
     {},
     svgEl(
       "linearGradient",
-      { id: "cmpMultFill", x1: 0.456, y1: 0.002, x2: 0.544, y2: 0.998 },
+      { id: fillId, x1: 0.456, y1: 0.002, x2: 0.544, y2: 0.998 },
       stop("0.495%", "#ffe27b"),
       stop("26.893%", "#ffffff"),
       stop("63.411%", "#ffda6c"),
@@ -44,7 +51,7 @@ export function multiplierDefs(): SVGDefsElement {
     ),
     svgEl(
       "linearGradient",
-      { id: "cmpMultStroke", x1: 0, y1: 0, x2: 0, y2: 1 },
+      { id: strokeId, x1: 0, y1: 0, x2: 0, y2: 1 },
       stop("0", "rgb(128,26,28)"),
       stop("1", "rgb(63,9,10)"),
     ),
@@ -131,8 +138,8 @@ export function multiplierGroup(value: string, cx: number, cy: number, fontPx: n
     ? [layer("#053734", "#053734", SHADOW_DY_EM * fontPx), layer("#236260", null, 0)]
     : [
         layer("#210304", "#210304", SHADOW_DY_EM * fontPx),
-        layer("url(#cmpMultStroke)", "url(#cmpMultStroke)", 0),
-        layer("url(#cmpMultFill)", null, 0),
+        layer(GOLD_STROKE, GOLD_STROKE, 0),
+        layer(GOLD_FILL, null, 0),
       ];
   return svgEl("g", { transform: `rotate(${ROTATION_DEG} ${cx} ${cy})` }, ...layers);
 }
@@ -155,7 +162,6 @@ function multiplierSvg(
       overflow: "visible",
       "aria-hidden": "true",
     },
-    ...(disabled ? [] : [multiplierDefs()]),
     // Disc at explicit coordinates: no CSS background-size resampling of a
     // fractional host box.
     ...(disc ? [svgEl("image", { href: disc, x: 0, y: 0, width: size, height: size, preserveAspectRatio: "none" })] : []),

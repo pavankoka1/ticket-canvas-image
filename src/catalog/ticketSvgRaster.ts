@@ -4,8 +4,27 @@
  * are only for isolated sprites — they shift full-ticket text in FO.
  */
 
+import { OVERLAY_CLASS } from "./compareSvgText";
 import { ensureTicketFontsForLayout } from "./ticketFont";
 import type { TicketMetrics } from "./ticketPresets";
+
+/** WebKit FO raster can paint `visibility:hidden` gradient HTML multiplier labels. */
+function stripHtmlMultiplierLabelsForRaster(root: HTMLElement): void {
+  root
+    .querySelectorAll<HTMLElement>(".ticketCard__badgeHost_multiplier .ticketCard__badgeLabel")
+    .forEach((el) => el.remove());
+  const overlay = root.querySelector<SVGSVGElement>(`.${OVERLAY_CLASS}`);
+  if (!overlay) return;
+  const goldFill = "#ffda6c";
+  const goldStroke = "#801a1c";
+  overlay.querySelectorAll<SVGElement>("text").forEach((el) => {
+    const fill = el.getAttribute("fill");
+    if (fill?.startsWith("url(#")) el.setAttribute("fill", goldFill);
+    const stroke = el.getAttribute("stroke");
+    if (stroke?.startsWith("url(#")) el.setAttribute("stroke", goldStroke);
+  });
+  overlay.querySelector("defs")?.remove();
+}
 
 const FONT_URL = "/fonts/onest-700.woff2";
 
@@ -585,6 +604,7 @@ export async function rasterizeCompareTicketSvg(
     rect.height;
   const layoutRect = { ...rect, width: cssWidth, height: cssHeight };
   const clone = buildStylesheetRasterClone(card, layoutRect, 0, 0);
+  stripHtmlMultiplierLabelsForRaster(clone);
   for (let i = 0; i < computed.length; i++) {
     const property = computed.item(i);
     if (property.startsWith("--")) {
