@@ -4,7 +4,7 @@
  */
 
 import { snapCss } from "./cellBoxModel";
-import { svgEl } from "./compareSvgMultiplier";
+import { svgEl } from "../catalog/compareSvgMultiplier";
 import type { TicketMetrics } from "./ticketPresets";
 
 export const SVG_CHROME_CLASS = "ticketCard__svgChrome";

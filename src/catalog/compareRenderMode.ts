@@ -9,7 +9,7 @@
  * - `svg-all`: also header id/amount, cell numbers and the multiplier disc.
  */
 
-import { DPR_CAP } from "./cellBoxModel";
+import { DPR_CAP } from "../ticketCatalog/cellBoxModel";
 
 export const COMPARE_RENDER_MODES = [
   { id: "html", label: "HTML zoom · display ratio" },

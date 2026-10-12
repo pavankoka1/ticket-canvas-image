@@ -1,8 +1,8 @@
 import { createRoot } from "react-dom/client";
 
-import { Catalog } from "./catalog/Catalog";
 import { Compare } from "./catalog/Compare";
-import { ensureTicketFont } from "./catalog/ticketFont";
+import { mountTicketCatalog } from "./ticketCatalog";
+import { ensureTicketFont } from "./ticketCatalog/ticketFont";
 import "./index.css";
 
 const isCompare =
@@ -13,8 +13,11 @@ const isCompare =
 // from the first frame (and atlas keys never land on "fallback-system").
 void ensureTicketFont(16).then(({ face, mbOnest700 }) => {
   console.info("[font] ready", { face, mbOnest700 });
-  // No StrictMode — double-mount was stacking SnapDOM sheet captures during atlas warm.
-  createRoot(document.getElementById("root")!).render(
-    isCompare ? <Compare /> : <Catalog />,
-  );
+  const root = document.getElementById("root")!;
+  if (isCompare) {
+    // No StrictMode — double-mount was stacking SnapDOM sheet captures during atlas warm.
+    createRoot(root).render(<Compare />);
+    return;
+  }
+  mountTicketCatalog({ root });
 });

@@ -36,6 +36,9 @@ function sameIds(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   return true;
 }
 
+/** Yield while patching skip flips so scroll-settle work stays off one long task. */
+const SKIP_PATCH_YIELD_EVERY = 10;
+
 type Tile = {
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
@@ -46,15 +49,16 @@ type Tile = {
   minY: number;
   cssH: number;
   dirty: boolean;
+  /** Full tile clear+repaint (layout, ids, geometry). */
+  dirtyFull: boolean;
+  /** Catalog slot indices whose skip bit flipped — incremental repaint only. */
+  skipFlipIndices: number[];
   /**
    * Device-pixel snap from the last full paintTile. Skip paints reuse this so
    * they never resize the buffer (canvas.width/height assignment clears it).
    */
+  /** Content-space snap for ticket blits inside the tile (scroll-independent). */
   snap: {
-    x0: number;
-    y0: number;
-    hostTop: number;
-    screenLeft: number;
     dpr: number;
     minY: number;
     cardWidth: number;
@@ -157,10 +161,12 @@ export class CanvasPool {
         const prev = prevSlots[i];
         if (!prev || prev.id !== next.id || prev.x !== next.x || prev.y !== next.y) {
           tile.dirty = true;
+          tile.dirtyFull = true;
           break;
         }
         if (prevSkipIds.has(next.id) !== this.skipIds.has(next.id)) {
           tile.dirty = true;
+          tile.dirtyFull = true;
           break;
         }
       }
@@ -171,22 +177,23 @@ export class CanvasPool {
    * DOM band changed after scroll settled — repaint only tiles whose skip
    * membership flipped. Never call mid-scroll.
    */
-  setSkip(skipIds: ReadonlySet<string>): void {
+  setSkip(skipIds: ReadonlySet<string>, options?: { paint?: boolean }): void {
     if (sameIds(this.skipIds, skipIds)) return;
     const prev = this.skipIds;
     this.skipIds = new Set(skipIds);
     for (const tile of this.tiles) {
-      if (tile.dirty) continue;
+      const flips: number[] = [];
       for (let i = tile.start; i < tile.end; i++) {
         const id = this.slots[i]?.id;
         if (!id) continue;
-        if (prev.has(id) !== this.skipIds.has(id)) {
-          tile.dirty = true;
-          break;
-        }
+        if (prev.has(id) !== this.skipIds.has(id)) flips.push(i);
       }
+      if (flips.length === 0) continue;
+      tile.dirty = true;
+      if (tile.dirtyFull) continue;
+      tile.skipFlipIndices.push(...flips);
     }
-    this.paintNow();
+    if (options?.paint !== false) this.paintNow();
   }
 
   /** Paint every dirty tile before the next frame. Used when the DOM band flips. */
@@ -195,16 +202,27 @@ export class CanvasPool {
     void this.flushDirtyTiles();
   }
 
+  /** Await the current dirty-tile flush (e.g. before smooth-scroll after a bulk add). */
+  waitForPaint(): Promise<void> {
+    if (!this.ready || this.paused) return Promise.resolve();
+    return this.flushDirtyTiles();
+  }
+
   private async flushDirtyTiles(): Promise<void> {
     const gen = ++this.paintGen;
-    const parent = this.host.getBoundingClientRect();
     let painted = false;
     for (const tile of this.tiles) {
       if (gen !== this.paintGen) return;
       if (!tile.dirty) continue;
       if (painted) await yieldToMain();
-      await this.paintTile(tile, gen, parent);
+      if (tile.dirtyFull || !tile.snap || tile.skipFlipIndices.length === 0) {
+        await this.paintTile(tile, gen);
+      } else {
+        await this.paintSkipFlips(tile, tile.skipFlipIndices, gen);
+      }
       tile.dirty = false;
+      tile.dirtyFull = false;
+      tile.skipFlipIndices = [];
       painted = true;
     }
   }
@@ -218,6 +236,7 @@ export class CanvasPool {
       for (let i = tile.start; i < tile.end; i++) {
         if (indexSet.has(i)) {
           tile.dirty = true;
+          tile.dirtyFull = true;
           break;
         }
       }
@@ -243,7 +262,10 @@ export class CanvasPool {
    */
   refresh(): void {
     if (!this.ready) return;
-    for (const t of this.tiles) t.dirty = true;
+    for (const t of this.tiles) {
+      t.dirty = true;
+      t.dirtyFull = true;
+    }
     if (this.paused) return;
     this.paintNow();
   }
@@ -295,7 +317,18 @@ export class CanvasPool {
         const ctx = canvas.getContext("2d");
         if (!ctx) continue;
         this.host.appendChild(canvas);
-        tile = { canvas, ctx, start, end, minY, cssH, dirty: true, snap: null };
+        tile = {
+          canvas,
+          ctx,
+          start,
+          end,
+          minY,
+          cssH,
+          dirty: true,
+          dirtyFull: true,
+          skipFlipIndices: [],
+          snap: null,
+        };
         this.tiles[i] = tile;
       }
 
@@ -307,6 +340,8 @@ export class CanvasPool {
       tile.cssH = cssH;
       if (rangeChanged || geomChanged) {
         tile.dirty = true;
+        tile.dirtyFull = true;
+        tile.skipFlipIndices = [];
         tile.snap = null;
       }
 
@@ -319,64 +354,137 @@ export class CanvasPool {
     await this.flushDirtyTiles();
   }
 
-  private async paintTile(tile: Tile, gen: number, parent: DOMRect): Promise<void> {
+  /** Device-pixel origin of a slot inside its tile bitmap (content coords only). */
+  private slotOriginOnTile(
+    slot: TicketSlot,
+    snap: NonNullable<Tile["snap"]>,
+  ): { x: number; y: number } {
+    const dpr = snap.dpr;
+    const sx = Math.round(slot.x * dpr) / dpr;
+    const sy = Math.round(slot.y * dpr) / dpr;
+    return {
+      x: Math.round(sx * dpr),
+      y: Math.round((sy - snap.minY) * dpr),
+    };
+  }
+
+  private async paintSkipFlips(
+    tile: Tile,
+    indices: readonly number[],
+    gen: number,
+  ): Promise<void> {
+    const snap = tile.snap;
+    if (!snap) return;
+    const ctx = tile.ctx;
+    const layout = getActiveLayout();
+    const boxes = catalogCellBoxes(snap.dpr);
+    let n = 0;
+    for (const i of indices) {
+      if (gen !== this.paintGen) return;
+      const slot = this.slots[i];
+      if (!slot) continue;
+      const ticket = this.ticketsById.get(slot.id);
+      if (this.skipIds.has(slot.id)) {
+        this.clearSlotOnTile(ctx, slot, snap, layout);
+      } else if (ticket) {
+        this.paintSlotOnTile(ctx, slot, ticket, snap, layout, boxes);
+      }
+      n += 1;
+      if (n % SKIP_PATCH_YIELD_EVERY === 0) await yieldToMain();
+    }
+  }
+
+  private clearSlotOnTile(
+    ctx: CanvasRenderingContext2D,
+    slot: TicketSlot,
+    snap: NonNullable<Tile["snap"]>,
+    layout: ReturnType<typeof getActiveLayout>,
+  ): void {
+    const { cardWidth, cardHeight, gap } = layout;
+    const dpr = snap.dpr;
+    const { x, y } = this.slotOriginOnTile(slot, snap);
+    const w = Math.max(1, Math.round(cardWidth * dpr));
+    const h = Math.max(1, Math.round((cardHeight + gap) * dpr));
+    ctx.clearRect(x, y, w, h);
+  }
+
+  private paintSlotOnTile(
+    ctx: CanvasRenderingContext2D,
+    slot: TicketSlot,
+    ticket: Ticket,
+    snap: NonNullable<Tile["snap"]>,
+    layout: ReturnType<typeof getActiveLayout>,
+    boxes: { x: number; y: number; w: number; h: number }[],
+  ): void {
+    const dpr = snap.dpr;
+    const { cardWidth } = layout;
+    const { x: originX, y: originY } = this.slotOriginOnTile(slot, snap);
+    if (isCatalogSvgPaintReady()) {
+      paintCatalogTicketSvgAll(ctx, ticket, originX, originY, layout, dpr);
+    } else {
+      paintCatalogTicket(ctx, ticket, originX, originY, cardWidth, dpr, boxes);
+    }
+  }
+
+  private async paintTile(tile: Tile, gen: number): Promise<void> {
     const c = tile.canvas;
     const ctx = tile.ctx;
     const layout = getActiveLayout();
     const { cardWidth, cardHeight } = layout;
     const cssW = contentWidth(layout);
     const dpr = activeDpr();
-    // Size the buffer to the device pixels this tile actually covers.
-    // round(css * dpr) and that span disagree when the tile top is fractional,
-    // and the browser then scales the bitmap. A tall tile turns that into a
-    // visible multiplier shift. Compare never hits it: its canvas is the card.
     const minY = Math.round(tile.minY * dpr) / dpr;
-    const screenTop = parent.top + minY;
-    const screenLeft = parent.left;
-    const y0 = Math.round(screenTop * dpr);
-    const x0 = Math.round(screenLeft * dpr);
-    const bw = Math.max(1, Math.round((screenLeft + cssW) * dpr) - x0);
-    const bh = Math.max(1, Math.round((screenTop + tile.cssH) * dpr) - y0);
-
-    if (c.width !== bw || c.height !== bh) {
-      c.width = bw;
-      c.height = bh;
-    }
-    c.style.width = `${bw / dpr}px`;
-    c.style.height = `${bh / dpr}px`;
-    c.style.transform = `translate3d(0, ${minY}px, 0)`;
-
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.imageSmoothingEnabled = false;
-    ctx.clearRect(0, 0, bw, bh);
+    const bw = Math.max(1, Math.round(cssW * dpr));
+    const bh = Math.max(1, Math.round(tile.cssH * dpr));
+    const needsResize = c.width !== bw || c.height !== bh;
 
     tile.snap = {
-      x0,
-      y0,
-      hostTop: parent.top,
-      screenLeft,
       dpr,
       minY,
       cardWidth,
       cardHeight,
     };
 
+    c.style.width = `${bw / dpr}px`;
+    c.style.height = `${bh / dpr}px`;
+    c.style.transform = `translate3d(0, ${minY}px, 0)`;
+
     const boxes = catalogCellBoxes(dpr);
+    const snap = tile.snap;
+
+    let paintCtx: CanvasRenderingContext2D;
+    let scratch: HTMLCanvasElement | null = null;
+    if (needsResize) {
+      c.width = bw;
+      c.height = bh;
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.imageSmoothingEnabled = false;
+      ctx.clearRect(0, 0, bw, bh);
+      paintCtx = ctx;
+    } else {
+      scratch = document.createElement("canvas");
+      scratch.width = bw;
+      scratch.height = bh;
+      const sctx = scratch.getContext("2d");
+      if (!sctx) return;
+      sctx.setTransform(1, 0, 0, 1, 0, 0);
+      sctx.imageSmoothingEnabled = false;
+      sctx.clearRect(0, 0, bw, bh);
+      paintCtx = sctx;
+    }
 
     for (let i = tile.start; i < tile.end; i++) {
       if (gen !== this.paintGen) return;
       const slot = this.slots[i]!;
       const ticket = this.ticketsById.get(slot.id);
       if (!ticket || this.skipIds.has(slot.id)) continue;
-      const sx = Math.round(slot.x * dpr) / dpr;
-      const sy = Math.round(slot.y * dpr) / dpr;
-      const originX = Math.round((screenLeft + sx) * dpr) - x0;
-      const originY = Math.round((parent.top + sy) * dpr) - y0;
-      if (isCatalogSvgPaintReady()) {
-        paintCatalogTicketSvgAll(ctx, ticket, originX, originY, layout, dpr);
-      } else {
-        paintCatalogTicket(ctx, ticket, originX, originY, cardWidth, dpr, boxes);
-      }
+      this.paintSlotOnTile(paintCtx, slot, ticket, snap, layout, boxes);
+    }
+
+    if (scratch) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(scratch, 0, 0);
     }
   }
 }

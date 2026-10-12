@@ -10,13 +10,13 @@ import {
   type ComparePaintPack,
   prepareCompareCard,
   warmCatalogCompareAtlas,
-} from "./compareCachedSprites";
-import { refreshSvgOverlayInk, SVG_FACE_CLASS } from "./compareSvgText";
-import { setCompareRenderMode } from "./compareRenderMode";
-import { paintSvgAllCompareTicket } from "./compareSvgAllPaint";
-import { loadSvgMultiplierAssets } from "./compareSvgMultiplier";
-import { measureHeaderGlyphDeviceXs, stampHeaderGlyphsAtDeviceX } from "./compareGlyphAtlas";
-import { styleCompareTicketDom } from "./compareDomAlign";
+} from "../catalog/compareCachedSprites";
+import { refreshSvgOverlayInk, SVG_FACE_CLASS } from "../catalog/compareSvgText";
+import { setCompareRenderMode } from "../catalog/compareRenderMode";
+import { paintSvgAllCompareTicket } from "../catalog/compareSvgAllPaint";
+import { loadSvgMultiplierAssets } from "../catalog/compareSvgMultiplier";
+import { measureHeaderGlyphDeviceXs, stampHeaderGlyphsAtDeviceX } from "../catalog/compareGlyphAtlas";
+import { styleCompareTicketDom } from "../catalog/compareDomAlign";
 import { TicketCard } from "./ticketCardElement";
 import { MAX_TICKETS } from "./layout";
 import { isWinTicket, type Ticket } from "./tickets";

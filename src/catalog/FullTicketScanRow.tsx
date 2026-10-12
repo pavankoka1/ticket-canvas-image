@@ -2,7 +2,7 @@
  * Gold compare fixture (shared by /compare).
  */
 
-import type { Ticket } from "./tickets";
+import type { Ticket } from "../ticketCatalog/tickets";
 
 /** Gold ticket: win amount, dab, 10× multiplier — full chrome exercise. */
 export const GOLDEN_SCAN_TICKET: Ticket = {

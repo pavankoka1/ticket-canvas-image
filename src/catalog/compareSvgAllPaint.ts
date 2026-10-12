@@ -4,10 +4,10 @@
  * badge-body sprites at headerHeight, number patches, then header glyphs.
  */
 
-import { badgeHostDevice, type CellBox } from "./cellBoxModel";
-import type { CatalogLayout } from "./catalogLayout";
+import { badgeHostDevice, type CellBox } from "../ticketCatalog/cellBoxModel";
+import type { CatalogLayout } from "../ticketCatalog/catalogLayout";
 import type { ComparePaintPack } from "./compareCachedSprites";
-import type { Ticket } from "./tickets";
+import type { Ticket } from "../ticketCatalog/tickets";
 
 /** Compare reuses the warm body band; catalog SVG chrome already paints the body. */
 export type SvgAllBadgeBlit = "body-band" | "badge-host";

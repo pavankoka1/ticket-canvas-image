@@ -1,11 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { resolveCatalogLayout, setActiveLayout } from "./catalogLayout";
+import { resolveCatalogLayout, setActiveLayout } from "../ticketCatalog/catalogLayout";
 import {
   applyCellBoxCssVars,
   resolveCellBoxModel,
   setLiveCellBoxModel,
-} from "./cellBoxModel";
+} from "../ticketCatalog/cellBoxModel";
 import { CompareDiagnostics } from "./compareDiagnostics";
 import {
   COMPARE_RENDER_MODES,
@@ -15,17 +15,18 @@ import {
   type CompareRenderMode,
 } from "./compareRenderMode";
 import { preloadComparePack, scheduleCompareGlyphWarm } from "./compareCachedSprites";
+import { CompareCatalogTileStack } from "./compareCatalogTileStack";
 import { CompareSvgStack } from "./compareSvgStack";
 import { loadSvgMultiplierAssets } from "./compareSvgMultiplier";
-import { ensureTicketFontsForLayout } from "./ticketFont";
+import { ensureTicketFontsForLayout } from "../ticketCatalog/ticketFont";
 import {
   TICKET_PRESETS,
   applyTicketCssVars,
   getPreset,
   type TicketMetrics,
   type TicketPresetId,
-} from "./ticketPresets";
-import type { Ticket } from "./tickets";
+} from "../ticketCatalog/ticketPresets";
+import type { Ticket } from "../ticketCatalog/tickets";
 
 const NORMAL_TICKET: Ticket = {
   id: "cmp-normal",
@@ -233,6 +234,30 @@ export function Compare() {
           />
         ))}
       </div>
+
+      {renderMode === "svg-all" && (
+        <>
+          <h2 className="compare__rowTitle">
+            Catalog Safari check (same FO capture)
+          </h2>
+          <p className="compare__hint">
+            Identical pipeline to the row above (
+            <code>rasterizeCompareTicketSvg</code>). Use this block on devices
+            where the home catalog canvas still drifts; difference should go
+            black like row 1. Tile composite on <code>/</code> is separate.
+          </p>
+          <div className="compare__cases">
+            {COMPARE_TICKETS.map(({ title, ticket }) => (
+              <CompareCatalogTileStack
+                key={`catalog-tile:${presetId}:${ticket.id}`}
+                {...stackProps}
+                ticket={ticket}
+                title={`${title} (#${ticket.no})`}
+              />
+            ))}
+          </div>
+        </>
+      )}
     </div>
   );
 }

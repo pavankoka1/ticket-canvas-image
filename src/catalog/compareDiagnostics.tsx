@@ -1,6 +1,6 @@
 /** On-device evidence for DOM/SVG differences; never changes paint geometry. */
 import { useState } from 'react';
-import { activeDpr } from './cellBoxModel';
+import { activeDpr } from '../ticketCatalog/cellBoxModel';
 
 async function deviceBox(canvas: HTMLCanvasElement) {
   return new Promise<{ inline: number; block: number } | null>(resolve => {

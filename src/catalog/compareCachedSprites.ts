@@ -1,12 +1,12 @@
 /** Compare-only reusable HTML/CSS sprites. No catalog cache or geometry mutation. */
-import { loadSprites, loadSpritesMany, saveSpritesBatch } from './atlasStore';
+import { loadSprites, loadSpritesMany, saveSpritesBatch } from '../ticketCatalog/atlasStore';
 import { encodeCompareCanvasPng } from './comparePersistEncodeClient';
-import { activeDpr, badgeHostDevice, resolveCellBoxModel } from './cellBoxModel';
+import { activeDpr, badgeHostDevice, resolveCellBoxModel } from '../ticketCatalog/cellBoxModel';
 import { alignCompareStackOrigin, styleCompareTicketDom } from './compareDomAlign';
 import { usesSvgMultiplier, usesSvgText } from './compareRenderMode';
 import { applySvgMultiplier } from './compareSvgMultiplier';
 import { paintSvgAllCompareTicket } from './compareSvgAllPaint';
-import { CATALOG_FIGMA_DESKTOP_LOCK } from './catalogFigmaDesktop';
+import { CATALOG_FIGMA_DESKTOP_LOCK } from '../ticketCatalog/catalogFigmaDesktop';
 import {
   applySvgText,
   OVERLAY_CLASS,
@@ -15,11 +15,11 @@ import {
   stripOverlayInkKeepChrome,
   SVG_FACE_CLASS,
 } from './compareSvgText';
-import type { CatalogLayout } from './catalogLayout';
-import { applyTicketCellLayout, TicketCard } from './ticketCardElement';
-import { ensureTicketFontsForLayout } from './ticketFont';
-import { applyTicketCssVars } from './ticketPresets';
-import { isWinTicket, MULTIPLIER_VALUES, type Ticket } from './tickets';
+import type { CatalogLayout } from '../ticketCatalog/catalogLayout';
+import { applyTicketCellLayout, TicketCard } from '../ticketCatalog/ticketCardElement';
+import { ensureTicketFontsForLayout } from '../ticketCatalog/ticketFont';
+import { applyTicketCssVars } from '../ticketCatalog/ticketPresets';
+import { isWinTicket, MULTIPLIER_VALUES, type Ticket } from '../ticketCatalog/tickets';
 import { compareGlyphPhaseCount } from './compareGlyphEngine';
 import {
   cropGlyphFromSheet,
@@ -29,7 +29,7 @@ import {
   widenCardForGlyphWarm,
   type HeaderGlyphPack,
 } from './compareGlyphAtlas';
-import { composeCompareInkPatch, decodeCompareSvgBlob, rasterizeCompareTicketSvg, rasterSvgBlob, type CompareRasterPart } from './ticketSvgRaster';
+import { composeCompareInkPatch, decodeCompareSvgBlob, rasterizeCompareTicketSvg, rasterSvgBlob, type CompareRasterPart } from '../ticketCatalog/ticketSvgRaster';
 
 const TRANSPARENT = `:root{background:transparent!important}.ticketCard,.ticketCard__header,.ticketCard__body{background:none!important;box-shadow:none!important}.ticketCard__cell::before{visibility:hidden!important}`;
 type Sprite = { bitmap: HTMLCanvasElement; blob: Blob };

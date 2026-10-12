@@ -8,7 +8,7 @@ Vite + React 19. No router. No server components. Do not add `'use client'`.
 
 Decided in `src/main.tsx` before render. Not React Router.
 
-- `/` (anything else) → `Catalog`
+- `/` (anything else) → `ticketCatalog` (`mountTicketCatalog`, vanilla)
 - Path ending in `/compare`, or hash `#compare` → `Compare`
 
 First paint waits on `ensureTicketFont`. No `StrictMode` (it double-fired SnapDOM atlas captures).
@@ -57,26 +57,12 @@ Project skills are `.cursor/skills/<name>/SKILL.md`. They are not always-on. Do 
 | File | Role |
 |---|---|
 | `src/main.tsx` | Font gate, Catalog vs Compare |
-| `src/catalog/Catalog.tsx` | Scroll catalog |
-| `src/catalog/Compare.tsx` | DOM ↔ canvas match view |
-| `src/catalog/CanvasPool.ts` | Tiles. Catalog uses `paintCatalogTicket` |
+| `src/ticketCatalog/index.ts` | `mountTicketCatalog` entry |
+| `src/ticketCatalog/TicketCatalogController.ts` | Home catalog orchestration (no React) |
+| `src/ticketCatalog/CanvasPool.ts` | Tiles · svg-all paint |
+| `src/ticketCatalog/DomPool.ts` | Viewport DOM cards |
+| `src/ticketCatalog/bands.ts` | DOM band |
+| `src/catalog/Compare.tsx` | DOM ↔ canvas match view (React) |
 | `src/catalog/reactSvgRaster.ts` | React SVG → static markup → canvas cache |
 | `src/catalog/compareSpriteStack.tsx` | Compare DOM + sprite canvas |
 | `src/catalog/compareReactSvgRecipe.tsx` | Compare badge · tutorial recipe |
-| `src/catalog/catalogPaint.ts` | Legacy layered sprite blit (unused on paint path) |
-| `src/catalog/headerGlyphs.ts` | Id digits and shared win-amount bitmaps |
-| `src/catalog/DomPool.ts` | Viewport DOM cards |
-| `src/catalog/bands.ts` | Which slots get DOM |
-| `src/catalog/cellBoxModel.ts` | `activeDpr`, `snapCss`, cell CSS vars |
-| `src/catalog/ticketCellGeometry.ts` | Analytic cell/badge capture + blit origins |
-| `src/catalog/cellAtlas.ts` | Number sprites |
-| `src/catalog/cellBitmaps.ts` | 60 numbers + dab + 4 multiplier rasters |
-| `src/catalog/cellNumberSnap.ts` | SnapDOM cell capture + normalize (transparent glyphs) |
-| `src/catalog/ticketSvgRaster.ts` | foreignObject raster of live DOM |
-| `src/catalog/idDigitAtlas.ts` | Id / win sprites |
-| `src/catalog/badgeAtlas.ts` | Disc images + multiplier label sprites |
-| `src/catalog/ticketCardElement.ts` | DOM ticket |
-| `src/catalog/ticketPresets.ts` | Size tokens |
-| `src/catalog/catalogLayout.ts` | Columns, card size, active layout |
-| `src/catalog/layout.ts` | Pool, tile, viewport constants |
-| `src/catalog/ticketFont.ts` | MB-Onest gate |

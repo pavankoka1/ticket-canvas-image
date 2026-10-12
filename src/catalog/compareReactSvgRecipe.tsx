@@ -5,7 +5,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
-import { activeDpr } from "./cellBoxModel";
+import { activeDpr } from "../ticketCatalog/cellBoxModel";
 import {
   MultiplierBadgeSvg,
   multiplierBadgeStyleBlock,

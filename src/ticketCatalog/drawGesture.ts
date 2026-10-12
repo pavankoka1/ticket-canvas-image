@@ -14,7 +14,7 @@ import {
   beginDrawDabMotion,
   beginDrawMultiplierMotion,
   refreshSvgOverlayInk,
-} from "./compareSvgText";
+} from "../catalog/compareSvgText";
 import type { TicketCard } from "./ticketCardElement";
 
 const EASE_OUT = "cubic-bezier(0.33, 1, 0.68, 1)";

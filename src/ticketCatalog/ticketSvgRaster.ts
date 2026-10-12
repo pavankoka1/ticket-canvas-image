@@ -4,7 +4,7 @@
  * are only for isolated sprites — they shift full-ticket text in FO.
  */
 
-import { OVERLAY_CLASS } from "./compareSvgText";
+import { OVERLAY_CLASS } from "../catalog/compareSvgText";
 import { ensureTicketFontsForLayout } from "./ticketFont";
 import type { TicketMetrics } from "./ticketPresets";
 
