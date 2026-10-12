@@ -13,7 +13,13 @@ import {
 } from "../catalog/compareCachedSprites";
 import { refreshSvgOverlayInk, SVG_FACE_CLASS } from "../catalog/compareSvgText";
 import { setCompareRenderMode } from "../catalog/compareRenderMode";
-import { paintSvgAllCompareTicket } from "../catalog/compareSvgAllPaint";
+import {
+  clipTicketRoundRectDevice,
+  isCatalogSvgAllHostInkReady,
+  paintSvgAllCatalogTicketInk,
+  warmSvgAllHostBadgeBitmaps,
+  warmSvgAllMultiplierHosts,
+} from "../catalog/compareSvgAllPaint";
 import { loadSvgMultiplierAssets } from "../catalog/compareSvgMultiplier";
 import { measureHeaderGlyphDeviceXs, stampHeaderGlyphsAtDeviceX } from "../catalog/compareGlyphAtlas";
 import { styleCompareTicketDom } from "../catalog/compareDomAlign";
@@ -69,7 +75,11 @@ function ensureMeasureCardHost(layout: CatalogLayout): TicketCard {
 }
 
 export function isCatalogSvgPaintReady(): boolean {
-  return Boolean(paintPack?.headerGlyphs && paintPack.catalogChrome.size >= 3);
+  return Boolean(
+    paintPack?.headerGlyphs &&
+      paintPack.catalogChrome.size >= 3 &&
+      (paintPack.badges?.size ?? 0) > 0,
+  );
 }
 
 export async function ensureCatalogSvgAtlasWarm(
@@ -79,6 +89,15 @@ export async function ensureCatalogSvgAtlasWarm(
   await loadSvgMultiplierAssets();
   const dpr = activeDpr();
   paintPack = await warmCatalogCompareAtlas(layout, dpr);
+  try {
+    await warmSvgAllHostBadgeBitmaps(layout, dpr);
+    await warmSvgAllMultiplierHosts(layout, dpr);
+  } catch (err) {
+    console.warn("[catalog-svg-warm] host ink optional warm failed; using compare badge atlas", err);
+  }
+  if (!isCatalogSvgAllHostInkReady()) {
+    console.info("[catalog-svg-warm] host ink partial — catalog paint uses compare badge atlas fallback");
+  }
   resetHeaderMeasureState();
   ensureMeasureCardHost(layout);
   await warmCatalogHeaderDeviceLayouts(layout, dpr, MAX_TICKETS);
@@ -151,6 +170,8 @@ export function prepareCatalogDomCard(card: TicketCard): void {
   const layout = getActiveLayout();
   card.dom.classList.add(SVG_FACE_CLASS);
   prepareCompareCard(card, layout, activeDpr());
+  // Rebuild overlay ink from bound ticket (multiplier value + face) after every bind.
+  refreshSvgOverlayInk(card.dom);
 }
 
 /** Paint one catalog tile ticket with the compare svg-all sprite stack. */
@@ -176,9 +197,20 @@ export function paintCatalogTicketSvgAll(
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.imageSmoothingEnabled = false;
+  const m = layout.metrics;
+  ctx.save();
+  clipTicketRoundRectDevice(
+    ctx,
+    originX,
+    originY,
+    layout.cardWidth,
+    m.cardHeight,
+    m.radius,
+    dpr,
+  );
   ctx.drawImage(chrome.bitmap, originX, originY);
 
-  paintSvgAllCompareTicket(
+  paintSvgAllCatalogTicketInk(
     ctx,
     ticket,
     pack,
@@ -189,9 +221,9 @@ export function paintCatalogTicketSvgAll(
     originX,
     originY,
     dpr,
-    "badge-host",
     model.cells,
   );
+  ctx.restore();
 
   const winText = isWinTicket(ticket) && ticket.win ? ticket.win : "";
   const headerLayout = measureHeaderDeviceLayout(ticket, layout, face, dpr);

@@ -36,9 +36,6 @@ function sameIds(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   return true;
 }
 
-/** Yield while patching skip flips so scroll-settle work stays off one long task. */
-const SKIP_PATCH_YIELD_EVERY = 10;
-
 type Tile = {
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
@@ -145,7 +142,7 @@ export class CanvasPool {
     this.skipIds = new Set(skipIds);
     this.syncTiles();
     this.markContentDirty(prevSlots, prevSkipIds);
-    void this.paintDirtyTiles();
+    if (!this.paused) this.flushDirtyTilesSync();
   }
 
   /** Dirty a tile only if a slot it covers changed id, position, or skip state. */
@@ -174,32 +171,50 @@ export class CanvasPool {
   }
 
   /**
-   * DOM band changed after scroll settled — repaint only tiles whose skip
-   * membership flipped. Never call mid-scroll.
+   * DOM band changed after scroll settled — canvas leaves holes for live DOM tickets.
    */
   setSkip(skipIds: ReadonlySet<string>, options?: { paint?: boolean }): void {
     if (sameIds(this.skipIds, skipIds)) return;
     const prev = this.skipIds;
     this.skipIds = new Set(skipIds);
     for (const tile of this.tiles) {
-      const flips: number[] = [];
+      let bandChanged = false;
       for (let i = tile.start; i < tile.end; i++) {
         const id = this.slots[i]?.id;
         if (!id) continue;
-        if (prev.has(id) !== this.skipIds.has(id)) flips.push(i);
+        if (prev.has(id) !== this.skipIds.has(id)) {
+          bandChanged = true;
+          break;
+        }
       }
-      if (flips.length === 0) continue;
+      if (!bandChanged) continue;
       tile.dirty = true;
-      if (tile.dirtyFull) continue;
-      tile.skipFlipIndices.push(...flips);
+      tile.dirtyFull = false;
+      tile.skipFlipIndices = [];
     }
-    if (options?.paint !== false) this.paintNow();
+    if (options?.paint !== false) this.flushDirtyTilesSync();
   }
 
   /** Paint every dirty tile before the next frame. Used when the DOM band flips. */
   paintNow(): void {
     if (!this.ready) return;
     void this.flushDirtyTiles();
+  }
+
+  /** Band / skip updates: finish every dirty tile in one turn (no inter-tile yield). */
+  private flushDirtyTilesSync(): void {
+    const gen = ++this.paintGen;
+    for (const tile of this.tiles) {
+      if (!tile.dirty) continue;
+      if (tile.dirtyFull || !tile.snap) {
+        void this.paintTile(tile, gen);
+      } else {
+        this.compositeTileFromSnap(tile, gen);
+      }
+      tile.dirty = false;
+      tile.dirtyFull = false;
+      tile.skipFlipIndices = [];
+    }
   }
 
   /** Await the current dirty-tile flush (e.g. before smooth-scroll after a bulk add). */
@@ -215,10 +230,10 @@ export class CanvasPool {
       if (gen !== this.paintGen) return;
       if (!tile.dirty) continue;
       if (painted) await yieldToMain();
-      if (tile.dirtyFull || !tile.snap || tile.skipFlipIndices.length === 0) {
+      if (tile.dirtyFull || !tile.snap) {
         await this.paintTile(tile, gen);
       } else {
-        await this.paintSkipFlips(tile, tile.skipFlipIndices, gen);
+        this.compositeTileFromSnap(tile, gen);
       }
       tile.dirty = false;
       tile.dirtyFull = false;
@@ -242,7 +257,7 @@ export class CanvasPool {
       }
     }
     if (this.paused) return;
-    this.paintNow();
+    this.flushDirtyTilesSync();
   }
 
   /** Dirty and paint tiles covering these ticket ids (draw / face updates). */
@@ -251,7 +266,8 @@ export class CanvasPool {
     const indices: number[] = [];
     for (let i = 0; i < this.slots.length; i++) {
       const id = this.slots[i]?.id;
-      if (id && ids.has(id)) indices.push(i);
+      if (!id || !ids.has(id) || this.skipIds.has(id)) continue;
+      indices.push(i);
     }
     this.refreshForSlotIndices(indices);
   }
@@ -267,7 +283,7 @@ export class CanvasPool {
       t.dirtyFull = true;
     }
     if (this.paused) return;
-    this.paintNow();
+    this.flushDirtyTilesSync();
   }
 
   clear(): void {
@@ -276,6 +292,7 @@ export class CanvasPool {
     this.tiles = [];
     this.slots = [];
     this.ticketsById = new Map();
+    this.skipIds = new Set();
   }
 
   private syncTiles(): void {
@@ -349,12 +366,25 @@ export class CanvasPool {
     }
   }
 
-  private async paintDirtyTiles(): Promise<void> {
-    if (this.paused) return;
-    await this.flushDirtyTiles();
+  /** Device-pixel origin of a slot inside its tile bitmap (content coords only). */
+  /** Erase canvas ink anywhere the live DOM owns a ticket (device pixels). */
+  private punchSkipHoles(
+    ctx: CanvasRenderingContext2D,
+    tile: Tile,
+    snap: NonNullable<Tile["snap"]>,
+  ): void {
+    const w = Math.max(1, Math.round(snap.cardWidth * snap.dpr));
+    const h = Math.max(1, Math.round(snap.cardHeight * snap.dpr));
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    for (let i = tile.start; i < tile.end; i++) {
+      const slot = this.slots[i];
+      if (!slot || !this.skipIds.has(slot.id)) continue;
+      const { x, y } = this.slotOriginOnTile(slot, snap);
+      ctx.clearRect(x, y, w, h);
+    }
   }
 
-  /** Device-pixel origin of a slot inside its tile bitmap (content coords only). */
   private slotOriginOnTile(
     slot: TicketSlot,
     snap: NonNullable<Tile["snap"]>,
@@ -368,44 +398,38 @@ export class CanvasPool {
     };
   }
 
-  private async paintSkipFlips(
-    tile: Tile,
-    indices: readonly number[],
-    gen: number,
-  ): Promise<void> {
+  /**
+   * One atomic blit per tile after a DOM-band change — avoids per-slot clears
+   * visible under throttle (shuffle / scroll settle).
+   */
+  private compositeTileFromSnap(tile: Tile, gen: number): void {
     const snap = tile.snap;
     if (!snap) return;
     const ctx = tile.ctx;
     const layout = getActiveLayout();
+    const cssW = contentWidth(layout);
+    const bw = Math.max(1, Math.round(cssW * snap.dpr));
+    const bh = Math.max(1, Math.round(tile.cssH * snap.dpr));
+    const scratch = document.createElement("canvas");
+    scratch.width = bw;
+    scratch.height = bh;
+    const sctx = scratch.getContext("2d");
+    if (!sctx) return;
+    sctx.setTransform(1, 0, 0, 1, 0, 0);
+    sctx.imageSmoothingEnabled = false;
+    sctx.clearRect(0, 0, bw, bh);
     const boxes = catalogCellBoxes(snap.dpr);
-    let n = 0;
-    for (const i of indices) {
+    for (let i = tile.start; i < tile.end; i++) {
       if (gen !== this.paintGen) return;
-      const slot = this.slots[i];
-      if (!slot) continue;
+      const slot = this.slots[i]!;
       const ticket = this.ticketsById.get(slot.id);
-      if (this.skipIds.has(slot.id)) {
-        this.clearSlotOnTile(ctx, slot, snap, layout);
-      } else if (ticket) {
-        this.paintSlotOnTile(ctx, slot, ticket, snap, layout, boxes);
-      }
-      n += 1;
-      if (n % SKIP_PATCH_YIELD_EVERY === 0) await yieldToMain();
+      if (!ticket || this.skipIds.has(slot.id)) continue;
+      this.paintSlotOnTile(sctx, slot, ticket, snap, layout, boxes);
     }
-  }
-
-  private clearSlotOnTile(
-    ctx: CanvasRenderingContext2D,
-    slot: TicketSlot,
-    snap: NonNullable<Tile["snap"]>,
-    layout: ReturnType<typeof getActiveLayout>,
-  ): void {
-    const { cardWidth, cardHeight, gap } = layout;
-    const dpr = snap.dpr;
-    const { x, y } = this.slotOriginOnTile(slot, snap);
-    const w = Math.max(1, Math.round(cardWidth * dpr));
-    const h = Math.max(1, Math.round((cardHeight + gap) * dpr));
-    ctx.clearRect(x, y, w, h);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(scratch, 0, 0);
+    this.punchSkipHoles(ctx, tile, snap);
   }
 
   private paintSlotOnTile(
@@ -416,6 +440,7 @@ export class CanvasPool {
     layout: ReturnType<typeof getActiveLayout>,
     boxes: { x: number; y: number; w: number; h: number }[],
   ): void {
+    if (this.skipIds.has(slot.id)) return;
     const dpr = snap.dpr;
     const { cardWidth } = layout;
     const { x: originX, y: originY } = this.slotOriginOnTile(slot, snap);
@@ -486,6 +511,7 @@ export class CanvasPool {
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(scratch, 0, 0);
     }
+    this.punchSkipHoles(ctx, tile, snap);
   }
 }
 

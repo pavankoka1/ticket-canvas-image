@@ -52,6 +52,26 @@ function separatorFill(face: Face): string {
       : PALETTE.normal.separator;
 }
 
+/** Header band: top corners only (matches `.ticketCard__header` CSS). */
+function headerBandPath(cardWidth: number, headerH: number, r: number): string {
+  const w = cardWidth;
+  const h = headerH;
+  const cr = Math.min(r, w / 2, h);
+  if (cr <= 0) return `M 0 0 H ${w} V ${h} H 0 Z`;
+  return `M ${cr} 0 H ${w - cr} A ${cr} ${cr} 0 0 1 ${w} ${cr} V ${h} H 0 V ${cr} A ${cr} ${cr} 0 0 1 ${cr} 0 Z`;
+}
+
+/** Body band: bottom corners only (matches `.ticketCard__body` CSS). */
+function bodyBandPath(cardWidth: number, headerH: number, bodyH: number, r: number): string {
+  const w = cardWidth;
+  const y0 = headerH;
+  const h = bodyH;
+  const cr = Math.min(r, w / 2, h);
+  if (cr <= 0) return `M 0 ${y0} H ${w} V ${y0 + h} H 0 Z`;
+  const y1 = y0 + h;
+  return `M 0 ${y0} H ${w} V ${y1 - cr} A ${cr} ${cr} 0 0 1 ${w - cr} ${y1} H ${cr} A ${cr} ${cr} 0 0 1 0 ${y1 - cr} V ${y0} Z`;
+}
+
 /** Five column separators with device-snapped x and width (card CSS px). */
 export function buildTicketSeparatorSvg(
   metrics: TicketMetrics,
@@ -111,23 +131,8 @@ export function buildTicketChromeSvg(
     }),
   );
   parts.push(shadow);
-  parts.push(
-    svgEl("rect", {
-      x: 0,
-      y: 0,
-      width: cardWidth,
-      height: metrics.cardHeight,
-      rx: r,
-      ry: r,
-      fill:
-        face === "normal"
-          ? PALETTE.normal.header
-          : face === "gold"
-            ? PALETTE.gold.shell
-            : PALETTE.disabled.shell,
-      filter: `url(#${shadowId})`,
-    }),
-  );
+
+  const chromeInk: SVGElement[] = [];
 
   if (face === "gold") {
     const headerGradId = `cmpTicketHeaderGold-${suf}`;
@@ -139,26 +144,16 @@ export function buildTicketChromeSvg(
         svgEl("stop", { offset: "100%", "stop-color": PALETTE.gold.headerBottom }),
       ),
     );
-    parts.push(
-      svgEl("rect", {
-        x: 0,
-        y: 0,
-        width: cardWidth,
-        height: headerH,
-        rx: r,
-        ry: r,
+    chromeInk.push(
+      svgEl("path", {
+        d: headerBandPath(cardWidth, headerH, r),
         fill: `url(#${headerGradId})`,
       }),
     );
   } else {
-    parts.push(
-      svgEl("rect", {
-        x: 0,
-        y: 0,
-        width: cardWidth,
-        height: headerH,
-        rx: r,
-        ry: r,
+    chromeInk.push(
+      svgEl("path", {
+        d: headerBandPath(cardWidth, headerH, r),
         fill: face === "normal" ? PALETTE.normal.header : PALETTE.disabled.header,
       }),
     );
@@ -173,14 +168,9 @@ export function buildTicketChromeSvg(
       svgEl("stop", { offset: "100%", "stop-color": PALETTE.normal.bodyBottom }),
     );
     parts.push(grad);
-    parts.push(
-      svgEl("rect", {
-        x: 0,
-        y: headerH,
-        width: cardWidth,
-        height: bodyH,
-        rx: r,
-        ry: r,
+    chromeInk.push(
+      svgEl("path", {
+        d: bodyBandPath(cardWidth, headerH, bodyH, r),
         fill: `url(#${bodyGradId})`,
       }),
     );
@@ -195,31 +185,22 @@ export function buildTicketChromeSvg(
         svgEl("stop", { offset: "100%", "stop-color": PALETTE.gold.bodyBottom }),
       ),
     );
-    parts.push(
-      svgEl("rect", {
-        x: 0,
-        y: headerH,
-        width: cardWidth,
-        height: bodyH,
-        rx: r,
-        ry: r,
+    chromeInk.push(
+      svgEl("path", {
+        d: bodyBandPath(cardWidth, headerH, bodyH, r),
         fill: `url(#${bodyGradId})`,
       }),
     );
   } else {
-    parts.push(
-      svgEl("rect", {
-        x: 0,
-        y: headerH,
-        width: cardWidth,
-        height: bodyH,
-        rx: r,
-        ry: r,
+    chromeInk.push(
+      svgEl("path", {
+        d: bodyBandPath(cardWidth, headerH, bodyH, r),
         fill: PALETTE.disabled.body,
       }),
     );
   }
 
+  parts.push(svgEl("g", { filter: `url(#${shadowId})` }, ...chromeInk));
   parts.push(...buildTicketSeparatorSvg(metrics, cellW, face, dpr));
 
   return [svgEl("g", { class: SVG_CHROME_CLASS }, ...parts)];

@@ -201,6 +201,7 @@ export function playTicketDraw(
 
   const host = card.badgeHostAt(cell);
   if (isMult) {
+    refreshSvgOverlayInk(root);
     const { disc, label } = beginDrawMultiplierMotion(root, cell);
     if (disc) playOverlayPop(disc, true);
     else if (host) {

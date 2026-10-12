@@ -47,6 +47,11 @@ export class DomPool {
     return this.ready;
   }
 
+  /** Ticket ids with a live card in the pool (the real DOM band). */
+  boundIds(): ReadonlySet<string> {
+    return new Set(this.byId.keys());
+  }
+
   setMotionHooks(hooks: DomPoolMotionHooks): void {
     this.motionHooks = hooks;
   }
@@ -79,7 +84,7 @@ export class DomPool {
       const card = this.cards[idx]!;
       // Unchanged band members keep their DOM as-is — bind only new/moved/updated.
       if (!isNew && card.shows(ticket, slot.x, slot.y)) continue;
-      card.bind(ticket, slot.x, slot.y);
+      card.bind(ticket, slot.x, slot.y, getActiveLayout());
       prepareCatalogDomCard(card);
       probeSlotPlacementDrift(card.dom, this.host, slot.x, slot.y);
       if (isNew && appearIds?.has(slot.id)) this.playAppear(card, slot.x, slot.y);

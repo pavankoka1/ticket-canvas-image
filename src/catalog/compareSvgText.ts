@@ -291,7 +291,7 @@ export function stripCompareOverlayHeader(root: HTMLElement, headerHeightCss: nu
 
 /** Rebuild svg-all overlay ink after draw settle (e.g. cleared cell digit). */
 export function refreshSvgOverlayInk(root: HTMLElement): void {
-  if (!root.querySelector(`:scope > .${OVERLAY_CLASS}`)) return;
+  if (!root.classList.contains(SVG_FACE_CLASS)) return;
   applySvgText(root, true);
 }
 

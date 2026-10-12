@@ -144,13 +144,16 @@ export function multiplierGroup(value: string, cx: number, cy: number, fontPx: n
   return svgEl("g", { transform: `rotate(${ROTATION_DEG} ${cx} ${cy})` }, ...layers);
 }
 
-function multiplierSvg(
+/** Disc + rotated label — same stack as svg-all overlay / `applySvgMultiplier`. */
+export function multiplierHostSvg(
   value: string,
-  size: number,
-  fontPx: number,
+  dabSizeCss: number,
   disabled: boolean,
-  disc: string | undefined,
+  discHref?: string,
 ): SVGSVGElement {
+  const fontPx = (13 * dabSizeCss) / 24;
+  const size = dabSizeCss;
+  const disc = discHref;
   const c = size / 2;
   const svg = svgEl(
     "svg",
@@ -199,7 +202,7 @@ export function applySvgMultiplier(root: HTMLElement, enabled: boolean, withDisc
       const key = `${value}|${size}|${fontPx}|${disabled}|${disc ? "disc" : "css-disc"}`;
       if (existing?.dataset.key === key) return;
       existing?.remove();
-      const svg = multiplierSvg(value, size, fontPx, disabled, disc);
+      const svg = multiplierHostSvg(value, dab, disabled, disc);
       svg.dataset.key = key;
       if (html) html.style.display = "none";
       label.append(svg);

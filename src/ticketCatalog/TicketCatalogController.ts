@@ -241,6 +241,18 @@ export class TicketCatalogController {
     );
   }
 
+  /** Skip set for canvas: ids that actually have a DOM card (after rebind). */
+  private domSkipIds(): Set<string> {
+    const dom = this.dom;
+    if (dom?.isReady) {
+      const bound = dom.boundIds();
+      if (bound.size > 0) return new Set(bound);
+    }
+    return new Set(
+      this.bandForScroll(this.host.scroll.scrollTop).dom.map((s) => s.id),
+    );
+  }
+
   private syncDom(domSlots?: readonly TicketSlot[]): void {
     const dom = this.dom;
     if (!dom?.isReady) return;
@@ -257,10 +269,7 @@ export class TicketCatalogController {
   private syncCanvas(): void {
     const canvas = this.canvas;
     if (!canvas?.isReady) return;
-    const ids = new Set(
-      this.bandForScroll(this.host.scroll.scrollTop).dom.map((s) => s.id),
-    );
-    canvas.setCatalog(this.slots, this.ticketsById, ids);
+    canvas.setCatalog(this.slots, this.ticketsById, this.domSkipIds());
     this.updateStats();
   }
 
@@ -454,8 +463,7 @@ export class TicketCatalogController {
     const ids = new Set(dom.map((s) => s.id));
     const canvas = this.canvas;
 
-    // DOM band + skip update on the next frame; canvas patches on idle so scrollend
-    // does not run syncDom and full-tile svg-all paints in one task.
+    // DOM band + skip on next frame; canvas patches on idle so scrollend stays light.
     requestAnimationFrame(() => {
       this.syncDom(dom);
       canvas?.setSkip(ids, { paint: false });
@@ -588,13 +596,13 @@ export class TicketCatalogController {
     requestAnimationFrame(() => {
       this.dom?.playMoves(from, this.slots, this.shuffleMs);
       if (added.length === 0) return;
-      if (bulkScroll && this.canvasReady && this.canvas) {
-        // No skip holes while scrolling: syncCanvas() would re-apply the stale DOM band.
-        this.canvas.setCatalog(this.slots, this.ticketsById, new Set());
-        void this.canvas.waitForPaint().then(scheduleSmoothScroll);
-      } else {
+      if (this.canvasReady && this.canvas) {
         this.syncCanvas();
-        scheduleSmoothScroll?.();
+        if (bulkScroll) {
+          void this.canvas.waitForPaint().then(scheduleSmoothScroll);
+        } else {
+          scheduleSmoothScroll?.();
+        }
       }
     });
   }

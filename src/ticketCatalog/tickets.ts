@@ -85,6 +85,14 @@ export function isWinTicket(t: Ticket): boolean {
   return t.hits.length >= WIN_MATCH_THRESHOLD;
 }
 
+/** Cell multiplier (handles numeric keys on `multipliers` records). */
+export function ticketCellMultiplier(ticket: Ticket, cell: number): number {
+  const direct = ticket.multipliers[cell];
+  if (direct !== undefined) return direct;
+  const keyed = ticket.multipliers[cell as keyof Ticket["multipliers"]];
+  return typeof keyed === "number" ? keyed : 0;
+}
+
 /** One game deals six balls. A non-zero multiplier makes that ball a multiplier dab. */
 export const DRAW_ROUND_COUNT = 6;
 
