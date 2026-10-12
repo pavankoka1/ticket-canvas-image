@@ -60,15 +60,16 @@ export class DomPool {
     slots: readonly TicketSlot[],
     ticketsById: Map<string, Ticket>,
     appearIds?: ReadonlySet<string>,
-  ): void {
-    if (!this.ready) return;
+  ): number[] {
+    if (!this.ready) return [];
     const keep = new Set(slots.map((s) => s.id));
+    const pendingHide: number[] = [];
 
     for (const [id, idx] of [...this.byId]) {
       if (keep.has(id)) continue;
-      this.cards[idx]!.hide();
       this.byId.delete(id);
       this.free.push(idx);
+      pendingHide.push(idx);
     }
 
     for (const slot of slots) {
@@ -88,6 +89,23 @@ export class DomPool {
       prepareCatalogDomCard(card);
       probeSlotPlacementDrift(card.dom, this.host, slot.x, slot.y);
       if (isNew && appearIds?.has(slot.id)) this.playAppear(card, slot.x, slot.y);
+    }
+
+    return pendingHide;
+  }
+
+  /** Hide pool slots evicted from the band — call after canvas has repainted them. */
+  hideEvictedSlots(pendingHide: readonly number[]): void {
+    if (!this.ready || pendingHide.length === 0) return;
+    for (const idx of pendingHide) {
+      let reused = false;
+      for (const bound of this.byId.values()) {
+        if (bound === idx) {
+          reused = true;
+          break;
+        }
+      }
+      if (!reused) this.cards[idx]!.hide();
     }
   }
 

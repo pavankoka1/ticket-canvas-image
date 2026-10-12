@@ -253,17 +253,18 @@ export class TicketCatalogController {
     );
   }
 
-  private syncDom(domSlots?: readonly TicketSlot[]): void {
+  private syncDom(domSlots?: readonly TicketSlot[]): number[] {
     const dom = this.dom;
-    if (!dom?.isReady) return;
+    if (!dom?.isReady) return [];
     const slots =
       domSlots ?? this.bandForScroll(this.host.scroll.scrollTop).dom;
     const fresh = this.freshIds;
     this.freshIds = new Set();
-    dom.rebind(slots, this.ticketsById, fresh);
+    const pendingHide = dom.rebind(slots, this.ticketsById, fresh);
     for (const id of fresh) this.knownIds.add(id);
     this.domCount = slots.length;
     this.updateStats();
+    return pendingHide;
   }
 
   private syncCanvas(): void {
@@ -463,17 +464,19 @@ export class TicketCatalogController {
     const ids = new Set(dom.map((s) => s.id));
     const canvas = this.canvas;
 
-    // DOM band + skip on next frame; canvas patches on idle so scrollend stays light.
+    // DOM first, then canvas holes after the compositor has painted the band.
     requestAnimationFrame(() => {
-      this.syncDom(dom);
-      canvas?.setSkip(ids, { paint: false });
-      if (!canvas) return;
-      const paint = () => canvas.paintNow();
-      if (typeof requestIdleCallback === "function") {
-        requestIdleCallback(paint, { timeout: 800 });
-      } else {
-        setTimeout(paint, 16);
+      const pendingHide = this.syncDom(dom);
+      if (!canvas) {
+        this.dom?.hideEvictedSlots(pendingHide);
+        return;
       }
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          canvas.setSkip(ids, { paint: true });
+          this.dom?.hideEvictedSlots(pendingHide);
+        });
+      });
     });
   }
 
