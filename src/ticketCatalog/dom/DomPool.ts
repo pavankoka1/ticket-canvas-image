@@ -1,0 +1,271 @@
+import { playTicketAppear } from '../animation/appear';
+import {
+  drawGestureTotalMs,
+  noteDrawGesture,
+} from '../animation/catalogAnimations';
+import { getActiveLayout, rowHeight } from '../layout/catalogLayout';
+import { playTicketDraw } from '../animation/drawGesture';
+import { DOM_POOL_SIZE } from '../constants';
+import { prepareCatalogDomCard } from '../canvas/paint/catalogSvgPaint';
+import {
+  attachTicketCard,
+  probeSlotPlacementDrift,
+  snapSlot,
+  TicketCard,
+} from './ticketCardElement';
+import type { DrawHit, Ticket, TicketSlot } from '../model/tickets';
+
+export type DomPoolMotionHooks = {
+  onMotionStart?: () => void;
+  onMotionEnd?: () => void;
+};
+
+/** Fixed viewport DOM pool — never grows with catalog size. */
+export class DomPool {
+  private cards: TicketCard[] = [];
+  private byId = new Map<string, number>();
+  private free: number[] = [];
+  private ready = false;
+  private readonly host: HTMLElement;
+  private motionHooks: DomPoolMotionHooks = {};
+  readonly size: number;
+
+  constructor(host: HTMLElement, size: number = DOM_POOL_SIZE) {
+    this.host = host;
+    this.size = size;
+  }
+
+  mount(): void {
+    if (this.ready) return;
+    for (let i = 0; i < this.size; i++) {
+      const card = attachTicketCard(new TicketCard());
+      this.host.appendChild(card.dom);
+      this.cards.push(card);
+      this.free.push(i);
+    }
+    this.ready = true;
+    this.host.style.opacity = '1';
+  }
+
+  get isReady(): boolean {
+    return this.ready;
+  }
+
+  /** Ticket ids with a live card in the pool (the real DOM band). */
+  boundIds(): ReadonlySet<string> {
+    return new Set(this.byId.keys());
+  }
+
+  boundCardElements(): HTMLElement[] {
+    const out: HTMLElement[] = [];
+    for (const idx of this.byId.values()) out.push(this.cards[idx]!.dom);
+    return out;
+  }
+
+  /** Bound pool cards below the first row (`columns` wide). */
+  getDomCardsBelow(_columns: number): HTMLElement[] {
+    return this.cardElementsBelowRow(1);
+  }
+
+  /** Pool cards strictly below the given row index (0 = first row). */
+  cardElementsBelowRow(row: number): HTMLElement[] {
+    const layout = getActiveLayout();
+    const threshold = row * rowHeight(layout);
+    const out: HTMLElement[] = [];
+    for (const idx of this.byId.values()) {
+      const el = this.cards[idx]!.dom;
+      const y = parseFloat(el.style.top) || 0;
+      if (y >= threshold + 0.5) out.push(el);
+    }
+    return out;
+  }
+
+  setMotionHooks(hooks: DomPoolMotionHooks): void {
+    this.motionHooks = hooks;
+  }
+
+  rebind(
+    slots: readonly TicketSlot[],
+    ticketsById: Map<string, Ticket>,
+    appearIds?: ReadonlySet<string>,
+  ): number[] {
+    if (!this.ready) return [];
+    const keep = new Set(slots.map((s) => s.id));
+    const pendingHide: number[] = [];
+
+    for (const [id, idx] of [...this.byId]) {
+      if (keep.has(id)) continue;
+      this.byId.delete(id);
+      this.free.push(idx);
+      pendingHide.push(idx);
+    }
+
+    for (const slot of slots) {
+      const ticket = ticketsById.get(slot.id);
+      if (!ticket) continue;
+      let idx = this.byId.get(slot.id);
+      const isNew = idx === undefined;
+      if (idx === undefined) {
+        idx = this.free.pop();
+        if (idx === undefined) break;
+        this.byId.set(slot.id, idx);
+      }
+      const card = this.cards[idx]!;
+      // Unchanged band members keep their DOM as-is — bind only new/moved/updated.
+      if (!isNew && card.shows(ticket, slot.x, slot.y)) continue;
+      card.bind(ticket, slot.x, slot.y, getActiveLayout());
+      prepareCatalogDomCard(card);
+      probeSlotPlacementDrift(card.dom, this.host, slot.x, slot.y);
+      if (isNew && appearIds?.has(slot.id)) this.playAppear(card, slot.x, slot.y);
+    }
+
+    return pendingHide;
+  }
+
+  /** Hide pool slots evicted from the band — call after canvas has repainted them. */
+  hideEvictedSlots(pendingHide: readonly number[]): void {
+    if (!this.ready || pendingHide.length === 0) return;
+    for (const idx of pendingHide) {
+      let reused = false;
+      for (const bound of this.byId.values()) {
+        if (bound === idx) {
+          reused = true;
+          break;
+        }
+      }
+      if (!reused) this.cards[idx]!.hide();
+    }
+  }
+
+  private playAppear(card: TicketCard, x: number, y: number): void {
+    const layout = getActiveLayout();
+    const slot = snapSlot(x, y);
+    this.motionHooks.onMotionStart?.();
+    playTicketAppear(
+      card,
+      slot.x,
+      slot.y,
+      layout.cardWidth,
+      layout.gap,
+      layout.metrics.numberFontSize,
+      () => this.motionHooks.onMotionEnd?.(),
+    );
+  }
+
+  /** Cancel in-flight FLIP / appear transitions before layout changes. */
+  cancelAllMotion(): void {
+    if (!this.ready) return;
+    for (const card of this.cards) card.cancelMotion();
+  }
+
+  /** Stop dab, dip, and shine. Used when draws are cleared. */
+  clearMotion(): void {
+    if (!this.ready) return;
+    for (const card of this.cards) {
+      card.cancelMotion();
+      card.hideShine();
+    }
+  }
+
+  /**
+   * FLIP visible cards whose slot changed. New cards are left to the appear
+   * gesture. Off-screen cards are not in the pool, so they snap.
+   */
+  playMoves(
+    from: ReadonlyMap<string, { x: number; y: number }>,
+    slots: readonly TicketSlot[],
+    durationMs: number,
+  ): void {
+    if (!this.ready || durationMs <= 0) return;
+    if (typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+    const moves: { card: TicketCard; el: HTMLElement; token: number; anim: Animation }[] = [];
+    for (const slot of slots) {
+      const prev = from.get(slot.id);
+      const idx = this.byId.get(slot.id);
+      if (!prev || idx === undefined) continue;
+      const was = snapSlot(prev.x, prev.y);
+      const now = snapSlot(slot.x, slot.y);
+      const dx = was.x - now.x;
+      const dy = was.y - now.y;
+      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
+      const card = this.cards[idx]!;
+      const el = card.dom;
+      card.cancelMotion();
+      const token = card.beginMotion();
+      const anim = el.animate(
+        [{ translate: `${dx}px ${dy}px` }, { translate: "0px 0px" }],
+        { duration: durationMs, easing: "cubic-bezier(0.65, 0, 0.35, 1)", fill: "forwards" },
+      );
+      moves.push({ card, el, token, anim });
+    }
+    if (moves.length === 0) return;
+    this.motionHooks.onMotionStart?.();
+    let pending = moves.length;
+    const oneDone = () => {
+      pending -= 1;
+      if (pending === 0) this.motionHooks.onMotionEnd?.();
+    };
+    for (const { card, el, token, anim } of moves) {
+      void anim.finished.then(
+        () => {
+          anim.cancel();
+          el.style.removeProperty("translate");
+          card.endMotion(token);
+          oneDone();
+        },
+        () => {
+          card.endMotion(token);
+          oneDone();
+        },
+      );
+    }
+  }
+
+  /** Draw gesture on cards currently in the pool. Scrolled-away tickets stay canvas. */
+  playDraws(hits: readonly DrawHit[]): void {
+    if (!this.ready || hits.length === 0) return;
+    const layout = getActiveLayout();
+    const pending: DrawHit[] = [];
+    for (const hit of hits) {
+      if (this.byId.has(hit.id)) pending.push(hit);
+    }
+    if (pending.length === 0) return;
+    this.motionHooks.onMotionStart?.();
+    let remaining = pending.length;
+    const oneDone = () => {
+      remaining -= 1;
+      if (remaining === 0) this.motionHooks.onMotionEnd?.();
+    };
+    let gestureMs = 0;
+    for (const hit of pending) {
+      gestureMs = Math.max(gestureMs, drawGestureTotalMs(hit.kind));
+      const idx = this.byId.get(hit.id)!;
+      playTicketDraw(
+        this.cards[idx]!,
+        hit.cell,
+        hit.kind,
+        layout.cardWidth,
+        layout.cardHeight,
+        oneDone,
+      );
+    }
+    if (gestureMs > 0) noteDrawGesture(gestureMs);
+  }
+
+  refreshLayout(): void {
+    const w = getActiveLayout().cardWidth;
+    for (const card of this.cards) card.applyCardWidth(w, true);
+  }
+
+  /** Re-apply svg-all overlay after atlas warm (bind may have skipped earlier). */
+  refreshSvgDomOverlays(): void {
+    if (!this.ready) return;
+    for (const idx of this.byId.values()) prepareCatalogDomCard(this.cards[idx]!);
+  }
+
+  setVisible(visible: boolean): void {
+    this.host.style.opacity = visible ? '1' : '0';
+  }
+}

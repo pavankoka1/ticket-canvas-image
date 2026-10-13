@@ -26,13 +26,13 @@ import {
   badgeHostDevice,
   badgeHostInCardCss,
   resolveCellBoxModel,
-} from "../ticketCatalog/cellBoxModel";
-import { getActiveLayout } from "../ticketCatalog/catalogLayout";
+} from "../ticketCatalog/layout/cellBoxModel";
+import { getActiveLayout } from "../ticketCatalog/layout/catalogLayout";
 import {
   buildTicketChromeSvg,
   buildTicketSeparatorSvg,
   SVG_CHROME_CLASS,
-} from "../ticketCatalog/ticketSvgChrome";
+} from "../ticketCatalog/svg/ticketSvgChrome";
 
 /** Baseline below the box centre, in em (Onest cap height ≈ 0.72 em). */
 const BASELINE_EM = 0.36;

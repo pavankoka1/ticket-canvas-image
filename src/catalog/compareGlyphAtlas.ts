@@ -6,7 +6,7 @@ import {
   quantizeGlyphDeviceX,
 } from "./compareGlyphEngine";
 import { OVERLAY_CLASS } from "./compareSvgText";
-import type { CompareRasterPart } from "../ticketCatalog/ticketSvgRaster";
+import type { CompareRasterPart } from "../ticketCatalog/svg/ticketSvgRaster";
 
 export const AMOUNT_GLYPHS = "0123456789$,.";
 const GLYPH_REF_X0 = 6;

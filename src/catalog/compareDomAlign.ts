@@ -1,4 +1,4 @@
-import { ticketDomDeviceScale, type TicketDomDeviceScale } from "../ticketCatalog/ticketDomMeasure";
+import { ticketDomDeviceScale, type TicketDomDeviceScale } from "../ticketCatalog/dom/ticketDomMeasure";
 
 /** Match alignment-branch compare stack: ticket fills the frame at 0,0. */
 export function styleCompareTicketDom(dom: HTMLElement): void {

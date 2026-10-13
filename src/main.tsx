@@ -2,7 +2,7 @@ import { createRoot } from "react-dom/client";
 
 import { Compare } from "./catalog/Compare";
 import { mountTicketCatalog } from "./ticketCatalog";
-import { ensureTicketFont } from "./ticketCatalog/ticketFont";
+import { ensureTicketFont } from "./ticketCatalog/layout/ticketFont";
 import "./index.css";
 
 const isCompare =

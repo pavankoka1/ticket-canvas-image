@@ -4,20 +4,20 @@
 
 import { useLayoutEffect, useRef, useState } from "react";
 
-import { activeDpr, resolveCellBoxModel, setLiveCellBoxModel } from "../ticketCatalog/cellBoxModel";
+import { activeDpr, resolveCellBoxModel, setLiveCellBoxModel } from "../ticketCatalog/layout/cellBoxModel";
 import { compareRasterRatio, type CompareRenderMode } from "./compareRenderMode";
 import {
   alignCompareStackOrigin,
   layoutCompareRasterCanvas,
   styleCompareTicketDom,
 } from "./compareDomAlign";
-import { TicketCard } from "../ticketCatalog/ticketCardElement";
+import { TicketCard } from "../ticketCatalog/dom/ticketCardElement";
 import { assembleCompareSprites, prepareCompareCard } from "./compareCachedSprites";
-import { rasterizeCompareTicketSvg } from "../ticketCatalog/ticketSvgRaster";
-import { setActiveLayout } from "../ticketCatalog/catalogLayout";
-import type { CatalogLayout } from "../ticketCatalog/catalogLayout";
-import type { TicketMetrics } from "../ticketCatalog/ticketPresets";
-import type { Ticket } from "../ticketCatalog/tickets";
+import { rasterizeCompareTicketSvg } from "../ticketCatalog/svg/ticketSvgRaster";
+import { setActiveLayout } from "../ticketCatalog/layout/catalogLayout";
+import type { CatalogLayout } from "../ticketCatalog/layout/catalogLayout";
+import type { TicketMetrics } from "../ticketCatalog/model/ticketPresets";
+import type { Ticket } from "../ticketCatalog/model/tickets";
 
 export type CompareSvgStackProps = {
   optimized?: boolean;

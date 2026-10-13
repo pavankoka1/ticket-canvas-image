@@ -1,12 +1,17 @@
 /** Compare-only reusable HTML/CSS sprites. No catalog cache or geometry mutation. */
-import { loadSprites, loadSpritesMany, saveSpritesBatch } from '../ticketCatalog/atlasStore';
+import { loadSprites, loadSpritesMany, saveSpritesBatch } from '../ticketCatalog/canvas/atlas/atlasStore';
 import { encodeCompareCanvasPng } from './comparePersistEncodeClient';
-import { activeDpr, badgeHostDevice, resolveCellBoxModel } from '../ticketCatalog/cellBoxModel';
+import {
+  activeDpr,
+  applyCellBoxCssVars,
+  badgeHostDevice,
+  resolveCellBoxModel,
+} from '../ticketCatalog/layout/cellBoxModel';
 import { alignCompareStackOrigin, styleCompareTicketDom } from './compareDomAlign';
 import { usesSvgMultiplier, usesSvgText } from './compareRenderMode';
 import { applySvgMultiplier } from './compareSvgMultiplier';
 import { paintSvgAllCompareTicket } from './compareSvgAllPaint';
-import { CATALOG_FIGMA_DESKTOP_LOCK } from '../ticketCatalog/catalogFigmaDesktop';
+import { CATALOG_FIGMA_DESKTOP_LOCK } from '../ticketCatalog/model/catalogFigmaDesktop';
 import {
   applySvgText,
   OVERLAY_CLASS,
@@ -15,11 +20,11 @@ import {
   stripOverlayInkKeepChrome,
   SVG_FACE_CLASS,
 } from './compareSvgText';
-import type { CatalogLayout } from '../ticketCatalog/catalogLayout';
-import { applyTicketCellLayout, TicketCard } from '../ticketCatalog/ticketCardElement';
-import { ensureTicketFontsForLayout } from '../ticketCatalog/ticketFont';
-import { applyTicketCssVars } from '../ticketCatalog/ticketPresets';
-import { isWinTicket, MULTIPLIER_VALUES, type Ticket } from '../ticketCatalog/tickets';
+import type { CatalogLayout } from '../ticketCatalog/layout/catalogLayout';
+import { applyTicketCellLayout, TicketCard } from '../ticketCatalog/dom/ticketCardElement';
+import { ensureTicketFontsForLayout } from '../ticketCatalog/layout/ticketFont';
+import { applyTicketCssVars } from '../ticketCatalog/model/ticketPresets';
+import { isWinTicket, MULTIPLIER_VALUES, type Ticket } from '../ticketCatalog/model/tickets';
 import { compareGlyphPhaseCount } from './compareGlyphEngine';
 import {
   cropGlyphFromSheet,
@@ -29,7 +34,7 @@ import {
   widenCardForGlyphWarm,
   type HeaderGlyphPack,
 } from './compareGlyphAtlas';
-import { composeCompareInkPatch, decodeCompareSvgBlob, rasterizeCompareTicketSvg, rasterSvgBlob, type CompareRasterPart } from '../ticketCatalog/ticketSvgRaster';
+import { composeCompareInkPatch, decodeCompareSvgBlob, rasterizeCompareTicketSvg, rasterSvgBlob, type CompareRasterPart } from '../ticketCatalog/svg/ticketSvgRaster';
 
 const TRANSPARENT = `:root{background:transparent!important}.ticketCard,.ticketCard__header,.ticketCard__body{background:none!important;box-shadow:none!important}.ticketCard__cell::before{visibility:hidden!important}`;
 type Sprite = { bitmap: HTMLCanvasElement; blob: Blob };
@@ -657,6 +662,20 @@ function cropFromWarmSheet(
   return canvas;
 }
 
+function configureCompareCaptureHost(
+  host: HTMLElement,
+  card: TicketCard,
+  layout: CatalogLayout,
+  dpr: number,
+): void {
+  const model = resolveCellBoxModel(layout, dpr);
+  applyTicketCssVars(host, layout.metrics, dpr);
+  applyCellBoxCssVars(host, model, layout.metrics);
+  host.style.width = `${layout.cardWidth}px`;
+  host.style.height = `${layout.cardHeight}px`;
+  styleCompareTicketDom(card.dom);
+}
+
 export function prepareCompareCard(card: TicketCard, layout: CatalogLayout, dpr: number): void {
   applyTicketCssVars(card.dom, layout.metrics, dpr);
   const model = resolveCellBoxModel(layout, dpr);
@@ -705,6 +724,7 @@ async function warmPackImpl(layout: CatalogLayout, dpr: number, key: string): Pr
     const card = new TicketCard();
     host.append(card.dom);
     document.body.append(host);
+    configureCompareCaptureHost(host, card, layout, dpr);
     const model = resolveCellBoxModel(layout, dpr);
     const m = layout.metrics;
     const numberPatches = new Map<string, NumberPatch>();
@@ -1019,6 +1039,7 @@ export async function warmCatalogChromeSprites(
   styleCompareTicketDom(card.dom);
   host.append(card.dom);
   document.body.append(host);
+  configureCompareCaptureHost(host, card, layout, dpr);
   const m = layout.metrics;
   const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(card.dom, dpr, m, part);
   try {
@@ -1112,6 +1133,7 @@ async function warmHeaderGlyphsOffscreen(pack: Pack, layout: CatalogLayout, dpr:
   styleCompareTicketDom(card.dom);
   host.append(card.dom);
   document.body.append(host);
+  configureCompareCaptureHost(host, card, layout, dpr);
   const m = layout.metrics;
   const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(card.dom, dpr, m, part);
   const bindFace = (face: 'normal' | 'gold' | 'disabled', idChar: string, winChar: string) => {

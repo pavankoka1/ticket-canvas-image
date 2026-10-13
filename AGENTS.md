@@ -17,7 +17,7 @@ First paint waits on `ensureTicketFont`. No `StrictMode` (it double-fired SnapDO
 
 - This file is the architecture source. `README.md` only covers how to run and what to click.
 - `docs/CANVAS_CACHE_SOLUTIONS.md` and `NOTES-wip-snapdom-tiles.md` are historical. Do not implement from them.
-- Do not revive the unused per-ticket bake: `bakeQueue.ts`, `bitmapCache.ts`, `DomCaptureStage.ts`, `captureDomTicket.ts`, `BakeCropClient.ts`. `layout.ts` `CARD_WIDTH` / `CARD_HEIGHT` are stubs.
+- Do not revive the unused per-ticket bake under `ticketCatalog/_legacy/` (`bakeQueue.ts`, `bitmapCache.ts`, `DomCaptureStage.ts`, `captureDomTicket.ts`, `BakeCropClient.ts`). `constants.ts` `CARD_WIDTH` / `CARD_HEIGHT` are stubs.
 
 ## What paints
 
@@ -59,9 +59,14 @@ Project skills are `.cursor/skills/<name>/SKILL.md`. They are not always-on. Do 
 | `src/main.tsx` | Font gate, Catalog vs Compare |
 | `src/ticketCatalog/index.ts` | `mountTicketCatalog` entry |
 | `src/ticketCatalog/TicketCatalogController.ts` | Home catalog orchestration (no React) |
-| `src/ticketCatalog/CanvasPool.ts` | Tiles · svg-all paint |
-| `src/ticketCatalog/DomPool.ts` | Viewport DOM cards |
-| `src/ticketCatalog/bands.ts` | DOM band |
+| `src/ticketCatalog/constants.ts` | `MAX_TICKETS`, pool sizes, tile budget (not geometry) |
+| `src/ticketCatalog/canvas/CanvasPool.ts` | Tiles · svg-all paint |
+| `src/ticketCatalog/dom/DomPool.ts` | Viewport DOM cards |
+| `src/ticketCatalog/dom/bands.ts` | DOM band |
+| `src/ticketCatalog/canvas/paint/catalogSvgPaint.ts` | Primary svg-all tile paint |
+| `src/ticketCatalog/canvas/paint/catalogPaint.ts` | Legacy sprite-blit tile paint |
+| `src/ticketCatalog/layout/cellBoxModel.ts` | `activeDpr`, cell CSS vars |
+| `src/ticketCatalog/_legacy/` | Dead per-ticket bake — do not import |
 | `src/catalog/Compare.tsx` | DOM ↔ canvas match view (React) |
 | `src/catalog/reactSvgRaster.ts` | React SVG → static markup → canvas cache |
 | `src/catalog/compareSpriteStack.tsx` | Compare DOM + sprite canvas |

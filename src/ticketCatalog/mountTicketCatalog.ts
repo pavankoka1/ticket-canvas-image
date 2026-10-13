@@ -15,8 +15,18 @@ export function mountTicketCatalog({ root }: TicketCatalogMountOptions): () => v
   const catalogFrame = document.createElement("div");
   catalogFrame.className = "catalogFrame";
 
+  const ticketCatalogHost = document.createElement("div");
+  ticketCatalogHost.className = "ticketCatalogHost";
+
+  const scrollbarLane = document.createElement("div");
+  scrollbarLane.className = "catalog__scrollbarLane";
+  scrollbarLane.setAttribute("aria-hidden", "true");
+  const scrollbarThumb = document.createElement("div");
+  scrollbarThumb.className = "catalog__scrollbarThumb";
+  scrollbarLane.append(scrollbarThumb);
+
   const scroll = document.createElement("div");
-  scroll.className = "catalog";
+  scroll.className = "ticketCatalog";
 
   const content = document.createElement("div");
   content.className = "catalog__content";
@@ -30,7 +40,8 @@ export function mountTicketCatalog({ root }: TicketCatalogMountOptions): () => v
 
   content.append(canvasHost, domHost);
   scroll.append(content);
-  catalogFrame.append(scroll);
+  ticketCatalogHost.append(scroll, scrollbarLane);
+  catalogFrame.append(ticketCatalogHost);
 
   const atlasHost = document.createElement("div");
   atlasHost.className = "catalog__captureHost";
@@ -47,6 +58,9 @@ export function mountTicketCatalog({ root }: TicketCatalogMountOptions): () => v
     root,
     ui,
     catalogFrame,
+    ticketCatalogHost,
+    scrollbarLane,
+    scrollbarThumb,
     scroll,
     content,
     canvasHost,

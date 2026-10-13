@@ -5,13 +5,13 @@
 
 import { useLayoutEffect, useRef } from "react";
 
-import { paintTicket } from "../ticketCatalog/CanvasPool";
-import { activeDpr, getLiveCellBoxModel } from "../ticketCatalog/cellBoxModel";
-import { getTicketGeometry, resolveLiveCellBoxModel } from "../ticketCatalog/cellAtlas";
-import { TicketCard } from "../ticketCatalog/ticketCardElement";
-import type { CatalogLayout } from "../ticketCatalog/catalogLayout";
-import type { Ticket } from "../ticketCatalog/tickets";
-import type { TicketSlot } from "../ticketCatalog/tickets";
+import { paintTicket } from "../ticketCatalog/canvas/CanvasPool";
+import { activeDpr, getLiveCellBoxModel } from "../ticketCatalog/layout/cellBoxModel";
+import { getTicketGeometry, resolveLiveCellBoxModel } from "../ticketCatalog/canvas/atlas/cellAtlas";
+import { TicketCard } from "../ticketCatalog/dom/ticketCardElement";
+import type { CatalogLayout } from "../ticketCatalog/layout/catalogLayout";
+import type { Ticket } from "../ticketCatalog/model/tickets";
+import type { TicketSlot } from "../ticketCatalog/model/tickets";
 
 export type CompareSpriteStackProps = {
   ticket: Ticket;

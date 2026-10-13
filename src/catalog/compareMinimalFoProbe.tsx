@@ -6,7 +6,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 
 import { layoutCompareRasterCanvas } from "./compareDomAlign";
-import { rasterizeElementSvg } from "../ticketCatalog/ticketSvgRaster";
+import { rasterizeElementSvg } from "../ticketCatalog/svg/ticketSvgRaster";
 
 const PROBE_CSS = 50;
 

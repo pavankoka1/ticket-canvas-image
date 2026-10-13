@@ -4,12 +4,12 @@
  * badge-body sprites at headerHeight, number patches, then header glyphs.
  */
 
-import { badgeHostDevice, type CellBox } from "../ticketCatalog/cellBoxModel";
-import type { CatalogLayout } from "../ticketCatalog/catalogLayout";
-import { ensureTicketFontsForLayout } from "../ticketCatalog/ticketFont";
-import { applyTicketCssVars } from "../ticketCatalog/ticketPresets";
-import { rasterizeTicketSvg } from "../ticketCatalog/ticketSvgRaster";
-import { MULTIPLIER_VALUES, ticketCellMultiplier, type Ticket } from "../ticketCatalog/tickets";
+import { badgeHostDevice, type CellBox } from "../ticketCatalog/layout/cellBoxModel";
+import type { CatalogLayout } from "../ticketCatalog/layout/catalogLayout";
+import { ensureTicketFontsForLayout } from "../ticketCatalog/layout/ticketFont";
+import { applyTicketCssVars } from "../ticketCatalog/model/ticketPresets";
+import { rasterizeTicketSvg } from "../ticketCatalog/svg/ticketSvgRaster";
+import { MULTIPLIER_VALUES, ticketCellMultiplier, type Ticket } from "../ticketCatalog/model/tickets";
 import type { ComparePaintPack } from "./compareCachedSprites";
 import {
   dabDataUrl,

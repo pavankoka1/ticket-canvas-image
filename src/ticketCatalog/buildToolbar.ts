@@ -1,11 +1,8 @@
-import { MAX_TICKETS } from "./layout";
-import { CATALOG_FIGMA_DESKTOP_LOCK } from "./catalogFigmaDesktop";
-import { TICKET_PRESETS, type TicketPresetId } from "./ticketPresets";
+import { MAX_TICKETS } from "./constants";
 
 export type ToolbarRefs = {
   toolbar: HTMLElement;
   ticketAdds: HTMLElement;
-  presetSelect: HTMLSelectElement;
   lastDraw: HTMLElement;
   layoutStat: HTMLElement;
   ticketStat: HTMLElement;
@@ -65,28 +62,6 @@ export function buildToolbar(root: HTMLElement): ToolbarRefs {
   lastDraw.className = "stat";
   lastDraw.hidden = true;
 
-  const presetLabel = document.createElement("label");
-  presetLabel.className = "stat toolbar__sheet";
-  presetLabel.append("size ");
-  const presetSelect = document.createElement("select");
-  presetSelect.dataset.preset = "";
-  if (!CATALOG_FIGMA_DESKTOP_LOCK) {
-    const auto = document.createElement("option");
-    auto.value = "auto";
-    auto.textContent = "Auto (viewport)";
-    presetSelect.append(auto);
-  }
-  for (const p of TICKET_PRESETS) {
-    const opt = document.createElement("option");
-    opt.value = p.id;
-    opt.textContent = p.label;
-    presetSelect.append(opt);
-  }
-  if (CATALOG_FIGMA_DESKTOP_LOCK) {
-    presetSelect.value = "desktopMedium";
-  }
-  presetLabel.append(presetSelect);
-
   const layoutStat = document.createElement("span");
   layoutStat.className = "stat";
   layoutStat.dataset.layoutStat = "";
@@ -114,7 +89,6 @@ export function buildToolbar(root: HTMLElement): ToolbarRefs {
     drawBtn,
     mkBtn("Clear draws", "clear-draws"),
     lastDraw,
-    presetLabel,
     layoutStat,
     ticketStat,
     tileStat,
@@ -128,7 +102,6 @@ export function buildToolbar(root: HTMLElement): ToolbarRefs {
   return {
     toolbar,
     ticketAdds,
-    presetSelect,
     lastDraw,
     layoutStat,
     ticketStat,
@@ -137,10 +110,4 @@ export function buildToolbar(root: HTMLElement): ToolbarRefs {
     domStat,
     drawBtn,
   };
-}
-
-export type PresetMode = "auto" | TicketPresetId;
-
-export function readPresetMode(select: HTMLSelectElement): PresetMode {
-  return select.value as PresetMode;
 }

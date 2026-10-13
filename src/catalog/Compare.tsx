@@ -1,11 +1,11 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
-import { resolveCatalogLayout, setActiveLayout } from "../ticketCatalog/catalogLayout";
+import { resolveCatalogLayout, setActiveLayout } from "../ticketCatalog/layout/catalogLayout";
 import {
   applyCellBoxCssVars,
   resolveCellBoxModel,
   setLiveCellBoxModel,
-} from "../ticketCatalog/cellBoxModel";
+} from "../ticketCatalog/layout/cellBoxModel";
 import { CompareDiagnostics } from "./compareDiagnostics";
 import {
   COMPARE_RENDER_MODES,
@@ -18,15 +18,15 @@ import { preloadComparePack, scheduleCompareGlyphWarm } from "./compareCachedSpr
 import { CompareCatalogTileStack } from "./compareCatalogTileStack";
 import { CompareSvgStack } from "./compareSvgStack";
 import { loadSvgMultiplierAssets } from "./compareSvgMultiplier";
-import { ensureTicketFontsForLayout } from "../ticketCatalog/ticketFont";
+import { ensureTicketFontsForLayout } from "../ticketCatalog/layout/ticketFont";
 import {
   TICKET_PRESETS,
   applyTicketCssVars,
   getPreset,
   type TicketMetrics,
   type TicketPresetId,
-} from "../ticketCatalog/ticketPresets";
-import type { Ticket } from "../ticketCatalog/tickets";
+} from "../ticketCatalog/model/ticketPresets";
+import type { Ticket } from "../ticketCatalog/model/tickets";
 
 const NORMAL_TICKET: Ticket = {
   id: "cmp-normal",

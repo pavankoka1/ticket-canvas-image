@@ -26,10 +26,11 @@ body {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  max-width: 1100px;
+  width: 100%;
   margin: 0 auto;
   padding: 16px 20px 24px;
   gap: 12px;
+  overflow: hidden;
   color: #e8f2f0;
 }
 
@@ -113,27 +114,318 @@ button:disabled {
   font: inherit;
 }
 
+/* Fortunamania ticketGrid__ticket — fixed band width/height. */
 .catalogFrame {
+  position: relative;
+  /* ticketCatalogHost extends the scrollbar lane past this box (Fortunamania ticketGrid__ticket). */
+  overflow: visible;
+  align-self: center;
   flex: 0 0 auto;
-  margin: 0 auto;
+  width: 1001px;
+  max-width: 100%;
+  height: var(--ticket-band-height, 231px);
+  margin-inline: auto;
   background: #0a2421;
   outline: 1px solid #1a3d38;
+
+  --ticket-band-height: 231px;
 }
 
-.catalog {
+@media (max-width: 1365px) and (min-height: 500px) {
+  .catalogFrame {
+    width: 901px;
+    height: 211px;
+    --ticket-band-height: 211px;
+  }
+}
+
+@media (max-width: 1023px) and (orientation: landscape) {
+  .catalogFrame {
+    width: 518px;
+    max-width: calc(100% - 112px);
+    height: 201px;
+    --ticket-band-height: 201px;
+  }
+}
+
+@media (max-width: 1023px) and (orientation: landscape) and (max-height: 319px) {
+  .catalogFrame {
+    width: 458px;
+    max-width: calc(100% - 104px);
+    height: 176px;
+    --ticket-band-height: 176px;
+  }
+}
+
+@media (max-width: 1023px) and (orientation: portrait) {
+  .catalogFrame {
+    width: 100%;
+    max-width: 612px;
+    height: 160px;
+    --ticket-band-height: 160px;
+  }
+}
+
+@media (max-width: 1023px) and (orientation: portrait) and (min-width: 620px) {
+  .catalogFrame {
+    height: 209px;
+    --ticket-band-height: 209px;
+  }
+}
+
+@media (max-width: 1023px) and (orientation: portrait) and (max-height: 319px) {
+  .catalogFrame {
+    height: 104px;
+    --ticket-band-height: 104px;
+  }
+}
+
+.ticketCatalogHost {
+  --catalog-scrollbar-gap: 0px;
+  --catalog-scrollbar-width: 0px;
+
+  position: relative;
   width: 100%;
   height: 100%;
   min-height: 0;
+  overflow: visible;
+}
+
+/* Fortunamania: track outside ticketGrid__ticket — gap then 6px lane (absolute, not in column math). */
+.catalog__scrollbarLane {
+  display: none;
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(100% + var(--catalog-scrollbar-gap));
+  width: var(--catalog-scrollbar-width);
+  border-radius: 100px;
+  background-image: linear-gradient(180deg, #ff9301 0%, rgb(255 147 1 / 0%) 100%);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: 4px 100%;
+  z-index: 3;
+}
+
+.ticketCatalogHost_isScrollable .catalog__scrollbarLane {
+  display: block;
+}
+
+.ticketCatalogHost:not(.ticketCatalogHost_isScrollable) .catalog__scrollbarLane {
+  display: none !important;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.catalog__scrollbarThumb {
+  display: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  min-height: 38px;
+  border-radius: 100px;
+  background-color: #f3eae0;
+  background-image: url("/scrollbar-dragger.svg");
+  background-position: center top;
+  background-repeat: no-repeat;
+  background-size: 6px 100%;
+  touch-action: none;
+  cursor: grab;
+}
+
+.ticketCatalogHost_isScrollable .catalog__scrollbarThumb {
+  display: block;
+}
+
+.catalog__scrollbarThumb:active {
+  cursor: grabbing;
+}
+
+/* core-media-larger-than-wide — gap + track vars (layout JS reserve; gap also as scroll padding). */
+@media (min-width: 1024px) {
+  .ticketCatalogHost {
+    --catalog-scrollbar-gap: 4px;
+    --catalog-scrollbar-width: 6px;
+  }
+}
+
+@media (min-width: 1024px) and (max-width: 1799px) {
+  .ticketCatalogHost {
+    --catalog-scrollbar-gap: 3.5px;
+  }
+}
+
+@media (min-width: 1024px) and (max-width: 1511px) {
+  .ticketCatalogHost {
+    --catalog-scrollbar-gap: 3px;
+  }
+}
+
+.ticketCatalog {
+  --catalog-gap: 4px;
+  --catalog-spacer-rows: 3;
+  --catalog-card-height: 43px;
+  --ticket-card-height: 43px;
+  --ticket-header-height: 17px;
+  --ticket-body-height: 26px;
+  --ticket-body-padding-y: 2.5px;
+  --ticket-header-pad-x: 4px;
+  --ticket-cell-height: 21px;
+  --ticket-number-line-height: 21px;
+  --ticket-number-font-size: 18px;
+  --ticket-meta-font-size: 12px;
+  --ticket-separator-margin-top: 4.5px;
+  --ticket-separator-width: 1px;
+  --ticket-separator-height: 12px;
+  --ticket-radius: 5px;
+  --ticket-dab-size: 24px;
+  --ticket-card-shadow: none;
+
+  position: relative;
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  min-height: 0;
+  padding-right: 0;
+  line-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
   overflow-anchor: none;
   overscroll-behavior: contain;
+  text-align: center;
   background: #0a2421;
-  scrollbar-width: thin;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+/* OS scrollbar off — custom thumb lives in .catalog__scrollbarLane outside the band. */
+.ticketCatalog::-webkit-scrollbar {
+  width: 0 !important;
+  height: 0 !important;
+  display: none;
+  background: transparent;
+}
+
+.ticketCatalog::-webkit-scrollbar-thumb,
+.ticketCatalog::-webkit-scrollbar-track,
+.ticketCatalog::-webkit-scrollbar-corner {
+  display: none;
+  width: 0;
+  background: transparent;
+}
+
+.ticketCatalog_isOverflowingStart {
+  mask-image: linear-gradient(transparent, red 4px, red);
+}
+
+@media (min-width: 1024px) and (min-height: 500px) {
+  .ticketCatalog_isOverflowingStart {
+    mask-image: linear-gradient(transparent, red 8px, red);
+  }
+}
+
+@media (max-width: 1023px) {
+  .ticketCatalog {
+    scrollbar-width: none;
+  }
+}
+
+@media (min-width: 1024px) {
+  .ticketCatalogHost_isScrollable .ticketCatalog {
+    padding-right: var(--catalog-scrollbar-gap);
+  }
+}
+
+@media (max-width: 1365px) and (min-height: 500px) {
+  .ticketCatalog {
+    --catalog-card-height: 39px;
+    --ticket-card-height: 39px;
+    --ticket-header-height: 15px;
+    --ticket-body-height: 24px;
+    --ticket-body-padding-y: 2.75px;
+    --ticket-cell-height: 18.5px;
+    --ticket-number-line-height: 18.5px;
+    --ticket-number-font-size: 16px;
+    --ticket-meta-font-size: 11px;
+    --ticket-separator-margin-top: 3.75px;
+    --ticket-separator-height: 11px;
+    --ticket-radius: 5px;
+    --ticket-dab-size: 22px;
+    --ticket-card-shadow: none;
+  }
+}
+
+@media (max-width: 1023px), (max-height: 499px) {
+  .ticketCatalog {
+    --catalog-spacer-rows: 1;
+    --catalog-card-height: 37px;
+    --ticket-card-height: 37px;
+    --ticket-header-height: 15px;
+    --ticket-body-height: 22px;
+    --ticket-body-padding-y: 1.5px;
+    --ticket-cell-height: 19px;
+    --ticket-number-line-height: 17.5px;
+    --ticket-number-font-size: 15px;
+    --ticket-meta-font-size: 10px;
+    --ticket-separator-margin-top: 4.5px;
+    --ticket-separator-height: 10px;
+    --ticket-radius: 3px;
+    --ticket-dab-size: 20.65116310119629px;
+    --ticket-card-shadow: 0 1.721px 0.86px rgb(0 0 0 / 42%);
+  }
+}
+
+@media (max-width: 1023px) and (orientation: landscape), (max-height: 499px) and (orientation: landscape) {
+  .ticketCatalog {
+    --catalog-spacer-rows: 2;
+  }
+}
+
+@media (max-width: 1023px) and (orientation: portrait) and (min-width: 620px) {
+  .ticketCatalog {
+    --catalog-card-height: 43px;
+    --ticket-card-height: 43px;
+    --ticket-header-height: 17px;
+    --ticket-body-height: 26px;
+    --ticket-body-padding-y: 2.5px;
+    --ticket-cell-height: 21px;
+    --ticket-number-line-height: 21px;
+    --ticket-number-font-size: 18px;
+    --ticket-meta-font-size: 12px;
+    --ticket-separator-margin-top: 4.5px;
+    --ticket-separator-height: 12px;
+    --ticket-radius: 5px;
+    --ticket-dab-size: 24px;
+    --ticket-card-shadow: 0 1.721px 0.86px rgb(0 0 0 / 42%);
+  }
+}
+
+@media (max-width: 499px), (max-height: 319px), (max-width: 359px) {
+  .ticketCatalog {
+    --catalog-card-height: 32px;
+    --ticket-card-height: 32px;
+    --ticket-header-height: 13px;
+    --ticket-body-height: 19px;
+    --ticket-body-padding-y: 1px;
+    --ticket-header-pad-x: 2px;
+    --ticket-cell-height: 17px;
+    --ticket-number-line-height: 17px;
+    --ticket-number-font-size: 13px;
+    --ticket-meta-font-size: 9px;
+    --ticket-separator-margin-top: 4px;
+    --ticket-separator-height: 9px;
+    --ticket-radius: 3px;
+    --ticket-dab-size: 17px;
+    --ticket-card-shadow: 0 1.488px 0.744px rgb(0 0 0 / 42%);
+  }
 }
 
 .catalog__content {
   position: relative;
+  display: block;
   margin-inline: auto;
   overflow: visible;
 }
@@ -471,7 +763,6 @@ button:disabled {
 
 .ticketCard__sparkle {
   position: absolute;
-  top: 50%;
   width: calc(var(--ticket-dab-size, 24px) * 1.15);
   height: calc(var(--ticket-dab-size, 24px) * 1.15);
   object-fit: contain;
