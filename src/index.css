@@ -117,7 +117,7 @@ button:disabled {
 /* Fortunamania ticketGrid__ticket — fixed band width/height. */
 .catalogFrame {
   position: relative;
-  /* ticketCatalogHost extends the scrollbar lane past this box (Fortunamania ticketGrid__ticket). */
+  /* ticketGrid__ticket — ticket matrix width; gap + scrollbar overhang past this box. */
   overflow: visible;
   align-self: center;
   flex: 0 0 auto;
@@ -131,7 +131,7 @@ button:disabled {
   --ticket-band-height: 231px;
 }
 
-@media (max-width: 1365px) and (min-height: 500px) {
+@media (max-width: 1365px) and (min-width: 1024px) and (min-height: 500px) {
   .catalogFrame {
     width: 901px;
     height: 211px;
@@ -181,6 +181,9 @@ button:disabled {
 }
 
 .ticketCatalogHost {
+  /* Figma Scroll Device=Desktop — gap from ticket column right edge:
+   *   ≥1800×500 → 4px, ≥1512×500 → 3.5px, ≥1024×500 → 3px
+   * Lane is reserved inside the band (padding + scrollbar), not by widening the host. */
   --catalog-scrollbar-gap: 0px;
   --catalog-scrollbar-width: 0px;
 
@@ -191,72 +194,21 @@ button:disabled {
   overflow: visible;
 }
 
-/* Fortunamania: track outside ticketGrid__ticket — gap then 6px lane (absolute, not in column math). */
-.catalog__scrollbarLane {
-  display: none;
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: calc(100% + var(--catalog-scrollbar-gap));
-  width: var(--catalog-scrollbar-width);
-  border-radius: 100px;
-  background-image: linear-gradient(180deg, #ff9301 0%, rgb(255 147 1 / 0%) 100%);
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: 4px 100%;
-  z-index: 3;
-}
-
-.ticketCatalogHost_isScrollable .catalog__scrollbarLane {
-  display: block;
-}
-
-.ticketCatalogHost:not(.ticketCatalogHost_isScrollable) .catalog__scrollbarLane {
-  display: none !important;
-  visibility: hidden;
-  pointer-events: none;
-}
-
-.catalog__scrollbarThumb {
-  display: none;
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 100%;
-  min-height: 38px;
-  border-radius: 100px;
-  background-color: #f3eae0;
-  background-image: url("/scrollbar-dragger.svg");
-  background-position: center top;
-  background-repeat: no-repeat;
-  background-size: 6px 100%;
-  touch-action: none;
-  cursor: grab;
-}
-
-.ticketCatalogHost_isScrollable .catalog__scrollbarThumb {
-  display: block;
-}
-
-.catalog__scrollbarThumb:active {
-  cursor: grabbing;
-}
-
-/* core-media-larger-than-wide — gap + track vars (layout JS reserve; gap also as scroll padding). */
-@media (min-width: 1024px) {
+/* FM TicketCatalog.module.css — gap cascade (later rules win at narrower widths). */
+@media (min-width: 1024px) and (min-height: 500px) {
   .ticketCatalogHost {
     --catalog-scrollbar-gap: 4px;
     --catalog-scrollbar-width: 6px;
   }
 }
 
-@media (min-width: 1024px) and (max-width: 1799px) {
+@media (min-width: 1024px) and (min-height: 500px) and (max-width: 1799px) {
   .ticketCatalogHost {
     --catalog-scrollbar-gap: 3.5px;
   }
 }
 
-@media (min-width: 1024px) and (max-width: 1511px) {
+@media (min-width: 1024px) and (min-height: 500px) and (max-width: 1511px) {
   .ticketCatalogHost {
     --catalog-scrollbar-gap: 3px;
   }
@@ -289,57 +241,95 @@ button:disabled {
   max-width: 100%;
   height: 100%;
   min-height: 0;
-  padding-right: 0;
+  padding-right: var(--catalog-scrollbar-gap);
   line-height: 0;
+  /* 1001px __content is wider than the scrollport (padding + scrollbar); hide H bar like FM. */
   overflow-x: hidden;
   overflow-y: auto;
   overflow-anchor: none;
   overscroll-behavior: contain;
   text-align: center;
+  pointer-events: auto;
   background: #0a2421;
   scrollbar-width: none;
   -ms-overflow-style: none;
-}
-
-/* OS scrollbar off — custom thumb lives in .catalog__scrollbarLane outside the band. */
-.ticketCatalog::-webkit-scrollbar {
-  width: 0 !important;
-  height: 0 !important;
-  display: none;
-  background: transparent;
-}
-
-.ticketCatalog::-webkit-scrollbar-thumb,
-.ticketCatalog::-webkit-scrollbar-track,
-.ticketCatalog::-webkit-scrollbar-corner {
-  display: none;
-  width: 0;
-  background: transparent;
 }
 
 .ticketCatalog_isOverflowingStart {
   mask-image: linear-gradient(transparent, red 4px, red);
 }
 
+/* FM --core-media-larger-than-wide */
 @media (min-width: 1024px) and (min-height: 500px) {
   .ticketCatalog_isOverflowingStart {
     mask-image: linear-gradient(transparent, red 8px, red);
   }
 }
 
-@media (max-width: 1023px) {
+@media (max-width: 1023px), (max-height: 499px) {
+  .ticketCatalog::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+  }
+}
+
+/* FM desktop native scrollbar — compositor-driven, no JS thumb. */
+@media (min-width: 1024px) and (min-height: 500px) {
   .ticketCatalog {
-    scrollbar-width: none;
+    /* Scroller wider than catalogFrame so gap + track sit outside the ticket band. */
+    width: calc(100% + var(--catalog-scrollbar-gap) + var(--catalog-scrollbar-width));
+    max-width: none;
+    scrollbar-gutter: stable;
+    scrollbar-width: thin;
+    scrollbar-color: #ff9301 transparent;
+  }
+
+  @supports selector(.ticketCatalog::-webkit-scrollbar) {
+    .ticketCatalog {
+      scrollbar-width: auto;
+      scrollbar-color: auto;
+    }
+
+    .ticketCatalog::-webkit-scrollbar {
+      width: var(--catalog-scrollbar-width);
+    }
+
+    .ticketCatalog::-webkit-scrollbar-thumb {
+      min-height: 38px;
+      border-radius: 100px;
+      background-color: #f3eae0;
+      background-image: url("/scrollbar-dragger.svg");
+      background-position: center top;
+      background-repeat: no-repeat;
+      background-size: 6px 100%;
+    }
+
+    .ticketCatalog::-webkit-scrollbar-track {
+      border-radius: 100px;
+      background-image: linear-gradient(180deg, #ff9301 0%, rgb(255 147 1 / 0%) 100%);
+      background-position: center;
+      background-repeat: no-repeat;
+      background-size: 4px 100%;
+    }
+
+    .ticketCatalog::-webkit-scrollbar-button {
+      display: none;
+      width: 0;
+      height: 0;
+    }
   }
 }
 
-@media (min-width: 1024px) {
-  .ticketCatalogHost_isScrollable .ticketCatalog {
-    padding-right: var(--catalog-scrollbar-gap);
+/* FM --core-media-larger-than-medium-wide (≥1366×500) */
+@media (min-width: 1366px) and (min-height: 500px) {
+  .ticketCatalog {
+    --ticket-cell-margin-top: 2px;
   }
 }
 
-@media (max-width: 1365px) and (min-height: 500px) {
+/* FM --core-media-smaller-than-medium-wide — desktop small 1024–1365×500+ */
+@media (max-width: 1365px), (max-height: 499px) {
   .ticketCatalog {
     --catalog-card-height: 39px;
     --ticket-card-height: 39px;
@@ -352,12 +342,11 @@ button:disabled {
     --ticket-meta-font-size: 11px;
     --ticket-separator-margin-top: 3.75px;
     --ticket-separator-height: 11px;
-    --ticket-radius: 5px;
     --ticket-dab-size: 22px;
-    --ticket-card-shadow: none;
   }
 }
 
+/* FM --core-media-smaller-than-wide */
 @media (max-width: 1023px), (max-height: 499px) {
   .ticketCatalog {
     --catalog-spacer-rows: 1;
@@ -373,17 +362,12 @@ button:disabled {
     --ticket-separator-margin-top: 4.5px;
     --ticket-separator-height: 10px;
     --ticket-radius: 3px;
-    --ticket-dab-size: 20.65116310119629px;
+    --ticket-dab-size: 21px;
     --ticket-card-shadow: 0 1.721px 0.86px rgb(0 0 0 / 42%);
   }
 }
 
-@media (max-width: 1023px) and (orientation: landscape), (max-height: 499px) and (orientation: landscape) {
-  .ticketCatalog {
-    --catalog-spacer-rows: 2;
-  }
-}
-
+/* Large portrait — match GameGrid band (43×5 + gaps). */
 @media (max-width: 1023px) and (orientation: portrait) and (min-width: 620px) {
   .ticketCatalog {
     --catalog-card-height: 43px;
@@ -391,11 +375,13 @@ button:disabled {
     --ticket-header-height: 17px;
     --ticket-body-height: 26px;
     --ticket-body-padding-y: 2.5px;
+    --ticket-header-pad-x: 4px;
     --ticket-cell-height: 21px;
     --ticket-number-line-height: 21px;
     --ticket-number-font-size: 18px;
     --ticket-meta-font-size: 12px;
     --ticket-separator-margin-top: 4.5px;
+    --ticket-separator-width: 1px;
     --ticket-separator-height: 12px;
     --ticket-radius: 5px;
     --ticket-dab-size: 24px;
@@ -403,7 +389,8 @@ button:disabled {
   }
 }
 
-@media (max-width: 499px), (max-height: 319px), (max-width: 359px) {
+/* FM --core-media-compressed */
+@media (max-height: 319px), (max-width: 359px) {
   .ticketCatalog {
     --catalog-card-height: 32px;
     --ticket-card-height: 32px;
@@ -416,6 +403,7 @@ button:disabled {
     --ticket-number-font-size: 13px;
     --ticket-meta-font-size: 9px;
     --ticket-separator-margin-top: 4px;
+    --ticket-separator-width: 1px;
     --ticket-separator-height: 9px;
     --ticket-radius: 3px;
     --ticket-dab-size: 17px;
@@ -423,11 +411,80 @@ button:disabled {
   }
 }
 
+/* Portrait phones 360×640, 375×667, 375×720 — 37px ticket. */
+@media (orientation: portrait) and (min-width: 360px) and (max-width: 499px) and (min-height: 640px) {
+  .ticketCatalog {
+    --catalog-card-height: 37px;
+    --ticket-card-height: 37px;
+    --ticket-header-height: 15px;
+    --ticket-body-height: 22px;
+    --ticket-body-padding-y: 1.5px;
+    --ticket-header-pad-x: 4px;
+    --ticket-cell-height: 19px;
+    --ticket-number-line-height: 17.5px;
+    --ticket-number-font-size: 15px;
+    --ticket-meta-font-size: 10px;
+    --ticket-separator-margin-top: 4px;
+    --ticket-separator-width: 1px;
+    --ticket-separator-height: 10px;
+    --ticket-radius: 3px;
+    --ticket-dab-size: 20px;
+    --ticket-card-shadow: 0 1.721px 0.86px rgb(0 0 0 / 42%);
+  }
+}
+
+@media (orientation: portrait) and (width: 375px) and (height: 667px),
+  (orientation: portrait) and (width: 375px) and (height: 720px) {
+  .ticketCatalog {
+    --ticket-card-width: 178px;
+  }
+}
+
+@media (max-width: 1023px) and (orientation: landscape), (max-height: 499px) and (orientation: landscape) {
+  .ticketCatalog {
+    --catalog-spacer-rows: 2;
+  }
+}
+
+@media (orientation: landscape) and (width: 1023px) and (height: 667px) {
+  .ticketCatalog {
+    --ticket-cell-margin-top: 1px;
+  }
+}
+
+@media (width: 1024px) and (height: 576px) {
+  .ticketCatalog {
+    --ticket-cell-margin-top: 1px;
+    --ticket-separator-nudge-y: -1px;
+    --ticket-id-offset-y: 1px;
+  }
+}
+
+@media (width: 1366px) and (height: 769px) {
+  .ticketCatalog {
+    --ticket-separator-nudge-y: -2px;
+  }
+}
+
+/* FM ticketCatalog__content — explicit band width from JS (not 100% of scroll client). */
 .catalog__content {
   position: relative;
-  display: block;
-  margin-inline: auto;
+  display: flex;
+  width: 100%;
+  line-height: 0;
+  text-align: center;
+  flex-wrap: wrap;
+  box-sizing: border-box;
+  gap: var(--catalog-gap, 4px);
+  justify-content: center;
+  align-content: flex-start;
   overflow: visible;
+}
+
+.catalog__content:not(:empty) {
+  padding-bottom: calc(
+    var(--catalog-spacer-rows, 3) * (var(--ticket-card-height) + var(--catalog-gap))
+  );
 }
 
 .catalog__dom,

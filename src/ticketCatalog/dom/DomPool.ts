@@ -88,6 +88,7 @@ export class DomPool {
     slots: readonly TicketSlot[],
     ticketsById: Map<string, Ticket>,
     appearIds?: ReadonlySet<string>,
+    forceRebind = false,
   ): number[] {
     if (!this.ready) return [];
     const keep = new Set(slots.map((s) => s.id));
@@ -112,7 +113,7 @@ export class DomPool {
       }
       const card = this.cards[idx]!;
       // Unchanged band members keep their DOM as-is — bind only new/moved/updated.
-      if (!isNew && card.shows(ticket, slot.x, slot.y)) continue;
+      if (!forceRebind && !isNew && card.shows(ticket, slot.x, slot.y)) continue;
       card.bind(ticket, slot.x, slot.y, getActiveLayout());
       prepareCatalogDomCard(card);
       probeSlotPlacementDrift(card.dom, this.host, slot.x, slot.y);
@@ -252,6 +253,12 @@ export class DomPool {
       );
     }
     if (gestureMs > 0) noteDrawGesture(gestureMs);
+  }
+
+  /** After layout change, root CSS vars already resize cards — only reset badge overlay keys. */
+  invalidateCellBadges(): void {
+    if (!this.ready) return;
+    for (const card of this.cards) card.invalidateCellBadges();
   }
 
   refreshLayout(): void {

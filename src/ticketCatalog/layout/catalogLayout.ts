@@ -83,7 +83,44 @@ export function readCatalogCardHeight(el: HTMLElement | null, fallback = 43): nu
   return Number.isFinite(raw) && raw > 0 ? raw : fallback;
 }
 
-/** Gap + track — host width extension + scroll padding (not subtracted from column math). */
+/** @pp/core `--core-media-larger-than-wide` */
+function isCoreLargerThanWide(width: number, height: number): boolean {
+  return width >= 1024 && height >= 500;
+}
+
+/** @pp/core `--core-media-smaller-than-extra-extra-wide`: (width < 1800) OR (height < 500) */
+function isCoreSmallerThanExtraExtraWide(width: number, height: number): boolean {
+  return width < 1800 || height < 500;
+}
+
+/** @pp/core `--core-media-smaller-than-extra-wide`: (width < 1512) OR (height < 500) */
+function isCoreSmallerThanExtraWide(width: number, height: number): boolean {
+  return width < 1512 || height < 500;
+}
+
+/**
+ * FM `TicketCatalog.module.css` scrollbar gap — same cascade as postcss custom-media AND/OR.
+ * Rules apply in order; later matches win (4 → 3.5 → 3).
+ */
+export function resolveCatalogScrollbarGap(
+  width = window.innerWidth,
+  height = window.innerHeight,
+): number {
+  if (!isCoreLargerThanWide(width, height)) return 0;
+  let gap = 4;
+  if (isCoreSmallerThanExtraExtraWide(width, height)) gap = 3.5;
+  if (isCoreSmallerThanExtraWide(width, height)) gap = 3;
+  return gap;
+}
+
+export function resolveCatalogScrollbarTrackWidth(
+  width = window.innerWidth,
+  height = window.innerHeight,
+): number {
+  return resolveCatalogScrollbarGap(width, height) > 0 ? 6 : 0;
+}
+
+/** FM reserve when the native track sits inside `.ticketCatalog` (gap + track width from CSS vars). */
 export function readCatalogScrollbarReserve(el: HTMLElement | null): number {
   if (!el) return 0;
   const cs = getComputedStyle(el);

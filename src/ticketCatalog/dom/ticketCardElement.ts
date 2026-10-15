@@ -11,7 +11,7 @@ import {
 } from "../layout/cellBoxModel";
 import { getActiveLayout, type CatalogLayout } from "../layout/catalogLayout";
 import { resolveLiveCellBoxModel } from "../canvas/atlas/cellAtlas";
-import { applyTicketCssVars, type TicketMetrics } from "../model/ticketPresets";
+import type { TicketMetrics } from "../model/ticketPresets";
 import { BALLS_PER_TICKET } from "../constants";
 import { MultiplierLabelNode } from "../canvas/sprites/multiplierLabel";
 import { isWinTicket, type Ticket } from "../model/tickets";
@@ -160,6 +160,11 @@ export class TicketCard {
     this.applyCardWidth(getActiveLayout().cardWidth);
   }
 
+  /** Layout CSS vars on the catalog root handle sizing; only badge overlay keys need a reset. */
+  invalidateCellBadges(): void {
+    this.cellBadgeKey.fill("");
+  }
+
   applyCardWidth(cardWidth: number, force = false): void {
     if (cardWidth <= 0) return;
     const layout = getActiveLayout();
@@ -171,7 +176,6 @@ export class TicketCard {
     const key = `${layout.metrics.id}|${cardWidth}|${layout.cardHeight}|${model.cellW}x${model.cellH}`;
     if (!force && this.layoutKey === key) return;
     this.layoutKey = key;
-    applyTicketCssVars(this.dom, layout.metrics);
     applyTicketCellLayout(
       this.dom,
       this.cellEls,
@@ -191,7 +195,6 @@ export class TicketCard {
     const key = `${layout.metrics.id}|${cardWidth}|${layout.cardHeight}|${model.cellW}x${model.cellH}`;
     if (!force && this.layoutKey === key) return;
     this.layoutKey = key;
-    applyTicketCssVars(this.dom, layout.metrics);
     applyTicketCellLayout(
       this.dom,
       this.cellEls,

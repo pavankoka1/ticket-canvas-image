@@ -178,6 +178,29 @@ async function warmCatalogHeaderDeviceLayouts(
   }
 }
 
+const JIT_WARM_TICKET: Ticket = {
+  id: "catalog-svg-jit-warm",
+  no: "1",
+  balls: [1, 2, 3, 4, 5, 6],
+  hits: [],
+  multipliers: {},
+  win: "",
+};
+
+/**
+ * One-off paint into a 1×1 canvas so V8 compiles the svg-all path before the
+ * first real tile or scroll settle hits `paintCatalogTicketSvgAll`.
+ */
+export function prewarmCatalogSvgPaintJit(layout: CatalogLayout): void {
+  if (!isCatalogSvgPaintReady()) return;
+  const scratch = document.createElement("canvas");
+  scratch.width = 1;
+  scratch.height = 1;
+  const ctx = scratch.getContext("2d");
+  if (!ctx) return;
+  paintCatalogTicketSvgAll(ctx, JIT_WARM_TICKET, 0, 0, layout, activeDpr());
+}
+
 export function prepareCatalogDomCard(card: TicketCard): void {
   if (!isCatalogSvgPaintReady()) return;
   const layout = getActiveLayout();

@@ -36,7 +36,7 @@ export const ROW_BUFFER = 2;
  * After scroll stops, wait this long before repartitioning the DOM band /
  * canvas skip set. Separate from SETTLE_MS (resize canvas rebuild).
  */
-export const SCROLL_BAND_SETTLE_MS = 150;
+export const SCROLL_BAND_SETTLE_MS = 300;
 
 /** Unused by the live band. Visible rows stay DOM while scrolling. */
 export const DOM_SCROLL_THROTTLE_MS = 300;

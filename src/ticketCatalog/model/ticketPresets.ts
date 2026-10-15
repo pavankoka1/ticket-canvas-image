@@ -224,6 +224,26 @@ export function readTicketMetricsFromCss(
   };
 }
 
+/** Strip inline ticket tokens so `index.css` / FM media queries on `.ticketCatalog` win. */
+export function clearTicketCssVarsInline(el: HTMLElement): void {
+  const s = el.style;
+  s.removeProperty("--ticket-card-height");
+  s.removeProperty("--ticket-header-height");
+  s.removeProperty("--ticket-body-height");
+  s.removeProperty("--ticket-body-padding-y");
+  s.removeProperty("--ticket-header-pad-x");
+  s.removeProperty("--ticket-number-line-height");
+  s.removeProperty("--ticket-number-font-size");
+  s.removeProperty("--ticket-meta-font-size");
+  s.removeProperty("--ticket-separator-margin-top");
+  s.removeProperty("--ticket-separator-width");
+  s.removeProperty("--ticket-separator-height");
+  s.removeProperty("--ticket-radius");
+  s.removeProperty("--ticket-dab-size");
+  s.removeProperty("--ticket-card-shadow");
+  s.removeProperty("--catalog-gap");
+}
+
 export function applyTicketCssVars(el: HTMLElement, m: TicketMetrics, dpr = activeDpr()): void {
   const s = el.style;
   s.setProperty("--ticket-card-height", `${m.cardHeight}px`);

@@ -17,21 +17,16 @@ import {
   contentWidth,
   getActiveLayout,
   readCatalogCardHeight,
-  readCatalogSpacerRows,
   resolveCatalogLayout,
   setActiveLayout,
   type CatalogLayout,
 } from "./layout/catalogLayout";
 import { animateRemovedTickets, takeGestureDelay } from "./animation/catalogAnimations";
-import {
-  bindCatalogScrollbarDrag,
-  syncCatalogScrollbar,
-  type CatalogScrollbarRefs,
-} from "./syncCatalogScrollbar";
 import { resolveLiveCellBoxModel } from "./canvas/atlas/cellAtlas";
 import { ensureTicketFontsForLayout } from "./layout/ticketFont";
 import {
   ensureCatalogSvgAtlasWarm,
+  prewarmCatalogSvgPaintJit,
   warmCatalogAtlasForPrewarm,
 } from "./canvas/paint/catalogSvgPaint";
 import { DomPool } from "./dom/DomPool";
@@ -51,6 +46,7 @@ import {
 } from "./model/tickets";
 import {
   applyTicketCssVars,
+  clearTicketCssVarsInline,
   readTicketMetricsFromCss,
   resolvePresetFromViewport,
 } from "./model/ticketPresets";
@@ -69,8 +65,6 @@ export type TicketCatalogControllerHost = {
   ui: ToolbarRefs;
   catalogFrame: HTMLElement;
   ticketCatalogHost: HTMLElement;
-  scrollbarLane: HTMLElement;
-  scrollbarThumb: HTMLElement;
   scroll: HTMLDivElement;
   content: HTMLDivElement;
   canvasHost: HTMLDivElement;
@@ -115,10 +109,14 @@ export class TicketCatalogController {
   private ro: ResizeObserver | null = null;
   private bandResyncGen = 0;
   private lastBandFingerprint = "";
+  /** Bumped to drop a settle rAF chain or an in-flight tile flush's DOM hide. */
+  private settleGen = 0;
+  private settleInFlight = false;
+  private domHideQueue: number[] = [];
   private bulkScrollResyncTimer = 0;
   private resizeCanvasForcePending = false;
-  private scrollbarDragCleanup: (() => void) | null = null;
-  private scrollbarRo: ResizeObserver | null = null;
+  private scrollSettleTimer = 0;
+  private scrollMotionActive = false;
 
   constructor(host: TicketCatalogControllerHost) {
     this.host = host;
@@ -131,7 +129,6 @@ export class TicketCatalogController {
     this.measureScrollGeometry();
     this.applyLayout({ syncDomBand: true, syncCanvasCatalog: true });
     this.bindScroll();
-    this.bindScrollbarChrome();
     this.bindViewport();
     this.bindResizeObserver();
 
@@ -144,14 +141,13 @@ export class TicketCatalogController {
   destroy(): void {
     if (this.warmTimer) window.clearTimeout(this.warmTimer);
     if (this.resizeCanvasTimer) window.clearTimeout(this.resizeCanvasTimer);
+    if (this.scrollSettleTimer) window.clearTimeout(this.scrollSettleTimer);
     if (this.scrollTimer) window.clearTimeout(this.scrollTimer);
     if (this.bulkScrollResyncTimer) window.clearTimeout(this.bulkScrollResyncTimer);
     if (this.shuffleTimer) window.clearTimeout(this.shuffleTimer);
     this.scrollCleanup?.();
-    this.scrollbarDragCleanup?.();
-    this.scrollbarDragCleanup = null;
-    this.scrollbarRo?.disconnect();
-    this.scrollbarRo = null;
+    this.settleGen += 1;
+    this.settleInFlight = false;
     this.resizeCleanup?.();
     this.ro?.disconnect();
     this.canvas?.clear();
@@ -202,11 +198,12 @@ export class TicketCatalogController {
   }
 
   private resolvePoolSize(): number {
-    const metrics = readTicketMetricsFromCss(this.host.scroll);
+    const metrics = this.readMetrics();
     return domPoolSize(metrics.id.startsWith("mobile"));
   }
 
   private readMetrics() {
+    clearTicketCssVarsInline(this.host.scroll);
     return readTicketMetricsFromCss(this.host.scroll);
   }
 
@@ -218,8 +215,11 @@ export class TicketCatalogController {
   }
 
   private measureHostWidth(): void {
-    // Fortunamania: column math uses full ticketBox width (1001 → 5×197 + 4×4). Scrollbar lane is outside the box via host CSS.
-    this.availableWidth = Math.max(0, this.host.catalogFrame.clientWidth);
+    const ticketBox = this.host.catalogFrame;
+    // FM column math uses ticketBox.clientWidth − reserve, but the shipped game keeps
+    // 1001px grids (197px cards) because reserve reads 0 on the first RO measure and
+    // the band never resizes. Gap + scrollbar are CSS on .ticketCatalog only.
+    this.availableWidth = Math.max(0, ticketBox.clientWidth);
     const cardHeight = readCatalogCardHeight(this.host.scroll);
     this.host.scroll.style.setProperty("--catalog-card-height", `${cardHeight}px`);
   }
@@ -229,6 +229,11 @@ export class TicketCatalogController {
     this.measureScrollGeometry();
     this.ensurePools();
     this.applyLayout({ syncDomBand: true, syncCanvasCatalog: false });
+  }
+
+  private stampBandFingerprintAtRest(): void {
+    const { dom } = this.bandForScroll(this.host.scroll.scrollTop);
+    this.lastBandFingerprint = this.bandFingerprint(dom);
   }
 
   private measureScrollGeometry(): void {
@@ -257,18 +262,25 @@ export class TicketCatalogController {
     );
   }
 
-  private syncDom(domSlots?: readonly TicketSlot[]): number[] {
+  private syncDom(
+    domSlots?: readonly TicketSlot[],
+    forceRebind = false,
+  ): number[] {
     const dom = this.dom;
     if (!dom?.isReady) return [];
     const slots =
       domSlots ?? this.bandForScroll(this.host.scroll.scrollTop).dom;
     const fresh = this.freshIds;
     this.freshIds = new Set();
-    const pendingHide = dom.rebind(slots, this.ticketsById, fresh);
+    const pendingHide = dom.rebind(slots, this.ticketsById, fresh, forceRebind);
     for (const id of fresh) this.knownIds.add(id);
     this.domCount = slots.length;
     this.updateStats();
     return pendingHide;
+  }
+
+  private finishDomRebind(pendingHide: readonly number[]): void {
+    this.dom?.hideEvictedSlots(pendingHide);
   }
 
   private syncCanvas(): void {
@@ -306,27 +318,31 @@ export class TicketCatalogController {
     const model = resolveLiveCellBoxModel(layout);
     setLiveCellBoxModel(model);
     applyCellBoxCssVars(this.host.root, model, layout.metrics);
+    applyCellBoxCssVars(this.host.scroll, model, layout.metrics);
     applyTicketCssVars(this.host.atlasHost, layout.metrics);
     applyCellBoxCssVars(this.host.atlasHost, model, layout.metrics);
 
+    this.measureScrollGeometry();
     this.rebuildSlots();
     const height = contentHeight(this.tickets.length, layout);
-    const spacerRows = readCatalogSpacerRows(this.host.scroll);
-    const spacerPx =
-      this.tickets.length > 0 ? spacerRows * (layout.cardHeight + layout.gap) : 0;
-
-    const gridW = contentWidth(layout);
-    this.host.content.style.width = gridW > 0 ? `${gridW}px` : "100%";
-    this.host.content.style.height = `${height + spacerPx}px`;
-    this.host.content.style.minHeight = height > 0 ? "" : "80px";
+    const count = this.tickets.length;
+    const bandW = contentWidth(layout);
+    this.host.content.style.width = bandW > 0 ? `${bandW}px` : "";
+    /* Absolute canvas/DOM do not contribute to scroll height — FM uses in-flow tickets + CSS spacer padding. */
+    this.host.content.style.boxSizing = "content-box";
+    this.host.content.style.height = count > 0 && height > 0 ? `${height}px` : "";
+    this.host.content.style.minHeight = "";
 
     if (layoutChanged) {
       this.host.domHost.style.visibility = "hidden";
     }
     this.dom?.cancelAllMotion();
-    this.measureScrollGeometry();
 
-    if (opts.syncDomBand) this.syncDom();
+    let pendingHide: number[] = [];
+    if (opts.syncDomBand) {
+      pendingHide = this.syncDom(undefined, layoutChanged);
+      this.finishDomRebind(pendingHide);
+    }
     this.dom?.refreshLayout();
     if (layoutChanged) {
       this.host.domHost.style.visibility = "visible";
@@ -337,10 +353,10 @@ export class TicketCatalogController {
     this.updateStats();
 
     this.prevLayoutKey = key;
-    this.syncScrollbarChrome();
 
     if (layoutChanged) {
-      if (this.prevPaintLayoutKey && this.canvasReady) {
+      this.lastBandFingerprint = "";
+      if (this.prevPaintLayoutKey) {
         this.hideCanvas();
         this.canvas?.clear();
         this.canvasReady = false;
@@ -352,6 +368,7 @@ export class TicketCatalogController {
     } else if (this.canvasReady) {
       this.scheduleCanvasAfterResize();
     }
+
   }
 
   private rebuildSlots(): void {
@@ -384,11 +401,17 @@ export class TicketCatalogController {
 
     if (forceRebuild || key !== this.prevPaintLayoutKey) {
       this.prevPaintLayoutKey = key;
+      if (forceRebuild) {
+        this.canvas?.clear();
+      }
       if (!this.canvasReady) {
         this.startCanvasWarm();
       } else {
+        const pendingHide = this.syncDom();
+        this.finishDomRebind(pendingHide);
         this.syncCanvas();
         this.revealCanvas();
+        this.stampBandFingerprintAtRest();
       }
       return;
     }
@@ -405,13 +428,16 @@ export class TicketCatalogController {
         if (gen !== this.atlasGen) return;
         await ensureCatalogSvgAtlasWarm(layoutNow);
         if (gen !== this.atlasGen) return;
+        prewarmCatalogSvgPaintJit(layoutNow);
         this.canvasReady = true;
         this.prevPaintLayoutKey = layoutCacheKey(layoutNow);
         this.syncCellBoxCssVarsOnHosts();
         this.dom?.refreshSvgDomOverlays();
+        const pendingHide = this.syncDom();
+        this.finishDomRebind(pendingHide);
         this.syncCanvas();
-        this.syncDom();
         this.revealCanvas();
+        this.stampBandFingerprintAtRest();
         this.scheduleLandscapePrewarm();
         this.updateStats();
       } catch (err) {
@@ -478,31 +504,69 @@ export class TicketCatalogController {
     return `${first}|${last}|${dom.length}|${Math.round(this.host.scroll.scrollTop)}`;
   }
 
+  private enqueueDomHide(indices: readonly number[]): void {
+    if (indices.length === 0) return;
+    this.domHideQueue.push(...indices);
+  }
+
+  private flushDomHideQueue(): void {
+    if (this.domHideQueue.length === 0) return;
+    const batch = this.domHideQueue;
+    this.domHideQueue = [];
+    this.dom?.hideEvictedSlots(batch);
+  }
+
   /**
-   * Run only after scrolling stops. Never wired to the `scroll` event when
-   * `scrollend` exists — trace showed `resyncBandAtRest` dominated main-thread time.
+   * After scroll stops: bind the new DOM band, then paint canvas holes one tile
+   * per frame. Never resumes the canvas before that skip set is applied.
    */
-  private resyncBandAtRest(): void {
+  private settleBandAtRest(): void {
+    const gen = ++this.settleGen;
+    this.settleInFlight = true;
     const { dom } = this.bandForScroll(this.host.scroll.scrollTop);
     const fp = this.bandFingerprint(dom);
-    if (fp === this.lastBandFingerprint) return;
-    this.lastBandFingerprint = fp;
-
+    const bandChanged = fp !== this.lastBandFingerprint;
     const ids = new Set(dom.map((s) => s.id));
-    const canvas = this.canvas;
 
-    // DOM first, then canvas holes after the compositor has painted the band.
+    const resumeCanvas = (pendingHide: readonly number[]) => {
+      if (gen !== this.settleGen) {
+        this.enqueueDomHide(pendingHide);
+        return;
+      }
+      this.scrollMotionActive = false;
+      this.enqueueDomHide(pendingHide);
+      const canvas = this.canvas;
+      const hidden = this.host.canvasHost.style.visibility === "hidden";
+      if (!this.canvasReady || !canvas || hidden) {
+        this.settleInFlight = false;
+        this.flushDomHideQueue();
+        return;
+      }
+      void canvas.resumeWithBand(ids).then(() => {
+        if (gen !== this.settleGen) return;
+        this.settleInFlight = false;
+        this.flushDomHideQueue();
+      });
+    };
+
+    if (!bandChanged) {
+      resumeCanvas([]);
+      return;
+    }
+
+    // Show the new DOM band for one frame before the first tile upload.
     requestAnimationFrame(() => {
+      if (gen !== this.settleGen) return;
       const pendingHide = this.syncDom(dom);
-      if (!canvas) {
+      this.lastBandFingerprint = fp;
+      if (!this.canvas) {
         this.dom?.hideEvictedSlots(pendingHide);
+        this.scrollMotionActive = false;
+        this.settleInFlight = false;
         return;
       }
       requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          canvas.setSkip(ids, { paint: true });
-          this.dom?.hideEvictedSlots(pendingHide);
-        });
+        resumeCanvas(pendingHide);
       });
     });
   }
@@ -512,7 +576,7 @@ export class TicketCatalogController {
     const gen = ++this.bandResyncGen;
     const run = () => {
       if (gen !== this.bandResyncGen) return;
-      this.resyncBandAtRest();
+      this.settleBandAtRest();
     };
     if (typeof requestIdleCallback === "function") {
       requestIdleCallback(run, { timeout: 300 });
@@ -521,83 +585,77 @@ export class TicketCatalogController {
     }
   }
 
-  private scrollbarRefs(): CatalogScrollbarRefs {
-    return {
-      host: this.host.ticketCatalogHost,
-      scroll: this.host.scroll,
-      lane: this.host.scrollbarLane,
-      thumb: this.host.scrollbarThumb,
-    };
+  /** Pause canvas on the first scroll event of a gesture; native scrollbar needs no JS. */
+  private onScrollWhileMoving(): void {
+    if (this.settleInFlight) {
+      this.settleGen += 1;
+      this.settleInFlight = false;
+    }
+    if (this.scrollMotionActive) return;
+    this.scrollMotionActive = true;
+    if (this.canvasReady) this.canvas?.pause();
   }
 
-  private syncScrollbarChrome(): void {
-    syncCatalogScrollbar(this.scrollbarRefs());
-  }
-
-  private bindScrollbarChrome(): void {
-    this.scrollbarDragCleanup = bindCatalogScrollbarDrag(this.scrollbarRefs(), () =>
-      this.syncScrollbarChrome(),
-    );
-    if (typeof ResizeObserver === "undefined") return;
-    this.scrollbarRo = new ResizeObserver(() => this.syncScrollbarChrome());
-    this.scrollbarRo.observe(this.host.scroll);
-    this.scrollbarRo.observe(this.host.content);
-    this.syncScrollbarChrome();
-  }
-
-  private bindScroll(): void {
+  /** DOM band + canvas skip holes — only after scroll motion settles (300ms). */
+  private onScrollSettled(): void {
     const container = this.host.scroll;
-    let settleTimer = 0 as number;
-
-    // Top-fade via IntersectionObserver — no scrollTop read on every scroll event.
-    const topSentinel = document.createElement("div");
-    topSentinel.style.cssText =
-      "position:absolute;top:0;left:0;width:1px;height:1px;pointer-events:none";
-    container.appendChild(topSentinel);
-    // Set initial state synchronously before the first IO callback fires.
     container.classList.toggle(
       "ticketCatalog_isOverflowingStart",
       container.scrollTop > SCROLL_TOP_EPSILON_PX,
     );
-    const io = new IntersectionObserver(
-      ([entry]) => {
-        container.classList.toggle(
-          "ticketCatalog_isOverflowingStart",
-          !(entry?.isIntersecting ?? true),
-        );
-      },
-      { root: container, threshold: 0 },
+    this.settleBandAtRest();
+  }
+
+  private scheduleScrollSettledWork(): void {
+    if (this.scrollSettleTimer) window.clearTimeout(this.scrollSettleTimer);
+    this.scrollSettleTimer = window.setTimeout(() => {
+      this.scrollSettleTimer = 0;
+      this.onScrollSettled();
+    }, SCROLL_BAND_SETTLE_MS);
+  }
+
+  private bindScroll(): void {
+    const container = this.host.scroll;
+    let legacySettleTimer = 0 as number;
+
+    container.classList.toggle(
+      "ticketCatalog_isOverflowingStart",
+      container.scrollTop > SCROLL_TOP_EPSILON_PX,
     );
-    io.observe(topSentinel);
 
     const onScrollEnd = () => {
-      this.syncScrollbarChrome();
-      this.queueBandResync();
+      this.scheduleScrollSettledWork();
     };
 
-    // On scroll: zero work when scrollend is supported.
-    // Only the settle-timer fallback fires for browsers without scrollend.
-    const onScroll = () => {
-      this.syncScrollbarChrome();
-      if ("onscrollend" in globalThis) return;
-      if (settleTimer) clearTimeout(settleTimer);
-      settleTimer = setTimeout(onScrollEnd, SCROLL_BAND_SETTLE_MS);
+    const onScrollWhileMoving = () => {
+      this.onScrollWhileMoving();
     };
 
-    container.addEventListener("scroll", onScroll, { passive: true });
+    const onScrollLegacy = () => {
+      onScrollWhileMoving();
+      if (legacySettleTimer) window.clearTimeout(legacySettleTimer);
+      legacySettleTimer = window.setTimeout(() => {
+        legacySettleTimer = 0;
+        onScrollEnd();
+      }, SCROLL_BAND_SETTLE_MS);
+    };
 
     if ("onscrollend" in globalThis) {
+      container.addEventListener("scroll", onScrollWhileMoving, { passive: true });
       container.addEventListener("scrollend", onScrollEnd, { passive: true });
+    } else {
+      container.addEventListener("scroll", onScrollLegacy, { passive: true });
     }
 
     this.scrollCleanup = () => {
-      container.removeEventListener("scroll", onScroll);
       if ("onscrollend" in globalThis) {
+        container.removeEventListener("scroll", onScrollWhileMoving);
         container.removeEventListener("scrollend", onScrollEnd);
+      } else {
+        container.removeEventListener("scroll", onScrollLegacy);
       }
-      if (settleTimer) clearTimeout(settleTimer);
-      io.disconnect();
-      topSentinel.remove();
+      if (legacySettleTimer) window.clearTimeout(legacySettleTimer);
+      if (this.scrollSettleTimer) window.clearTimeout(this.scrollSettleTimer);
     };
   }
 

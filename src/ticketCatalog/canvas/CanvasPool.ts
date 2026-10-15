@@ -22,7 +22,7 @@ import {
 import { BALLS_PER_TICKET, canvasTileTickets } from "../constants";
 import { isWinTicket, type Ticket, type TicketSlot } from "../model/tickets";
 
-/** Prefer a cooperative yield over a flat setTimeout(0) floor. */
+/** Cooperative yield so scroll can preempt; tiles still finish in one frame. */
 function yieldToMain(): Promise<void> {
   const sched = (globalThis as { scheduler?: { yield?: () => Promise<void> } })
     .scheduler;
@@ -77,6 +77,8 @@ export class CanvasPool {
   private readonly host: HTMLElement;
   private paintGen = 0;
   private paused = false;
+  /** In-flight async flush, including one that already settled. */
+  private paintTail: Promise<void> = Promise.resolve();
   private tileLayoutKey = "";
 
   constructor(host: HTMLElement) {
@@ -97,13 +99,29 @@ export class CanvasPool {
    * dirty and flush on resume().
    */
   pause(): void {
+    if (this.paused) return;
     this.paused = true;
+    // Drop the in-flight async flush. Tiles it has not committed stay dirty.
+    this.paintGen += 1;
   }
 
-  resume(): void {
-    if (!this.paused) return;
+  resume(): Promise<void> {
+    if (!this.ready) return Promise.resolve();
+    if (!this.paused) return this.paintTail;
     this.paused = false;
-    this.paintNow();
+    return this.flushDirtyTiles();
+  }
+
+  /**
+   * Settled DOM band: one skip update and one async tile flush.
+   * Skip changes and resume share that flush, so settle cannot paint twice.
+   */
+  resumeWithBand(skipIds: ReadonlySet<string>): Promise<void> {
+    if (!this.ready) return Promise.resolve();
+    const skipChanged = this.applySkip(skipIds);
+    if (!skipChanged && !this.paused) return this.paintTail;
+    this.paused = false;
+    return this.flushDirtyTiles();
   }
 
   get isReady(): boolean {
@@ -172,10 +190,11 @@ export class CanvasPool {
   }
 
   /**
-   * DOM band changed after scroll settled — canvas leaves holes for live DOM tickets.
+   * Mark tiles whose DOM-band membership flipped.
+   * Returns false when the skip set is unchanged.
    */
-  setSkip(skipIds: ReadonlySet<string>, options?: { paint?: boolean }): void {
-    if (sameIds(this.skipIds, skipIds)) return;
+  private applySkip(skipIds: ReadonlySet<string>): boolean {
+    if (sameIds(this.skipIds, skipIds)) return false;
     const prev = this.skipIds;
     this.skipIds = new Set(skipIds);
     for (const tile of this.tiles) {
@@ -193,30 +212,21 @@ export class CanvasPool {
       tile.dirtyFull = false;
       tile.skipFlipIndices = [];
     }
-    if (options?.paint !== false) this.flushDirtyTilesSync();
+    return true;
   }
 
-  /** Paint every dirty tile before the next frame. Used when the DOM band flips. */
-  paintNow(): void {
-    if (!this.ready) return;
-    void this.flushDirtyTiles();
+  setSkip(skipIds: ReadonlySet<string>, options?: { paint?: boolean }): void {
+    if (!this.applySkip(skipIds)) return;
+    if (this.paused || options?.paint === false) return;
+    this.flushDirtyTilesSync();
   }
 
-  /** Band / skip updates: finish every dirty tile in one turn (no inter-tile yield). */
+  /** Data changes that must be visible before the next scroll: one turn, no yield. */
   private flushDirtyTilesSync(): void {
     const gen = ++this.paintGen;
     for (const tile of this.tiles) {
-      if (gen !== this.paintGen) return;
       if (!tile.dirty) continue;
-      if (tile.dirtyFull || !tile.snap) {
-        this.paintTile(tile, gen);
-      } else {
-        this.compositeTileFromSnap(tile, gen);
-      }
-      if (gen !== this.paintGen) return;
-      tile.dirty = false;
-      tile.dirtyFull = false;
-      tile.skipFlipIndices = [];
+      if (!this.paintOneDirtyTile(tile, gen)) return;
     }
   }
 
@@ -226,23 +236,38 @@ export class CanvasPool {
     return this.flushDirtyTiles();
   }
 
-  private async flushDirtyTiles(): Promise<void> {
+  private flushDirtyTiles(): Promise<void> {
+    if (this.paused || !this.ready) return Promise.resolve();
     const gen = ++this.paintGen;
+    const run = this.paintDirtyTiles(gen);
+    this.paintTail = run;
+    return run;
+  }
+
+  /** Dirty tiles in one frame; yield between tiles so scroll can preempt. */
+  private async paintDirtyTiles(gen: number): Promise<void> {
     let painted = false;
     for (const tile of this.tiles) {
-      if (gen !== this.paintGen) return;
+      if (gen !== this.paintGen || this.paused) return;
       if (!tile.dirty) continue;
       if (painted) await yieldToMain();
-      if (tile.dirtyFull || !tile.snap) {
-        this.paintTile(tile, gen);
-      } else {
-        this.compositeTileFromSnap(tile, gen);
-      }
-      tile.dirty = false;
-      tile.dirtyFull = false;
-      tile.skipFlipIndices = [];
+      if (!this.paintOneDirtyTile(tile, gen)) return;
       painted = true;
     }
+  }
+
+  private paintOneDirtyTile(tile: Tile, gen: number): boolean {
+    if (gen !== this.paintGen || this.paused) return false;
+    if (tile.dirtyFull || !tile.snap) {
+      this.paintTile(tile, gen);
+    } else {
+      this.compositeTileFromSnap(tile, gen);
+    }
+    if (gen !== this.paintGen || this.paused) return false;
+    tile.dirty = false;
+    tile.dirtyFull = false;
+    tile.skipFlipIndices = [];
+    return true;
   }
 
   /** Dirty and paint tiles that contain any of the given catalog slot indices. */
@@ -423,6 +448,7 @@ export class CanvasPool {
    * visible under throttle (shuffle / scroll settle).
    */
   private compositeTileFromSnap(tile: Tile, gen: number): void {
+    if (this.paused || gen !== this.paintGen) return;
     const snap = tile.snap;
     if (!snap) return;
     const ctx = tile.ctx;
