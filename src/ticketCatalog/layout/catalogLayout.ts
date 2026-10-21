@@ -19,8 +19,7 @@ export type CatalogLayout = {
 
 /**
  * Mobile 3-across vs 2-across — aspect ratio from layout viewport, not `matchMedia(orientation)`.
- * Use `innerWidth` / `innerHeight`: on Safari, `visualViewport` updates after `ResizeObserver`,
- * so reading it during frame resize leaves landscape stuck at 2 or desktop at 5 columns.
+ * Prefer catalog frame width + scroll client height (caller); defaults are `window` for /compare.
  */
 export function catalogLayoutIsLandscape(
   width = window.innerWidth,

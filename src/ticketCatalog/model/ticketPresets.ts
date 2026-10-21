@@ -183,6 +183,20 @@ export function resolvePresetIdFromCssMedia(): TicketPresetId {
 }
 
 /**
+ * Catalog layout preset from ticket-box width + aspect (no `max-height` media).
+ * Avoids Safari URL-bar height flicker flipping `metrics.id` and cancelling motion.
+ */
+export function resolvePresetIdForCatalog(width: number, isLandscape: boolean): TicketPresetId {
+  let id: TicketPresetId = "desktopMedium";
+  if (width <= 1365) id = "desktopSmall";
+  if (width <= 1023) id = "mobile";
+  if (width <= 1023 && !isLandscape && width >= 620) id = "mobileLarge";
+  if (width <= 359) id = "mobileCompact";
+  if (!isLandscape && width >= 360 && width <= 499) id = "mobile";
+  return id;
+}
+
+/**
  * Auto-pick like TicketCatalog.module.css media cascade
  * (last matching rule wins conceptually — we evaluate most specific first).
  */
@@ -210,14 +224,27 @@ function parseCssPx(cs: CSSStyleDeclaration, prop: string, fallback: number): nu
 }
 
 /** Read fortunamania ticket tokens from `.ticketCatalog` after media queries apply. */
+export type ReadTicketMetricsOpts = {
+  /** When set, preset id follows width + landscape only (catalog resize stability). */
+  catalogWidth?: number;
+  catalogLandscape?: boolean;
+};
+
 export function readTicketMetricsFromCss(
   el: HTMLElement,
   fallback: TicketMetrics = DESKTOP_MEDIUM,
+  opts?: ReadTicketMetricsOpts,
 ): TicketMetrics {
   const cs = getComputedStyle(el);
-  const id = resolvePresetIdFromCssMedia();
+  const id =
+    opts?.catalogWidth !== undefined
+      ? resolvePresetIdForCatalog(opts.catalogWidth, opts.catalogLandscape ?? false)
+      : resolvePresetIdFromCssMedia();
   const base = getPreset(id);
-  const cardHeight = parseCssPx(cs, "--ticket-card-height", base.cardHeight);
+  const catalogStable = opts?.catalogWidth !== undefined;
+  const cardHeight = catalogStable
+    ? base.cardHeight
+    : parseCssPx(cs, "--ticket-card-height", base.cardHeight);
   const cardShadowRaw = cs.getPropertyValue("--ticket-card-shadow").trim();
   return {
     id,

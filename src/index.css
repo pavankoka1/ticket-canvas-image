@@ -504,6 +504,10 @@ button:disabled {
 .catalog__dom {
   z-index: 2;
   opacity: 1;
+  /* Stacking context above canvas before FLIP/WAAPI sublayers (Safari). */
+  isolation: isolate;
+  transform: translateZ(0);
+  will-change: transform;
 }
 
 /* Pre-scroll underlay strip — positioned at band minY via transform. */

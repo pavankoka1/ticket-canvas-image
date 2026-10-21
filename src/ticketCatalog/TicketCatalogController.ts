@@ -205,15 +205,23 @@ export class TicketCatalogController {
     return domPoolSize(metrics.id.startsWith("mobile"));
   }
 
+  private catalogAspectLandscape(): boolean {
+    return catalogLayoutIsLandscape();
+  }
+
   private readMetrics() {
     clearTicketCssVarsInline(this.host.scroll);
-    return readTicketMetricsFromCss(this.host.scroll);
+    const isLandscape = this.catalogAspectLandscape();
+    return readTicketMetricsFromCss(this.host.scroll, undefined, {
+      catalogWidth: window.innerWidth,
+      catalogLandscape: isLandscape,
+    });
   }
 
   private resolveLayout(): CatalogLayout {
     const metrics = this.readMetrics();
     const isMobile = metrics.id.startsWith("mobile");
-    const isLandscape = catalogLayoutIsLandscape();
+    const isLandscape = this.catalogAspectLandscape();
     return resolveCatalogLayout(isMobile, isLandscape, this.availableWidth, metrics);
   }
 
@@ -319,9 +327,15 @@ export class TicketCatalogController {
     observedInlineSize?: number,
   ): void {
     this.measureHostWidth(observedInlineSize);
+    this.measureScrollGeometry();
+    const prevLayout = getActiveLayout();
     const layout = this.resolveLayout();
     const key = catalogLayoutCacheKey(layout);
     const layoutChanged = key !== this.prevLayoutKey;
+    const motionGeometryChanged =
+      layout.cardWidth !== prevLayout.cardWidth ||
+      layout.columns !== prevLayout.columns ||
+      layout.cardHeight !== prevLayout.cardHeight;
 
     setActiveLayout(layout);
     const model = resolveLiveCellBoxModel(layout);
@@ -345,7 +359,9 @@ export class TicketCatalogController {
     if (layoutChanged) {
       this.host.domHost.style.visibility = "hidden";
     }
-    this.dom?.cancelAllMotion();
+    if (motionGeometryChanged) {
+      this.dom?.cancelAllMotion();
+    }
 
     let pendingHide: number[] = [];
     if (opts.syncDomBand) {

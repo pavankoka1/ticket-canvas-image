@@ -126,17 +126,20 @@ export function playTicketAppear(
     easing: "linear",
     fill: "forwards",
   });
+  const cleanupAppearStyles = () => {
+    el.classList.remove("ticketCard_appear");
+    el.style.removeProperty("z-index");
+    el.style.removeProperty("opacity");
+  };
   void anim.finished.then(
     () => {
-      el.classList.remove("ticketCard_appear");
       anim.cancel();
-      el.style.removeProperty("z-index");
-      el.style.removeProperty("opacity");
-      el.style.removeProperty("transform");
+      cleanupAppearStyles();
       card.endMotion(token);
       onSettled?.();
     },
     () => {
+      cleanupAppearStyles();
       card.endMotion(token);
       onSettled?.();
     },

@@ -214,7 +214,11 @@ export class DomPool {
           { transform: `translate3d(${sx + dx}px, ${sy + dy}px, 0)` },
           { transform: `translate3d(${sx}px, ${sy}px, 0)` },
         ],
-        { duration: durationMs, easing: "cubic-bezier(0.65, 0, 0.35, 1)" },
+        {
+          duration: durationMs,
+          easing: "cubic-bezier(0.65, 0, 0.35, 1)",
+          fill: "backwards",
+        },
       );
       moves.push({ card, el, token, anim });
     }

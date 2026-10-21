@@ -7,8 +7,8 @@
  *
  * The badge host is already placed on a device pixel, so its pop uses the `scale`
  * property. The game's `translate(-50%, -50%)` would slide that host.
- * The card keeps its slot `translate3d` on `style.transform`; the dip animates
- * standalone `scale` on top (do not clear `transform` in dip keyframes — Safari).
+ * Dip scales in the same `transform` as the slot `translate3d` so transform-origin
+ * does not pull the card toward the catalog origin (standalone `scale` + `transform`).
  */
 import {
   beginDrawDabMotion,
@@ -50,19 +50,29 @@ function reduced(): boolean {
   return typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
+function clearPlayEffectStyles(el: HTMLElement, clearTransform: boolean): void {
+  el.style.removeProperty("opacity");
+  el.style.removeProperty("scale");
+  el.style.removeProperty("translate");
+  if (clearTransform) el.style.removeProperty("transform");
+}
+
+function clearOverlayEffectStyles(el: SVGGElement): void {
+  el.style.removeProperty("opacity");
+  el.style.removeProperty("transform");
+}
+
 /** Opacity-only — do not strip `transform` (sparkles use translate(-50%, -50%)). */
 function playSparkleOpacity(el: HTMLElement, keyframes: Keyframe[], opts: KeyframeAnimationOptions): void {
   el.getAnimations().forEach((a) => a.cancel());
   el.style.removeProperty("opacity");
   const anim = el.animate(keyframes, { ...opts, fill: "both" });
-  void anim.finished.then(
-    () => {
-      anim.cancel();
-      if (el.getAnimations().length > 0) return;
-      el.style.removeProperty("opacity");
-    },
-    () => undefined,
-  );
+  const settle = () => {
+    anim.cancel();
+    if (el.getAnimations().length > 0) return;
+    el.style.removeProperty("opacity");
+  };
+  void anim.finished.then(settle, settle);
 }
 
 function play(
@@ -72,16 +82,11 @@ function play(
   clearTransform = false,
 ): Animation {
   const anim = el.animate(keyframes, { ...opts, fill: "forwards" });
-  void anim.finished.then(
-    () => {
-      anim.cancel();
-      el.style.removeProperty("opacity");
-      el.style.removeProperty("scale");
-      el.style.removeProperty("translate");
-      if (clearTransform) el.style.removeProperty("transform");
-    },
-    () => undefined,
-  );
+  const settle = () => {
+    anim.cancel();
+    clearPlayEffectStyles(el, clearTransform);
+  };
+  void anim.finished.then(settle, settle);
   return anim;
 }
 
@@ -101,14 +106,11 @@ function playOverlayPop(el: SVGGElement, isMult: boolean): void {
     ],
     { duration: DAB_MS, easing: isMult ? "linear" : EASE_OUT, fill: "forwards" },
   );
-  void anim.finished.then(
-    () => {
-      anim.cancel();
-      el.style.removeProperty("opacity");
-      el.style.removeProperty("transform");
-    },
-    () => undefined,
-  );
+  const settle = () => {
+    anim.cancel();
+    clearOverlayEffectStyles(el);
+  };
+  void anim.finished.then(settle, settle);
 }
 
 function playOverlayMultLabel(el: SVGGElement): void {
@@ -134,25 +136,32 @@ function playOverlayMultLabel(el: SVGGElement): void {
     ],
     { duration: end, easing: "linear", fill: "forwards" },
   );
-  void anim.finished.then(
-    () => {
-      anim.cancel();
-      el.style.removeProperty("opacity");
-      el.style.removeProperty("transform");
-    },
-    () => undefined,
-  );
+  const settle = () => {
+    anim.cancel();
+    clearOverlayEffectStyles(el);
+  };
+  void anim.finished.then(settle, settle);
 }
 
-function dipKeyframes(multiplier: boolean): Keyframe[] {
+function readSlotTranslatePx(el: HTMLElement): { x: number; y: number } {
+  const match = /translate3d\(([-\d.]+)px,\s*([-\d.]+)px/.exec(el.style.transform);
+  if (!match) return { x: 0, y: 0 };
+  return { x: Number(match[1]), y: Number(match[2]) };
+}
+
+function dipTransform(sx: number, sy: number, scale: number): string {
+  return `translate3d(${sx}px, ${sy}px, 0) scale(${scale})`;
+}
+
+function dipKeyframes(sx: number, sy: number, multiplier: boolean): Keyframe[] {
   const end = multiplier ? MULT_TEXT_END : DIP_END;
   const start = multiplier ? MULT_TEXT_LAND : DIP_START;
   const bottom = multiplier ? MULT_TEXT_PUNCH : DIP_BOTTOM;
   return [
-    { scale: "1", offset: 0 },
-    { scale: "1", offset: start / end, easing: "linear" },
-    { scale: String(DIP_SCALE), offset: bottom / end, easing: EASE_OUT },
-    { scale: "1", offset: 1, easing: EASE_OUT },
+    { transform: dipTransform(sx, sy, 1), offset: 0 },
+    { transform: dipTransform(sx, sy, 1), offset: start / end, easing: "linear" },
+    { transform: dipTransform(sx, sy, DIP_SCALE), offset: bottom / end, easing: EASE_OUT },
+    { transform: dipTransform(sx, sy, 1), offset: 1, easing: EASE_OUT },
   ];
 }
 
@@ -200,8 +209,9 @@ export function playTicketDraw(
   card.hideShine();
   card.clearSparkles();
   const token = card.beginMotion();
+  const { x: slotX, y: slotY } = readSlotTranslatePx(root);
 
-  const dip = play(root, dipKeyframes(isMult), {
+  const dip = play(root, dipKeyframes(slotX, slotY, isMult), {
     duration: isMult ? MULT_TEXT_END : DIP_END,
     easing: "linear",
   });
