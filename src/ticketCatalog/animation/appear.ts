@@ -3,9 +3,8 @@
  * `buildAppearKeyframes`. Adds smaller than 25 play it on the last 12 cards,
  * then the catalog smooth-scrolls to the bottom. 25 or more only scroll.
  *
- * Cards here are absolutely positioned, so each keyframe carries the slot
- * translate. The `transform` property stays `none` for the gesture: a scale
- * on top of `translate3d` orbits the card instead of shrinking in place.
+ * Cards are absolutely positioned; each keyframe uses `translate3d` + `scale`
+ * in one `transform` (standalone `translate` does not composite on Safari).
  */
 import type { TicketCard } from "../dom/ticketCardElement";
 
@@ -56,38 +55,33 @@ function resolveAppearScaleAt(progress: number, scales: AppearScales): number {
   return lerp(scales.overshoot, 1, easeOutCubic(settle));
 }
 
-/** Fortunamania `buildAppearKeyframes`, plus `transform: none` so slot translate is the only offset. */
+function appearTransform(x: number, y: number, scale: number): string {
+  return `translate3d(${x}px, ${y}px, 0) scale(${scale})`;
+}
+
+/** Fortunamania `buildAppearKeyframes` — slot offset in `transform` (Safari ignores standalone `translate`). */
 function buildAppearKeyframes(scales: AppearScales, x: number, y: number): Keyframe[] {
   const fadeAt = APPEAR_FADE_MS / APPEAR_MS;
-  const at = `${x}px ${y}px`;
   return [
     {
-      transform: "none",
-      translate: at,
-      scale: String(resolveAppearScaleAt(0, scales)),
+      transform: appearTransform(x, y, resolveAppearScaleAt(0, scales)),
       opacity: 0,
       offset: 0,
     },
     {
-      transform: "none",
-      translate: at,
-      scale: String(resolveAppearScaleAt(Math.min(1, fadeAt), scales)),
+      transform: appearTransform(x, y, resolveAppearScaleAt(Math.min(1, fadeAt), scales)),
       opacity: 1,
       offset: fadeAt,
       easing: EASE_OUT_CUBIC,
     },
     {
-      transform: "none",
-      translate: at,
-      scale: String(resolveAppearScaleAt(APPEAR_OVERSHOOT_AT, scales)),
+      transform: appearTransform(x, y, resolveAppearScaleAt(APPEAR_OVERSHOOT_AT, scales)),
       opacity: 1,
       offset: APPEAR_OVERSHOOT_AT,
       easing: EASE_OUT_CUBIC,
     },
     {
-      transform: "none",
-      translate: at,
-      scale: "1",
+      transform: appearTransform(x, y, 1),
       opacity: 1,
       offset: 1,
       easing: EASE_IN_OUT_CUBIC,
@@ -138,8 +132,7 @@ export function playTicketAppear(
       anim.cancel();
       el.style.removeProperty("z-index");
       el.style.removeProperty("opacity");
-      el.style.removeProperty("translate");
-      el.style.removeProperty("scale");
+      el.style.removeProperty("transform");
       card.endMotion(token);
       onSettled?.();
     },

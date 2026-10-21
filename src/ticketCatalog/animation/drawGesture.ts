@@ -7,8 +7,8 @@
  *
  * The badge host is already placed on a device pixel, so its pop uses the `scale`
  * property. The game's `translate(-50%, -50%)` would slide that host.
- * The card's slot stays in `translate` for the dip; `transform` is `none` while
- * it scales, then the resting `translate3d` comes back.
+ * The card keeps its slot `translate3d` on `style.transform`; the dip animates
+ * standalone `scale` on top (do not clear `transform` in dip keyframes — Safari).
  */
 import {
   beginDrawDabMotion,
@@ -48,12 +48,6 @@ export type DrawKind = "dab" | "win" | "mult";
 
 function reduced(): boolean {
   return typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
-
-function slotTranslate(el: HTMLElement): string {
-  const match = /translate3d\(([-\d.]+)px,\s*([-\d.]+)px/.exec(el.style.transform);
-  if (!match) return "0px 0px";
-  return `${match[1]}px ${match[2]}px`;
 }
 
 /** Opacity-only — do not strip `transform` (sparkles use translate(-50%, -50%)). */
@@ -150,16 +144,15 @@ function playOverlayMultLabel(el: SVGGElement): void {
   );
 }
 
-function dipKeyframes(at: string, multiplier: boolean): Keyframe[] {
+function dipKeyframes(multiplier: boolean): Keyframe[] {
   const end = multiplier ? MULT_TEXT_END : DIP_END;
   const start = multiplier ? MULT_TEXT_LAND : DIP_START;
   const bottom = multiplier ? MULT_TEXT_PUNCH : DIP_BOTTOM;
-  const pose = { transform: "none", translate: at };
   return [
-    { ...pose, scale: "1", offset: 0 },
-    { ...pose, scale: "1", offset: start / end, easing: "linear" },
-    { ...pose, scale: String(DIP_SCALE), offset: bottom / end, easing: EASE_OUT },
-    { ...pose, scale: "1", offset: 1, easing: EASE_OUT },
+    { scale: "1", offset: 0 },
+    { scale: "1", offset: start / end, easing: "linear" },
+    { scale: String(DIP_SCALE), offset: bottom / end, easing: EASE_OUT },
+    { scale: "1", offset: 1, easing: EASE_OUT },
   ];
 }
 
@@ -199,7 +192,6 @@ export function playTicketDraw(
     return;
   }
   const root = card.dom;
-  const at = slotTranslate(root);
   const isMult = kind === "mult";
   const hasWin = root.classList.contains("ticketCard_win");
   const playShine = kind === "win" || (isMult && hasWin);
@@ -209,7 +201,7 @@ export function playTicketDraw(
   card.clearSparkles();
   const token = card.beginMotion();
 
-  const dip = play(root, dipKeyframes(at, isMult), {
+  const dip = play(root, dipKeyframes(isMult), {
     duration: isMult ? MULT_TEXT_END : DIP_END,
     easing: "linear",
   });

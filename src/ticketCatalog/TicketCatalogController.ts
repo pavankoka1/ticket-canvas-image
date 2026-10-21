@@ -217,21 +217,25 @@ export class TicketCatalogController {
     return resolveCatalogLayout(isMobile, isLandscape, this.availableWidth, metrics);
   }
 
-  private measureHostWidth(): void {
+  private measureHostWidth(observedInlineSize?: number): void {
     const ticketBox = this.host.catalogFrame;
     // FM column math uses ticketBox.clientWidth − reserve, but the shipped game keeps
     // 1001px grids (197px cards) because reserve reads 0 on the first RO measure and
     // the band never resizes. Gap + scrollbar are CSS on .ticketCatalog only.
-    this.availableWidth = Math.max(0, ticketBox.clientWidth);
+    const w =
+      observedInlineSize !== undefined && Number.isFinite(observedInlineSize)
+        ? observedInlineSize
+        : ticketBox.clientWidth;
+    this.availableWidth = Math.max(0, Math.floor(w));
     const cardHeight = readCatalogCardHeight(this.host.scroll);
     this.host.scroll.style.setProperty("--catalog-card-height", `${cardHeight}px`);
   }
 
   /** ResizeObserver — apply layout in the same frame (avoid one frame of stale card width). */
-  private onCatalogFrameResize(): void {
+  private onCatalogFrameResize(observedInlineSize?: number): void {
     this.measureScrollGeometry();
     this.ensurePools();
-    this.applyLayout({ syncDomBand: true, syncCanvasCatalog: false });
+    this.applyLayout({ syncDomBand: true, syncCanvasCatalog: false }, observedInlineSize);
   }
 
   private stampBandFingerprintAtRest(): void {
@@ -310,8 +314,11 @@ export class TicketCatalogController {
     applyCellBoxCssVars(this.host.atlasHost, model, metrics);
   }
 
-  private applyLayout(opts: { syncDomBand: boolean; syncCanvasCatalog: boolean }): void {
-    this.measureHostWidth();
+  private applyLayout(
+    opts: { syncDomBand: boolean; syncCanvasCatalog: boolean },
+    observedInlineSize?: number,
+  ): void {
+    this.measureHostWidth(observedInlineSize);
     const layout = this.resolveLayout();
     const key = catalogLayoutCacheKey(layout);
     const layoutChanged = key !== this.prevLayoutKey;
@@ -693,7 +700,6 @@ export class TicketCatalogController {
   private bindViewport(): void {
     const onResize = () => {
       this.hideCanvas();
-      this.onCatalogFrameResize();
     };
 
     window.addEventListener("resize", onResize);
@@ -710,8 +716,18 @@ export class TicketCatalogController {
 
   private bindResizeObserver(): void {
     if (typeof ResizeObserver === "undefined") return;
-    this.ro = new ResizeObserver(() => {
-      this.onCatalogFrameResize();
+    this.ro = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      let inlineSize: number | undefined;
+      if (entry) {
+        const box = entry.contentBoxSize;
+        if (box.length > 0 && Number.isFinite(box[0]!.inlineSize)) {
+          inlineSize = box[0]!.inlineSize;
+        } else if (Number.isFinite(entry.contentRect.width)) {
+          inlineSize = entry.contentRect.width;
+        }
+      }
+      this.onCatalogFrameResize(inlineSize);
     });
     this.ro.observe(this.host.catalogFrame);
   }

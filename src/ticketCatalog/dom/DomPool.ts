@@ -6,8 +6,8 @@ import {
 import { getActiveLayout, rowHeight } from '../layout/catalogLayout';
 import { playTicketDraw } from '../animation/drawGesture';
 import { DOM_POOL_SIZE } from '../constants';
-import { prepareCatalogDomCard } from '../canvas/paint/catalogSvgPaint';
-import { SVG_FACE_CLASS } from '../../catalog/compareSvgText';
+import { isCatalogSvgPaintReady, prepareCatalogDomCard } from '../canvas/paint/catalogSvgPaint';
+import { refreshSvgOverlayInk, SVG_FACE_CLASS } from '../../catalog/compareSvgText';
 import {
   attachTicketCard,
   probeSlotPlacementDrift,
@@ -119,7 +119,15 @@ export class DomPool {
       const needSvgInk =
         forceRebind || isNew || !card.showsInk(ticket) || !card.dom.classList.contains(SVG_FACE_CLASS);
       card.bind(ticket, slot.x, slot.y, getActiveLayout());
-      if (needSvgInk) prepareCatalogDomCard(card);
+      if (needSvgInk) {
+        if (isCatalogSvgPaintReady()) {
+          prepareCatalogDomCard(card);
+        } else if (card.dom.classList.contains(SVG_FACE_CLASS)) {
+          refreshSvgOverlayInk(card.dom);
+        } else {
+          prepareCatalogDomCard(card);
+        }
+      }
       probeSlotPlacementDrift(card.dom, this.host, slot.x, slot.y);
       if (isNew && appearIds?.has(slot.id)) this.playAppear(card, slot.x, slot.y);
     }
@@ -199,9 +207,14 @@ export class DomPool {
       const el = card.dom;
       card.cancelMotion();
       const token = card.beginMotion();
+      const sx = now.x;
+      const sy = now.y;
       const anim = el.animate(
-        [{ translate: `${dx}px ${dy}px` }, { translate: "0px 0px" }],
-        { duration: durationMs, easing: "cubic-bezier(0.65, 0, 0.35, 1)", fill: "forwards" },
+        [
+          { transform: `translate3d(${sx + dx}px, ${sy + dy}px, 0)` },
+          { transform: `translate3d(${sx}px, ${sy}px, 0)` },
+        ],
+        { duration: durationMs, easing: "cubic-bezier(0.65, 0, 0.35, 1)" },
       );
       moves.push({ card, el, token, anim });
     }
@@ -212,11 +225,10 @@ export class DomPool {
       pending -= 1;
       if (pending === 0) this.motionHooks.onMotionEnd?.();
     };
-    for (const { card, el, token, anim } of moves) {
+    for (const { card, token, anim } of moves) {
       void anim.finished.then(
         () => {
           anim.cancel();
-          el.style.removeProperty("translate");
           card.endMotion(token);
           oneDone();
         },
