@@ -15,6 +15,8 @@ import {
 import {
   contentHeight,
   contentWidth,
+  catalogLayoutCacheKey,
+  catalogLayoutIsLandscape,
   getActiveLayout,
   readCatalogCardHeight,
   resolveCatalogLayout,
@@ -54,12 +56,6 @@ import type { ToolbarRefs } from "./buildToolbar";
 
 const RESIZE_CANVAS_SETTLE_MS = 300;
 const SCROLL_TOP_EPSILON_PX = 1;
-const MOBILE_MQ = "(max-width: 1023px), (max-height: 499px)";
-
-function layoutCacheKey(layout: CatalogLayout): string {
-  return `${layout.metrics.id}|${layout.cardWidth}|${layout.columns}|${layout.cardHeight}`;
-}
-
 export type TicketCatalogControllerHost = {
   root: HTMLElement;
   ui: ToolbarRefs;
@@ -117,6 +113,7 @@ export class TicketCatalogController {
   private resizeCanvasForcePending = false;
   private scrollSettleTimer = 0;
   private scrollMotionActive = false;
+  private statsDirtyKey = "";
 
   constructor(host: TicketCatalogControllerHost) {
     this.host = host;
@@ -132,10 +129,16 @@ export class TicketCatalogController {
     this.bindViewport();
     this.bindResizeObserver();
 
+    this.scheduleAtlasWarm();
+  }
+
+  /** Coalesce atlas warm with resize settle (Safari mobile URL bar shifts card width). */
+  private scheduleAtlasWarm(): void {
+    if (this.warmTimer) window.clearTimeout(this.warmTimer);
     this.warmTimer = window.setTimeout(() => {
       this.warmTimer = 0;
       this.startCanvasWarm();
-    }, 120);
+    }, RESIZE_CANVAS_SETTLE_MS);
   }
 
   destroy(): void {
@@ -209,8 +212,8 @@ export class TicketCatalogController {
 
   private resolveLayout(): CatalogLayout {
     const metrics = this.readMetrics();
-    const isMobile = window.matchMedia(MOBILE_MQ).matches;
-    const isLandscape = window.matchMedia("(orientation: landscape)").matches;
+    const isMobile = metrics.id.startsWith("mobile");
+    const isLandscape = catalogLayoutIsLandscape();
     return resolveCatalogLayout(isMobile, isLandscape, this.availableWidth, metrics);
   }
 
@@ -275,7 +278,6 @@ export class TicketCatalogController {
     const pendingHide = dom.rebind(slots, this.ticketsById, fresh, forceRebind);
     for (const id of fresh) this.knownIds.add(id);
     this.domCount = slots.length;
-    this.updateStats();
     return pendingHide;
   }
 
@@ -311,7 +313,7 @@ export class TicketCatalogController {
   private applyLayout(opts: { syncDomBand: boolean; syncCanvasCatalog: boolean }): void {
     this.measureHostWidth();
     const layout = this.resolveLayout();
-    const key = layoutCacheKey(layout);
+    const key = catalogLayoutCacheKey(layout);
     const layoutChanged = key !== this.prevLayoutKey;
 
     setActiveLayout(layout);
@@ -397,7 +399,7 @@ export class TicketCatalogController {
 
   private flushCanvasAfterResize(forceRebuild: boolean): void {
     this.measureScrollGeometry();
-    const key = layoutCacheKey(getActiveLayout());
+    const key = catalogLayoutCacheKey(getActiveLayout());
 
     if (forceRebuild || key !== this.prevPaintLayoutKey) {
       this.prevPaintLayoutKey = key;
@@ -405,7 +407,7 @@ export class TicketCatalogController {
         this.canvas?.clear();
       }
       if (!this.canvasReady) {
-        this.startCanvasWarm();
+        this.scheduleAtlasWarm();
       } else {
         const pendingHide = this.syncDom();
         this.finishDomRebind(pendingHide);
@@ -421,16 +423,19 @@ export class TicketCatalogController {
 
   private startCanvasWarm(): void {
     const layoutNow = getActiveLayout();
+    const warmKey = catalogLayoutCacheKey(layoutNow);
     const gen = ++this.atlasGen;
     void (async () => {
       try {
         await ensureTicketFontsForLayout(layoutNow.metrics);
         if (gen !== this.atlasGen) return;
-        await ensureCatalogSvgAtlasWarm(layoutNow);
+        if (catalogLayoutCacheKey(getActiveLayout()) !== warmKey) return;
+        await ensureCatalogSvgAtlasWarm(layoutNow, warmKey);
         if (gen !== this.atlasGen) return;
+        if (catalogLayoutCacheKey(getActiveLayout()) !== warmKey) return;
         prewarmCatalogSvgPaintJit(layoutNow);
         this.canvasReady = true;
-        this.prevPaintLayoutKey = layoutCacheKey(layoutNow);
+        this.prevPaintLayoutKey = catalogLayoutCacheKey(layoutNow);
         this.syncCellBoxCssVarsOnHosts();
         this.dom?.refreshSvgDomOverlays();
         const pendingHide = this.syncDom();
@@ -450,9 +455,11 @@ export class TicketCatalogController {
     const host = this.host.prewarmHost;
     if (!host || window.innerWidth > window.innerHeight) return;
     const run = () => {
+      const active = getActiveLayout();
       const w = window.innerHeight;
       const h = window.innerWidth;
       const metrics = resolvePresetFromViewport(w, h);
+      if (metrics.id !== active.metrics.id) return;
       const gap = 4;
       const cols = metrics.id.startsWith("mobile") ? 3 : 5;
       const minW = metrics.id.startsWith("mobile") ? 150 : 177;
@@ -473,8 +480,12 @@ export class TicketCatalogController {
       }
       void this.warmLayoutBitmaps(host, next);
     };
-    if (window.requestIdleCallback) window.requestIdleCallback(() => run());
-    else window.setTimeout(run, 800);
+    const deferMs = 2500;
+    if (window.requestIdleCallback) {
+      window.requestIdleCallback(() => run(), { timeout: deferMs });
+    } else {
+      window.setTimeout(run, deferMs);
+    }
   }
 
   private async warmLayoutBitmaps(host: HTMLElement, layout: CatalogLayout): Promise<void> {
@@ -501,7 +512,7 @@ export class TicketCatalogController {
     if (dom.length === 0) return "";
     const first = dom[0]!.id;
     const last = dom[dom.length - 1]!.id;
-    return `${first}|${last}|${dom.length}|${Math.round(this.host.scroll.scrollTop)}`;
+    return `${first}|${last}|${dom.length}`;
   }
 
   private enqueueDomHide(indices: readonly number[]): void {
@@ -558,6 +569,7 @@ export class TicketCatalogController {
     requestAnimationFrame(() => {
       if (gen !== this.settleGen) return;
       const pendingHide = this.syncDom(dom);
+      this.updateStats();
       this.lastBandFingerprint = fp;
       if (!this.canvas) {
         this.dom?.hideEvictedSlots(pendingHide);
@@ -587,6 +599,10 @@ export class TicketCatalogController {
 
   /** Pause canvas on the first scroll event of a gesture; native scrollbar needs no JS. */
   private onScrollWhileMoving(): void {
+    if (this.scrollSettleTimer) {
+      window.clearTimeout(this.scrollSettleTimer);
+      this.scrollSettleTimer = 0;
+    }
     if (this.settleInFlight) {
       this.settleGen += 1;
       this.settleInFlight = false;
@@ -608,8 +624,10 @@ export class TicketCatalogController {
 
   private scheduleScrollSettledWork(): void {
     if (this.scrollSettleTimer) window.clearTimeout(this.scrollSettleTimer);
+    const settledTop = this.host.scroll.scrollTop;
     this.scrollSettleTimer = window.setTimeout(() => {
       this.scrollSettleTimer = 0;
+      if (Math.abs(this.host.scroll.scrollTop - settledTop) > SCROLL_TOP_EPSILON_PX) return;
       this.onScrollSettled();
     }, SCROLL_BAND_SETTLE_MS);
   }
@@ -634,8 +652,10 @@ export class TicketCatalogController {
     const onScrollLegacy = () => {
       onScrollWhileMoving();
       if (legacySettleTimer) window.clearTimeout(legacySettleTimer);
+      const settledTop = container.scrollTop;
       legacySettleTimer = window.setTimeout(() => {
         legacySettleTimer = 0;
+        if (Math.abs(container.scrollTop - settledTop) > SCROLL_TOP_EPSILON_PX) return;
         onScrollEnd();
       }, SCROLL_BAND_SETTLE_MS);
     };
@@ -673,6 +693,7 @@ export class TicketCatalogController {
   private bindViewport(): void {
     const onResize = () => {
       this.hideCanvas();
+      this.onCatalogFrameResize();
     };
 
     window.addEventListener("resize", onResize);
@@ -871,6 +892,34 @@ export class TicketCatalogController {
   private updateStats(): void {
     const { ui } = this.host;
     const layout = getActiveLayout();
+    const tiles = this.canvas?.tileCount ?? 0;
+    const drawLabel =
+      this.drawRound >= DRAW_ROUND_COUNT
+        ? "6/6 drawn"
+        : `Draw ${this.drawRound + 1}/6${
+            DRAW_ROUNDS[this.drawRound]!.multiplier > 0
+              ? ` · ${DRAW_ROUNDS[this.drawRound]!.multiplier}×`
+              : ""
+          }`;
+    const drawDisabled =
+      this.tickets.length === 0 || this.drawRound >= DRAW_ROUND_COUNT;
+    const dirtyKey = [
+      layout.metrics.id,
+      layout.columns,
+      layout.cardWidth,
+      layout.cardHeight,
+      this.tickets.length,
+      tiles,
+      this.canvasReady,
+      this.domCount,
+      this.poolSize,
+      this.lastDraw,
+      drawLabel,
+      drawDisabled,
+    ].join("|");
+    if (dirtyKey === this.statsDirtyKey) return;
+    this.statsDirtyKey = dirtyKey;
+
     ui.layoutStat.textContent = "";
     ui.layoutStat.append(
       "layout ",
@@ -885,7 +934,6 @@ export class TicketCatalogController {
         textContent: `${this.tickets.length}/${MAX_TICKETS}`,
       }),
     );
-    const tiles = this.canvas?.tileCount ?? 0;
     ui.tileStat.textContent = "";
     ui.tileStat.append("tiles ", Object.assign(document.createElement("strong"), { textContent: String(tiles) }));
     ui.canvasStat.textContent = "";
@@ -910,17 +958,8 @@ export class TicketCatalogController {
       ui.lastDraw.hidden = true;
     }
 
-    const drawLabel =
-      this.drawRound >= DRAW_ROUND_COUNT
-        ? "6/6 drawn"
-        : `Draw ${this.drawRound + 1}/6${
-            DRAW_ROUNDS[this.drawRound]!.multiplier > 0
-              ? ` · ${DRAW_ROUNDS[this.drawRound]!.multiplier}×`
-              : ""
-          }`;
     ui.drawBtn.textContent = drawLabel;
-    ui.drawBtn.disabled =
-      this.tickets.length === 0 || this.drawRound >= DRAW_ROUND_COUNT;
+    ui.drawBtn.disabled = drawDisabled;
 
     for (const btn of ui.ticketAdds.querySelectorAll<HTMLButtonElement>("[data-add-count]")) {
       btn.disabled = this.tickets.length >= MAX_TICKETS;

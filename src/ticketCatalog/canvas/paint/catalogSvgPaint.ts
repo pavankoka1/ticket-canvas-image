@@ -3,8 +3,11 @@
  */
 
 import { activeDpr, applyCellBoxCssVars, resolveCellBoxModel } from "../../layout/cellBoxModel";
-import type { CatalogLayout } from "../../layout/catalogLayout";
-import { getActiveLayout } from "../../layout/catalogLayout";
+import {
+  catalogLayoutCacheKey,
+  getActiveLayout,
+  type CatalogLayout,
+} from "../../layout/catalogLayout";
 import { applyTicketCssVars } from "../../model/ticketPresets";
 import {
   type ComparePaintPack,
@@ -29,6 +32,7 @@ import { isWinTicket, type Ticket } from "../../model/tickets";
 import { paintCatalogTicket } from "./catalogPaint";
 
 let paintPack: ComparePaintPack | null = null;
+let paintPackLayoutKey = "";
 let measureCard: TicketCard | null = null;
 let measureHost: HTMLElement | null = null;
 let measureCardPrepared = false;
@@ -77,11 +81,18 @@ function ensureMeasureCardHost(layout: CatalogLayout): TicketCard {
   return measureCard;
 }
 
-export function isCatalogSvgPaintReady(): boolean {
+function paintPackForLayout(layout: CatalogLayout): ComparePaintPack | null {
+  const key = catalogLayoutCacheKey(layout);
+  if (!paintPack || paintPackLayoutKey !== key) return null;
+  return paintPack;
+}
+
+export function isCatalogSvgPaintReady(layout: CatalogLayout = getActiveLayout()): boolean {
+  const pack = paintPackForLayout(layout);
   return Boolean(
-    paintPack?.headerGlyphs &&
-      paintPack.catalogChrome.size >= 3 &&
-      (paintPack.badges?.size ?? 0) > 0,
+    pack?.headerGlyphs &&
+      pack.catalogChrome.size >= 3 &&
+      (pack.badges?.size ?? 0) > 0,
   );
 }
 
@@ -97,11 +108,18 @@ export async function warmCatalogAtlasForPrewarm(layout: CatalogLayout): Promise
 
 export async function ensureCatalogSvgAtlasWarm(
   layout: CatalogLayout,
+  expectedLayoutKey = catalogLayoutCacheKey(layout),
 ): Promise<void> {
   setCompareRenderMode("svg-all");
   await loadSvgMultiplierAssets();
   const dpr = activeDpr();
-  paintPack = await warmCatalogCompareAtlas(layout, dpr);
+  const pack = await warmCatalogCompareAtlas(layout, dpr);
+  if (catalogLayoutCacheKey(getActiveLayout()) !== expectedLayoutKey) {
+    console.warn("[catalog-svg-warm] layout changed during warm — keeping prior paint pack");
+    return;
+  }
+  paintPack = pack;
+  paintPackLayoutKey = expectedLayoutKey;
   try {
     await warmSvgAllHostBadgeBitmaps(layout, dpr);
     await warmSvgAllMultiplierHosts(layout, dpr);
@@ -140,6 +158,7 @@ function measureHeaderDeviceLayout(
 
   const card = ensureMeasureCardPrepared(layout, dpr);
   card.bind(ticket, 0, 0, layout);
+  // Full overlay required — partial header sync mis-measures glyph X (canvas id drift).
   refreshSvgOverlayInk(card.dom);
   const layoutEntry = measureHeaderGlyphDeviceXs(card.dom, ticket.no, winText, dpr);
   headerDeviceLayoutCache.set(cacheKey, layoutEntry);
@@ -202,11 +221,10 @@ export function prewarmCatalogSvgPaintJit(layout: CatalogLayout): void {
 }
 
 export function prepareCatalogDomCard(card: TicketCard): void {
-  if (!isCatalogSvgPaintReady()) return;
+  if (!isCatalogSvgPaintReady(getActiveLayout())) return;
   const layout = getActiveLayout();
   card.dom.classList.add(SVG_FACE_CLASS);
   prepareCompareCard(card, layout, activeDpr());
-  // Rebuild overlay ink from bound ticket (multiplier value + face) after every bind.
   refreshSvgOverlayInk(card.dom);
 }
 
@@ -219,7 +237,7 @@ export function paintCatalogTicketSvgAll(
   layout: CatalogLayout,
   dpr: number,
 ): void {
-  const pack = paintPack;
+  const pack = paintPackForLayout(layout);
   if (!pack?.headerGlyphs || pack.catalogChrome.size < 3) {
     const boxes = resolveCellBoxModel(layout, dpr).cells;
     paintCatalogTicket(ctx, ticket, originX, originY, layout.cardWidth, dpr, boxes);

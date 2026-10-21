@@ -17,6 +17,18 @@ export type CatalogLayout = {
   isMobile: boolean;
 };
 
+/**
+ * Mobile 3-across vs 2-across — aspect ratio from layout viewport, not `matchMedia(orientation)`.
+ * Use `innerWidth` / `innerHeight`: on Safari, `visualViewport` updates after `ResizeObserver`,
+ * so reading it during frame resize leaves landscape stuck at 2 or desktop at 5 columns.
+ */
+export function catalogLayoutIsLandscape(
+  width = window.innerWidth,
+  height = window.innerHeight,
+): boolean {
+  return width > height;
+}
+
 export function resolveCatalogLayout(
   isMobile: boolean,
   isLandscape: boolean,
@@ -56,6 +68,11 @@ export function getActiveLayout(): CatalogLayout {
 
 export function setActiveLayout(next: CatalogLayout): void {
   active = next;
+}
+
+/** Stable key for atlas warm + canvas paint (card width changes invalidate). */
+export function catalogLayoutCacheKey(layout: CatalogLayout): string {
+  return `${layout.metrics.id}|${layout.cardWidth}|${layout.columns}|${layout.cardHeight}`;
 }
 
 export function rowHeight(layout: CatalogLayout = active): number {

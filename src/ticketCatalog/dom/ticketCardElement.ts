@@ -12,7 +12,7 @@ import {
 import { getActiveLayout, type CatalogLayout } from "../layout/catalogLayout";
 import { resolveLiveCellBoxModel } from "../canvas/atlas/cellAtlas";
 import type { TicketMetrics } from "../model/ticketPresets";
-import { BALLS_PER_TICKET } from "../constants";
+import { BALLS_PER_TICKET, POOL_OFFSCREEN_PX } from "../constants";
 import { MultiplierLabelNode } from "../canvas/sprites/multiplierLabel";
 import { isWinTicket, type Ticket } from "../model/tickets";
 import {
@@ -96,6 +96,10 @@ type CellBadge = {
   label: MultiplierLabelNode | null;
 };
 
+export function poolOffscreenTransform(): string {
+  return `translate3d(-${POOL_OFFSCREEN_PX}px, -${POOL_OFFSCREEN_PX}px, 0)`;
+}
+
 export function ticketContentKey(ticket: Ticket): string {
   const mult = Object.keys(ticket.multipliers)
     .sort((a, b) => Number(a) - Number(b))
@@ -145,7 +149,7 @@ export class TicketCard {
     const parts = createTicketDom();
     parts.root.style.position = "absolute";
     parts.root.style.pointerEvents = "none";
-    parts.root.style.visibility = "hidden";
+    parts.root.style.transform = poolOffscreenTransform();
 
     this.dom = parts.root;
     this.idText = parts.idText;
@@ -268,15 +272,20 @@ export class TicketCard {
    * DomPool skips bind for unchanged band members.
    */
   shows(ticket: Ticket, x: number, y: number): boolean {
-    if (!this.shown || this.boundId !== ticket.id) return false;
+    if (!this.shown || !this.showsInk(ticket)) return false;
+    const { x: sx, y: sy } = snapSlot(x, y);
+    return sx === this.slotX && sy === this.slotY;
+  }
+
+  /** Ticket + layout ink match (ignores slot position). */
+  showsInk(ticket: Ticket): boolean {
+    if (this.boundId !== ticket.id) return false;
     if (this.contentKey !== ticketContentKey(ticket)) return false;
     const layout = getActiveLayout();
     const model = getLiveCellBoxModel();
     if (!model) return false;
     const key = `${layout.metrics.id}|${layout.cardWidth}|${layout.cardHeight}|${model.cellW}x${model.cellH}`;
-    if (this.layoutKey !== key) return false;
-    const { x: sx, y: sy } = snapSlot(x, y);
-    return sx === this.slotX && sy === this.slotY;
+    return this.layoutKey === key;
   }
 
   /**
@@ -337,10 +346,7 @@ export class TicketCard {
         this.dom.style.transform = `translate3d(${sx}px, ${sy}px, 0)`;
       }
     }
-    if (!this.shown) {
-      this.shown = true;
-      this.dom.style.visibility = "visible";
-    }
+    this.shown = true;
   }
 
   badgeHostAt(cell: number): HTMLElement | null {
@@ -466,7 +472,7 @@ export class TicketCard {
     this.cancelMotion();
     this.hideShine();
     this.dom.classList.remove("ticketCard_appear");
-    this.dom.style.visibility = "hidden";
+    this.dom.style.transform = poolOffscreenTransform();
     this.dom.style.removeProperty("z-index");
     this.dom.style.removeProperty("opacity");
     this.dom.style.removeProperty("translate");

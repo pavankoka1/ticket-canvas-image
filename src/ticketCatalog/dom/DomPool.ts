@@ -7,6 +7,7 @@ import { getActiveLayout, rowHeight } from '../layout/catalogLayout';
 import { playTicketDraw } from '../animation/drawGesture';
 import { DOM_POOL_SIZE } from '../constants';
 import { prepareCatalogDomCard } from '../canvas/paint/catalogSvgPaint';
+import { SVG_FACE_CLASS } from '../../catalog/compareSvgText';
 import {
   attachTicketCard,
   probeSlotPlacementDrift,
@@ -94,8 +95,9 @@ export class DomPool {
     const keep = new Set(slots.map((s) => s.id));
     const pendingHide: number[] = [];
 
-    for (const [id, idx] of [...this.byId]) {
+    for (const id of this.byId.keys()) {
       if (keep.has(id)) continue;
+      const idx = this.byId.get(id)!;
       this.byId.delete(id);
       this.free.push(idx);
       pendingHide.push(idx);
@@ -114,8 +116,10 @@ export class DomPool {
       const card = this.cards[idx]!;
       // Unchanged band members keep their DOM as-is — bind only new/moved/updated.
       if (!forceRebind && !isNew && card.shows(ticket, slot.x, slot.y)) continue;
+      const needSvgInk =
+        forceRebind || isNew || !card.showsInk(ticket) || !card.dom.classList.contains(SVG_FACE_CLASS);
       card.bind(ticket, slot.x, slot.y, getActiveLayout());
-      prepareCatalogDomCard(card);
+      if (needSvgInk) prepareCatalogDomCard(card);
       probeSlotPlacementDrift(card.dom, this.host, slot.x, slot.y);
       if (isNew && appearIds?.has(slot.id)) this.playAppear(card, slot.x, slot.y);
     }

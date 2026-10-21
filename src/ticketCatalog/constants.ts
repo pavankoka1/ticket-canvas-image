@@ -33,8 +33,15 @@ export function canvasTileTickets(dpr: number): number {
 export const ROW_BUFFER = 2;
 
 /**
- * After scroll stops, wait this long before repartitioning the DOM band /
- * canvas skip set. Separate from SETTLE_MS (resize canvas rebuild).
+ * Evicted pool cards park off-screen (not `opacity:0` — WebKit still composites
+ * them above the canvas layer and hides the tile underlay on `/`).
+ */
+export const POOL_OFFSCREEN_PX = 10_000;
+
+/**
+ * After scroll stops (`scrollend` or legacy debounce), wait this long with a
+ * stable scrollTop before repartitioning the DOM band / canvas skip set.
+ * Separate from SETTLE_MS (resize canvas rebuild).
  */
 export const SCROLL_BAND_SETTLE_MS = 300;
 

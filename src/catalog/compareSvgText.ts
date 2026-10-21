@@ -109,9 +109,20 @@ export function beginDrawMultiplierMotion(root: HTMLElement, cell: number): Over
   return { disc, label };
 }
 const HEADER_TEXT_STYLE = "font-kerning:none;font-feature-settings:'kern' 0";
+const OVERLAY_FACE_ATTR = "data-ink-face";
 
 function applyHeaderTextStyle(el: SVGTextElement): void {
   el.setAttribute("style", HEADER_TEXT_STYLE);
+}
+
+type OverlayFace = "normal" | "gold" | "disabled";
+
+function overlayFace(root: HTMLElement): OverlayFace {
+  return root.classList.contains("ticketCard_disabled")
+    ? "disabled"
+    : root.classList.contains("ticketCard_win")
+      ? "gold"
+      : "normal";
 }
 
 const COLORS = {
@@ -171,31 +182,77 @@ function text(
   return t;
 }
 
-/** Build the overlay for `root` from its CSS variables and inline geometry. */
-export function buildTicketOverlay(root: HTMLElement, dpr = activeDpr()): SVGSVGElement {
-  const face = root.classList.contains("ticketCard_disabled")
-    ? "disabled"
-    : root.classList.contains("ticketCard_win")
-      ? "gold"
-      : "normal";
+function overlayHeaderTextEl(
+  overlay: ParentNode,
+  anchor: "end" | "start",
+): SVGTextElement | null {
+  return [...overlay.querySelectorAll<SVGTextElement>("text")].find(
+    (t) => t.getAttribute("text-anchor") === anchor,
+  ) ?? null;
+}
+
+function upsertOverlayHeaderText(
+  overlay: SVGSVGElement,
+  anchor: "end" | "start",
+  value: string,
+  x: number,
+  y: number,
+  fontPx: number,
+  fill: string,
+): void {
+  if (!value) {
+    overlayHeaderTextEl(overlay, anchor)?.remove();
+    return;
+  }
+  let el = overlayHeaderTextEl(overlay, anchor);
+  if (!el) {
+    el = text(value, x, y, anchor, fontPx, fill, true);
+    overlay.append(el);
+    return;
+  }
+  el.textContent = value;
+  el.setAttribute("x", String(x));
+  el.setAttribute("y", String(y));
+  el.setAttribute("font-size", String(fontPx));
+  el.setAttribute("fill", fill);
+  applyHeaderTextStyle(el);
+}
+
+/**
+ * Header id/amount only — for glyph warm/measure (no full overlay rebuild).
+ */
+export function syncSvgOverlayHeaderInk(root: HTMLElement, dpr = activeDpr()): void {
+  if (!root.classList.contains(SVG_FACE_CLASS)) return;
+  let overlay = root.querySelector(`:scope > .${OVERLAY_CLASS}`) as SVGSVGElement | null;
+  if (!overlay) {
+    applySvgText(root, true, dpr);
+    overlay = root.querySelector(`:scope > .${OVERLAY_CLASS}`) as SVGSVGElement | null;
+    if (!overlay) return;
+  }
+  const face = overlayFace(root);
   const W = px(root, "--ticket-card-width") || parseFloat(root.style.width);
-  const H = px(root, "--ticket-card-height") || parseFloat(root.style.height);
+  const headerH = px(root, "--ticket-header-height");
+  const padX = px(root, "--ticket-header-pad-x");
+  const metaPx = px(root, "--ticket-meta-font-size");
+  const headerY = headerH / 2 + BASELINE_EM * metaPx;
+  const id = textOf(root.querySelector(".ticketCard__id"));
+  const amount = textOf(root.querySelector(".ticketCard__win"));
+  upsertOverlayHeaderText(overlay, "end", id, W - padX, headerY, metaPx, COLORS.id[face]);
+  upsertOverlayHeaderText(overlay, "start", amount, padX, headerY, metaPx, COLORS.amount[face]);
+}
+
+function buildTicketOverlayInkChildren(root: HTMLElement, dpr: number): SVGElement[] {
+  const face = overlayFace(root);
+  const W = px(root, "--ticket-card-width") || parseFloat(root.style.width);
   const headerH = px(root, "--ticket-header-height");
   const padX = px(root, "--ticket-header-pad-x");
   const metaPx = px(root, "--ticket-meta-font-size");
   const numberPx = px(root, "--ticket-number-font-size");
   const dab = px(root, "--ticket-dab-size");
-
   const layout = getActiveLayout();
   const model = resolveCellBoxModel(layout, dpr);
   const cellW = model.cellW;
   const children: SVGElement[] = [];
-  const chromeId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
-  if (root.classList.contains(SVG_FACE_CLASS) && cellW > 0) {
-    children.push(...buildTicketChromeSvg(W, layout.metrics, face, cellW, chromeId, dpr));
-  } else if (cellW > 0) {
-    children.push(...buildTicketSeparatorSvg(layout.metrics, cellW, face, dpr));
-  }
   const headerY = headerH / 2 + BASELINE_EM * metaPx;
   const id = textOf(root.querySelector(".ticketCard__id"));
   const amount = textOf(root.querySelector(".ticketCard__win"));
@@ -244,7 +301,26 @@ export function buildTicketOverlay(root: HTMLElement, dpr = activeDpr()): SVGSVG
     children.push(labelWrap);
   });
 
-  return svgEl(
+  return children;
+}
+
+/** Build the overlay for `root` from its CSS variables and inline geometry. */
+export function buildTicketOverlay(root: HTMLElement, dpr = activeDpr()): SVGSVGElement {
+  const face = overlayFace(root);
+  const W = px(root, "--ticket-card-width") || parseFloat(root.style.width);
+  const H = px(root, "--ticket-card-height") || parseFloat(root.style.height);
+  const layout = getActiveLayout();
+  const model = resolveCellBoxModel(layout, dpr);
+  const cellW = model.cellW;
+  const children: SVGElement[] = [];
+  const chromeId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+  if (root.classList.contains(SVG_FACE_CLASS) && cellW > 0) {
+    children.push(...buildTicketChromeSvg(W, layout.metrics, face, cellW, chromeId, dpr));
+  } else if (cellW > 0) {
+    children.push(...buildTicketSeparatorSvg(layout.metrics, cellW, face, dpr));
+  }
+  children.push(...buildTicketOverlayInkChildren(root, dpr));
+  const svg = svgEl(
     "svg",
     {
       class: OVERLAY_CLASS,
@@ -257,6 +333,27 @@ export function buildTicketOverlay(root: HTMLElement, dpr = activeDpr()): SVGSVG
     },
     ...children,
   );
+  svg.setAttribute(OVERLAY_FACE_ATTR, face);
+  return svg;
+}
+
+/**
+ * Patch cell/header/multiplier ink under existing vector chrome (no overlay root swap).
+ */
+export function resyncSvgOverlayInkFromDom(root: HTMLElement, dpr = activeDpr()): void {
+  if (!root.classList.contains(SVG_FACE_CLASS)) return;
+  const overlay = root.querySelector(`:scope > .${OVERLAY_CLASS}`) as SVGSVGElement | null;
+  const face = overlayFace(root);
+  if (!overlay) {
+    applySvgText(root, true, dpr);
+    return;
+  }
+  if (overlay.getAttribute(OVERLAY_FACE_ATTR) !== face) {
+    applySvgText(root, true, dpr);
+    return;
+  }
+  stripOverlayInkKeepChrome(root);
+  for (const child of buildTicketOverlayInkChildren(root, dpr)) overlay.append(child);
 }
 
 /**
@@ -289,10 +386,15 @@ export function stripCompareOverlayHeader(root: HTMLElement, headerHeightCss: nu
   });
 }
 
-/** Rebuild svg-all overlay ink after draw settle (e.g. cleared cell digit). */
+/** Rebuild svg-all overlay after draw settle or face/chrome change. */
 export function refreshSvgOverlayInk(root: HTMLElement): void {
   if (!root.classList.contains(SVG_FACE_CLASS)) return;
   applySvgText(root, true);
+}
+
+/** Prefer on catalog rebind when chrome/face unchanged — keeps the overlay root. */
+export function patchSvgOverlayInkFromDom(root: HTMLElement, dpr = activeDpr()): void {
+  resyncSvgOverlayInkFromDom(root, dpr);
 }
 
 /** Swap header, cell and multiplier rendering under `root` to (or back from) the overlay. */

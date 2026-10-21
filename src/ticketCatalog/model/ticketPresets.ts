@@ -146,27 +146,51 @@ export function getPreset(id: TicketPresetId): TicketMetrics {
   return TICKET_PRESETS.find((p) => p.id === id) ?? DESKTOP_MEDIUM;
 }
 
+/** Layout viewport — Safari URL bar can make `innerHeight` disagree with CSS media. */
+export function catalogLayoutViewport(
+  width = window.innerWidth,
+  height = window.innerHeight,
+): { width: number; height: number } {
+  const vv = window.visualViewport;
+  if (!vv) return { width, height };
+  return {
+    width: Math.round(vv.width) || width,
+    height: Math.round(vv.height) || height,
+  };
+}
+
+/**
+ * Preset id from `index.css` `.ticketCatalog` media order (later rules override).
+ * Do not infer from `--ticket-card-height` alone — 43px is both mobileLarge and desktopMedium.
+ */
+export function resolvePresetIdFromCssMedia(): TicketPresetId {
+  const m = (query: string) => window.matchMedia(query).matches;
+  let id: TicketPresetId = "desktopMedium";
+  if (m("(max-width: 1365px), (max-height: 499px)")) id = "desktopSmall";
+  if (m("(max-width: 1023px), (max-height: 499px)")) id = "mobile";
+  if (m("(max-width: 1023px) and (orientation: portrait) and (min-width: 620px)")) {
+    id = "mobileLarge";
+  }
+  if (m("(max-height: 319px), (max-width: 359px)")) id = "mobileCompact";
+  if (
+    m(
+      "(orientation: portrait) and (min-width: 360px) and (max-width: 499px) and (min-height: 640px)",
+    )
+  ) {
+    id = "mobile";
+  }
+  return id;
+}
+
 /**
  * Auto-pick like TicketCatalog.module.css media cascade
  * (last matching rule wins conceptually — we evaluate most specific first).
  */
 export function resolvePresetFromViewport(
-  width = window.innerWidth,
-  height = window.innerHeight,
+  _width = catalogLayoutViewport().width,
+  _height = catalogLayoutViewport().height,
 ): TicketMetrics {
-  const isWide = width >= 1024 && height >= 500;
-  const isMediumWide = width >= 1366 && height >= 500;
-  const isPortrait = height >= width;
-  const isLandscape = width > height;
-  const isCompressed = height < 320 || width < 360;
-
-  if (!isWide) {
-    if (width <= 499 || (isLandscape && isCompressed)) return MOBILE_COMPACT;
-    if (isPortrait && width >= 620) return MOBILE_LARGE;
-    return MOBILE;
-  }
-  if (!isMediumWide) return DESKTOP_SMALL;
-  return DESKTOP_MEDIUM;
+  return getPreset(resolvePresetIdFromCssMedia());
 }
 
 /** Body band top in CSS px on the active DPR grid (header + pad, snapped once). */
@@ -185,22 +209,15 @@ function parseCssPx(cs: CSSStyleDeclaration, prop: string, fallback: number): nu
   return Number.isFinite(raw) && raw > 0 ? raw : fallback;
 }
 
-function presetIdFromCardHeight(h: number): TicketPresetId {
-  if (h <= 33) return "mobileCompact";
-  if (h <= 38) return "mobile";
-  if (h <= 40) return "desktopSmall";
-  return "desktopMedium";
-}
-
 /** Read fortunamania ticket tokens from `.ticketCatalog` after media queries apply. */
 export function readTicketMetricsFromCss(
   el: HTMLElement,
   fallback: TicketMetrics = DESKTOP_MEDIUM,
 ): TicketMetrics {
   const cs = getComputedStyle(el);
-  const cardHeight = parseCssPx(cs, "--ticket-card-height", fallback.cardHeight);
-  const id = presetIdFromCardHeight(cardHeight);
+  const id = resolvePresetIdFromCssMedia();
   const base = getPreset(id);
+  const cardHeight = parseCssPx(cs, "--ticket-card-height", base.cardHeight);
   const cardShadowRaw = cs.getPropertyValue("--ticket-card-shadow").trim();
   return {
     id,
