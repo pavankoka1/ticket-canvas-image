@@ -29,6 +29,8 @@ export class DomPool {
   private ready = false;
   private readonly host: HTMLElement;
   private motionHooks: DomPoolMotionHooks = {};
+  /** Leaving band during shuffle FLIP — indices stay bound until animation ends. */
+  private deferredLeave: { id: string; idx: number }[] = [];
   readonly size: number;
 
   constructor(host: HTMLElement, size: number = DOM_POOL_SIZE) {
@@ -135,6 +137,73 @@ export class DomPool {
     return pendingHide;
   }
 
+  /**
+   * Post-sort shuffle: keep leaving cards in the pool for FLIP-out; defer hide until
+   * `playMoves` / `commitShuffleEvict`.
+   */
+  rebindForShuffle(
+    bandSlots: readonly TicketSlot[],
+    ticketsById: Map<string, Ticket>,
+    flipFrom: ReadonlyMap<string, { x: number; y: number }>,
+  ): void {
+    if (!this.ready) return;
+    this.deferredLeave = [];
+    const keep = new Set(bandSlots.map((s) => s.id));
+    const layout = getActiveLayout();
+
+    for (const id of [...this.byId.keys()]) {
+      if (keep.has(id)) continue;
+      const idx = this.byId.get(id)!;
+      this.deferredLeave.push({ id, idx });
+    }
+
+    for (const slot of bandSlots) {
+      const ticket = ticketsById.get(slot.id);
+      if (!ticket) continue;
+      let idx = this.byId.get(slot.id);
+      const isNew = idx === undefined;
+      if (idx === undefined) {
+        idx = this.free.pop();
+        if (idx === undefined) break;
+        this.byId.set(slot.id, idx);
+      }
+      const card = this.cards[idx]!;
+      const prev = flipFrom.get(slot.id);
+      const was = prev ? snapSlot(prev.x, prev.y) : null;
+      const now = snapSlot(slot.x, slot.y);
+      const needsFlip =
+        was !== null &&
+        (Math.abs(was.x - now.x) >= 0.5 || Math.abs(was.y - now.y) >= 0.5);
+      const needSvgInk =
+        isNew || !card.showsInk(ticket) || !card.dom.classList.contains(SVG_FACE_CLASS);
+      card.bind(ticket, slot.x, slot.y, layout, { deferPosition: needsFlip });
+      if (needSvgInk) {
+        if (isCatalogSvgPaintReady()) {
+          prepareCatalogDomCard(card);
+        } else if (card.dom.classList.contains(SVG_FACE_CLASS)) {
+          refreshSvgOverlayInk(card.dom);
+        } else {
+          prepareCatalogDomCard(card);
+        }
+      }
+      probeSlotPlacementDrift(card.dom, this.host, slot.x, slot.y);
+    }
+  }
+
+  commitShuffleEvict(): void {
+    if (!this.ready || this.deferredLeave.length === 0) return;
+    const hide: number[] = [];
+    for (const { id, idx } of this.deferredLeave) {
+      if (this.byId.get(id) === idx) {
+        this.byId.delete(id);
+        this.free.push(idx);
+        hide.push(idx);
+      }
+    }
+    this.deferredLeave = [];
+    this.hideEvictedSlots(hide);
+  }
+
   /** Hide pool slots evicted from the band — call after canvas has repainted them. */
   hideEvictedSlots(pendingHide: readonly number[]): void {
     if (!this.ready || pendingHide.length === 0) return;
@@ -169,6 +238,7 @@ export class DomPool {
   cancelAllMotion(): void {
     if (!this.ready) return;
     for (const card of this.cards) card.cancelMotion();
+    this.commitShuffleEvict();
   }
 
   /** Stop dab, dip, and shine. Used when draws are cleared. */
@@ -188,59 +258,81 @@ export class DomPool {
     from: ReadonlyMap<string, { x: number; y: number }>,
     slots: readonly TicketSlot[],
     durationMs: number,
+    targetsById?: ReadonlyMap<string, { x: number; y: number }>,
   ): void {
     if (!this.ready || durationMs <= 0) return;
     if (typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      this.commitShuffleEvict();
       return;
     }
-    const moves: { card: TicketCard; el: HTMLElement; token: number; anim: Animation }[] = [];
+    const easing = "cubic-bezier(0.65, 0, 0.35, 1)";
+    const moves: { card: TicketCard; token: number; anim: Animation; nx: number; ny: number }[] =
+      [];
+
+    const queueFlip = (
+      card: TicketCard,
+      ox: number,
+      oy: number,
+      nx: number,
+      ny: number,
+    ): void => {
+      if (Math.abs(ox - nx) < 0.5 && Math.abs(oy - ny) < 0.5) return;
+      const el = card.dom;
+      card.cancelMotion();
+      const token = card.beginMotion();
+      el.style.transform = `translate3d(${ox}px, ${oy}px, 0)`;
+      const anim = el.animate(
+        [
+          { transform: `translate3d(${ox}px, ${oy}px, 0)` },
+          { transform: `translate3d(${nx}px, ${ny}px, 0)` },
+        ],
+        { duration: durationMs, easing },
+      );
+      moves.push({ card, token, anim, nx, ny });
+    };
+
     for (const slot of slots) {
       const prev = from.get(slot.id);
       const idx = this.byId.get(slot.id);
       if (!prev || idx === undefined) continue;
       const was = snapSlot(prev.x, prev.y);
       const now = snapSlot(slot.x, slot.y);
-      const dx = was.x - now.x;
-      const dy = was.y - now.y;
-      if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
-      const card = this.cards[idx]!;
-      const el = card.dom;
-      card.cancelMotion();
-      const token = card.beginMotion();
-      const sx = now.x;
-      const sy = now.y;
-      const anim = el.animate(
-        [
-          { transform: `translate3d(${sx + dx}px, ${sy + dy}px, 0)` },
-          { transform: `translate3d(${sx}px, ${sy}px, 0)` },
-        ],
-        {
-          duration: durationMs,
-          easing: "cubic-bezier(0.65, 0, 0.35, 1)",
-          fill: "backwards",
-        },
-      );
-      moves.push({ card, el, token, anim });
+      queueFlip(this.cards[idx]!, was.x, was.y, now.x, now.y);
     }
-    if (moves.length === 0) return;
+
+    if (targetsById) {
+      for (const { id, idx } of this.deferredLeave) {
+        const prev = from.get(id);
+        const target = targetsById.get(id);
+        const boundIdx = this.byId.get(id);
+        if (!prev || !target || boundIdx !== idx) continue;
+        const was = snapSlot(prev.x, prev.y);
+        const now = snapSlot(target.x, target.y);
+        queueFlip(this.cards[idx]!, was.x, was.y, now.x, now.y);
+      }
+    }
+
+    if (moves.length === 0) {
+      this.commitShuffleEvict();
+      return;
+    }
     this.motionHooks.onMotionStart?.();
     let pending = moves.length;
     const oneDone = () => {
       pending -= 1;
-      if (pending === 0) this.motionHooks.onMotionEnd?.();
+      if (pending === 0) {
+        this.commitShuffleEvict();
+        this.motionHooks.onMotionEnd?.();
+      }
     };
-    for (const { card, token, anim } of moves) {
-      void anim.finished.then(
-        () => {
-          anim.cancel();
-          card.endMotion(token);
-          oneDone();
-        },
-        () => {
-          card.endMotion(token);
-          oneDone();
-        },
-      );
+    for (const { card, token, anim, nx, ny } of moves) {
+      const settle = () => {
+        anim.cancel();
+        card.snapTransformTo(nx, ny);
+        card.endMotion(token);
+        oneDone();
+      };
+      void anim.finished.then(settle, settle);
     }
   }
 

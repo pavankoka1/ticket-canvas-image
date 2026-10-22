@@ -303,7 +303,22 @@ export class TicketCard {
     if (disabled) this.dom.classList.add("ticketCard_disabled");
   }
 
-  bind(ticket: Ticket, x?: number, y?: number, layout?: CatalogLayout): void {
+  /** Snap inline transform after FLIP (Safari — do not rely on WAAPI fill). */
+  snapTransformTo(x: number, y: number): void {
+    const { x: sx, y: sy } = snapSlot(x, y);
+    this.slotX = sx;
+    this.slotY = sy;
+    this.dom.style.transform = `translate3d(${sx}px, ${sy}px, 0)`;
+    this.shown = true;
+  }
+
+  bind(
+    ticket: Ticket,
+    x?: number,
+    y?: number,
+    layout?: CatalogLayout,
+    opts?: { deferPosition?: boolean },
+  ): void {
     if (layout) this.applyCardLayout(layout);
     else this.applyCardWidth(getActiveLayout().cardWidth);
     this.boundId = ticket.id;
@@ -338,13 +353,8 @@ export class TicketCard {
       this.dom.classList.toggle("ticketCard_disabled", disabled);
     }
 
-    if (x !== undefined && y !== undefined) {
-      const { x: sx, y: sy } = snapSlot(x, y);
-      if (sx !== this.slotX || sy !== this.slotY) {
-        this.slotX = sx;
-        this.slotY = sy;
-        this.dom.style.transform = `translate3d(${sx}px, ${sy}px, 0)`;
-      }
+    if (x !== undefined && y !== undefined && !opts?.deferPosition) {
+      this.snapTransformTo(x, y);
     }
     this.shown = true;
   }

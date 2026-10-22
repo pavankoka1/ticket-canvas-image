@@ -23,7 +23,11 @@ import {
   setActiveLayout,
   type CatalogLayout,
 } from "./layout/catalogLayout";
-import { animateRemovedTickets, takeGestureDelay } from "./animation/catalogAnimations";
+import {
+  animateRemovedTickets,
+  drawGestureTotalMs,
+  takeGestureDelay,
+} from "./animation/catalogAnimations";
 import { resolveLiveCellBoxModel } from "./canvas/atlas/cellAtlas";
 import { ensureTicketFontsForLayout } from "./layout/ticketFont";
 import {
@@ -114,6 +118,9 @@ export class TicketCatalogController {
   private scrollSettleTimer = 0;
   private scrollMotionActive = false;
   private statsDirtyKey = "";
+  /** Canvas cleared for DOM WAAPI — rebuild async after gesture or on scroll cancel. */
+  private gestureCanvasSuspended = false;
+  private gestureCanvasTimer = 0;
 
   constructor(host: TicketCatalogControllerHost) {
     this.host = host;
@@ -148,6 +155,7 @@ export class TicketCatalogController {
     if (this.scrollTimer) window.clearTimeout(this.scrollTimer);
     if (this.bulkScrollResyncTimer) window.clearTimeout(this.bulkScrollResyncTimer);
     if (this.shuffleTimer) window.clearTimeout(this.shuffleTimer);
+    if (this.gestureCanvasTimer) window.clearTimeout(this.gestureCanvasTimer);
     this.scrollCleanup?.();
     this.settleGen += 1;
     this.settleInFlight = false;
@@ -195,9 +203,72 @@ export class TicketCatalogController {
     this.host.domHost.replaceChildren();
     this.dom = new DomPool(this.host.domHost, poolSize);
     this.canvas = new CanvasPool(this.host.canvasHost);
+    this.dom.setMotionHooks({
+      onMotionEnd: () => {
+        if (this.gestureCanvasSuspended) void this.finishGestureCanvasRestore();
+      },
+    });
     this.dom.mount();
     this.canvas.mount();
     this.poolSize = poolSize;
+  }
+
+  /** Drop tile canvases so DOM WAAPI can use the GPU compositor (Safari iOS). */
+  private beginGestureCanvasSuspend(): void {
+    if (!this.canvasReady || !this.canvas) return;
+    if (this.gestureCanvasTimer) window.clearTimeout(this.gestureCanvasTimer);
+    this.gestureCanvasSuspended = true;
+    this.canvas.clear();
+  }
+
+  private scheduleGestureCanvasRestore(ms: number): void {
+    if (this.gestureCanvasTimer) window.clearTimeout(this.gestureCanvasTimer);
+    this.gestureCanvasTimer = window.setTimeout(() => {
+      this.gestureCanvasTimer = 0;
+      void this.finishGestureCanvasRestore();
+    }, Math.max(0, ms));
+  }
+
+  private async finishGestureCanvasRestore(): Promise<void> {
+    if (this.gestureCanvasTimer) {
+      window.clearTimeout(this.gestureCanvasTimer);
+      this.gestureCanvasTimer = 0;
+    }
+    if (!this.gestureCanvasSuspended || !this.canvasReady || !this.canvas) return;
+    this.gestureCanvasSuspended = false;
+    this.canvas.pause();
+    this.syncCanvas();
+    await this.canvas.resume();
+  }
+
+  private cancelGestureCanvasForScroll(): void {
+    if (!this.gestureCanvasSuspended) return;
+    this.dom?.cancelAllMotion();
+    void this.finishGestureCanvasRestore();
+  }
+
+  private scheduleShuffleFlip(
+    from: ReadonlyMap<string, { x: number; y: number }>,
+    band: readonly TicketSlot[],
+    targets: ReadonlyMap<string, { x: number; y: number }>,
+  ): void {
+    const scrollTop = this.host.scroll.scrollTop;
+    const viewH = this.host.scroll.clientHeight;
+    const margin = getActiveLayout().cardHeight;
+    const yMin = scrollTop - margin;
+    const yMax = scrollTop + viewH + margin;
+    const clampY = (pos: { x: number; y: number }) => ({
+      x: pos.x,
+      y: Math.max(yMin, Math.min(yMax, pos.y)),
+    });
+    const visFrom = new Map([...from].map(([id, pos]) => [id, clampY(pos)] as const));
+    const visTargets = new Map(
+      [...targets].map(([id, pos]) => [id, clampY(pos)] as const),
+    );
+
+    requestAnimationFrame(() => {
+      this.dom?.playMoves(visFrom, band, this.shuffleMs, visTargets);
+    });
   }
 
   private resolvePoolSize(): number {
@@ -512,19 +583,13 @@ export class TicketCatalogController {
   }
 
   private async warmLayoutBitmaps(host: HTMLElement, layout: CatalogLayout): Promise<void> {
-    const prev = getActiveLayout();
-    const prevModel = getLiveCellBoxModel();
     this.canvas?.pause();
-    setActiveLayout(layout);
     const model = resolveLiveCellBoxModel(layout, activeDpr());
-    setLiveCellBoxModel(model);
     applyTicketCssVars(host, layout.metrics);
     applyCellBoxCssVars(host, model, layout.metrics);
     try {
       await warmCatalogAtlasForPrewarm(layout);
     } finally {
-      setActiveLayout(prev);
-      if (prevModel) setLiveCellBoxModel(prevModel);
       this.syncCellBoxCssVarsOnHosts();
       this.canvas?.resume();
     }
@@ -630,6 +695,7 @@ export class TicketCatalogController {
       this.settleGen += 1;
       this.settleInFlight = false;
     }
+    this.cancelGestureCanvasForScroll();
     if (this.scrollMotionActive) return;
     this.scrollMotionActive = true;
     if (this.canvasReady) this.canvas?.pause();
@@ -882,9 +948,22 @@ export class TicketCatalogController {
       nextRound >= DRAW_ROUND_COUNT
         ? new Set(this.tickets.map((t) => t.id))
         : new Set(hits.map((h) => h.id));
+    const bound = this.dom?.boundIds() ?? new Set<string>();
+    const domGesture = hits.some((h) => bound.has(h.id));
+    let gestureMs = 0;
+    for (const hit of hits) {
+      if (bound.has(hit.id)) {
+        gestureMs = Math.max(gestureMs, drawGestureTotalMs(hit.kind));
+      }
+    }
     requestAnimationFrame(() => {
-      this.dom?.playDraws(hits);
-      this.canvas?.refreshForTicketIds(changedIds);
+      if (domGesture && this.canvasReady) {
+        this.beginGestureCanvasSuspend();
+        this.dom?.playDraws(hits);
+        this.scheduleGestureCanvasRestore(gestureMs + 50);
+      } else {
+        this.canvas?.refreshForTicketIds(changedIds);
+      }
     });
     if (this.shuffleTimer) window.clearTimeout(this.shuffleTimer);
     const delay = Math.max(shuffleDelayMs(hits, this.tickets), takeGestureDelay());
@@ -894,9 +973,18 @@ export class TicketCatalogController {
       const sorted = sortTickets(this.tickets);
       const same = sorted.every((ticket, index) => ticket === this.tickets[index]);
       if (!same) {
+        const from = this.prevSlots;
         this.tickets = sorted;
-        this.applyLayout({ syncDomBand: true, syncCanvasCatalog: true });
-        this.onTicketsChanged([]);
+        if (this.canvasReady) this.beginGestureCanvasSuspend();
+        this.applyLayout({ syncDomBand: false, syncCanvasCatalog: false });
+        const band = this.bandForScroll(this.host.scroll.scrollTop).dom;
+        const targets = new Map(
+          this.slots.map((slot) => [slot.id, { x: slot.x, y: slot.y }]),
+        );
+        this.dom?.rebindForShuffle(band, this.ticketsById, from);
+        this.prevSlots = new Map(this.slots.map((slot) => [slot.id, { x: slot.x, y: slot.y }]));
+        this.scheduleShuffleFlip(from, band, targets);
+        this.scheduleGestureCanvasRestore(this.shuffleMs + 50);
       }
     }, delay);
     this.updateStats();
