@@ -4,7 +4,7 @@
 export const DOM_POOL_SIZE = 80;
 
 /** Live DOM cards on mobile — fewer compositor layers; canvas covers the rest. */
-export const DOM_POOL_SIZE_MOBILE = 40;
+export const DOM_POOL_SIZE_MOBILE = 28;
 
 /** Hard cap for the catalog add button on `/`. */
 export const MAX_TICKETS = 1000;

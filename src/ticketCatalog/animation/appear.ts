@@ -3,10 +3,10 @@
  * `buildAppearKeyframes`. Adds smaller than 25 play it on the last 12 cards,
  * then the catalog smooth-scrolls to the bottom. 25 or more only scroll.
  *
- * Cards are absolutely positioned; each keyframe uses `translate3d` + `scale`
- * in one `transform` (standalone `translate` does not composite on Safari).
+ * Keyframes are the game's: slot on `translate`, size on `scale` (centre origin).
  */
 import type { TicketCard } from "../dom/ticketCardElement";
+import { EASE_IN_OUT_CUBIC, EASE_OUT_CUBIC } from "./drawPhase";
 
 export const APPEAR_MS = 310;
 export const APPEAR_MAX_TICKETS = 25;
@@ -17,8 +17,6 @@ const APPEAR_FADE_MS = 80;
 const APPEAR_OVERSHOOT_GAP_PX = 12;
 const DIGIT_ADVANCE_EM = 0.55;
 const TICKET_CELL_COUNT = 6;
-const EASE_OUT_CUBIC = "cubic-bezier(0.33, 1, 0.68, 1)";
-const EASE_IN_OUT_CUBIC = "cubic-bezier(0.65, 0, 0.35, 1)";
 
 type AppearScales = { start: number; overshoot: number };
 
@@ -55,37 +53,27 @@ function resolveAppearScaleAt(progress: number, scales: AppearScales): number {
   return lerp(scales.overshoot, 1, easeOutCubic(settle));
 }
 
-function appearTransform(x: number, y: number, scale: number): string {
-  return `translate3d(${x}px, ${y}px, 0) scale(${scale})`;
-}
-
-/** Fortunamania `buildAppearKeyframes` — slot offset in `transform` (Safari ignores standalone `translate`). */
+/** Fortunamania `buildAppearKeyframes`: oversized → undershoot → rest, eased per segment. */
 function buildAppearKeyframes(scales: AppearScales, x: number, y: number): Keyframe[] {
   const fadeAt = APPEAR_FADE_MS / APPEAR_MS;
+  const at = `${x}px ${y}px`;
   return [
+    { translate: at, scale: String(resolveAppearScaleAt(0, scales)), opacity: 0, offset: 0 },
     {
-      transform: appearTransform(x, y, resolveAppearScaleAt(0, scales)),
-      opacity: 0,
-      offset: 0,
-    },
-    {
-      transform: appearTransform(x, y, resolveAppearScaleAt(Math.min(1, fadeAt), scales)),
+      translate: at,
+      scale: String(resolveAppearScaleAt(Math.min(1, fadeAt), scales)),
       opacity: 1,
       offset: fadeAt,
       easing: EASE_OUT_CUBIC,
     },
     {
-      transform: appearTransform(x, y, resolveAppearScaleAt(APPEAR_OVERSHOOT_AT, scales)),
+      translate: at,
+      scale: String(resolveAppearScaleAt(APPEAR_OVERSHOOT_AT, scales)),
       opacity: 1,
       offset: APPEAR_OVERSHOOT_AT,
       easing: EASE_OUT_CUBIC,
     },
-    {
-      transform: appearTransform(x, y, 1),
-      opacity: 1,
-      offset: 1,
-      easing: EASE_IN_OUT_CUBIC,
-    },
+    { translate: at, scale: "1", opacity: 1, offset: 1, easing: EASE_IN_OUT_CUBIC },
   ];
 }
 
@@ -116,32 +104,22 @@ export function playTicketAppear(
   }
 
   const el = card.dom;
-  // Cancel prior motion without an unconditional getAnimations flush.
-  card.cancelMotion();
-  const token = card.beginMotion();
   el.classList.add("ticketCard_appear");
   el.style.zIndex = "3";
-  const anim = el.animate(buildAppearKeyframes(scales, x, y), {
+  const anim = card.startMove(buildAppearKeyframes(scales, x, y), {
     duration: APPEAR_MS,
     easing: "linear",
     fill: "forwards",
   });
-  const cleanupAppearStyles = () => {
+  const settle = () => {
+    anim.cancel();
+    card.endMove(anim);
     el.classList.remove("ticketCard_appear");
     el.style.removeProperty("z-index");
     el.style.removeProperty("opacity");
+    el.style.removeProperty("scale");
+    card.snapTo(x, y);
+    onSettled?.();
   };
-  void anim.finished.then(
-    () => {
-      anim.cancel();
-      cleanupAppearStyles();
-      card.endMotion(token);
-      onSettled?.();
-    },
-    () => {
-      cleanupAppearStyles();
-      card.endMotion(token);
-      onSettled?.();
-    },
-  );
+  void anim.finished.then(settle, settle);
 }

@@ -7,6 +7,8 @@ export function styleCompareTicketDom(dom: HTMLElement): void {
   dom.style.top = "0";
   dom.style.margin = "0";
   dom.style.transform = "none";
+  dom.style.translate = "none";
+  dom.style.scale = "none";
 }
 
 /** Whole-pixel document origin + DPR remainder transform (compare stack contract). */

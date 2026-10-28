@@ -18,7 +18,7 @@ import { isWinTicket, type Ticket } from "../../model/tickets";
  * ticket origin. Cache keyed by (text, color, cardWidth, layout, dpr, font).
  */
 
-const ID_VERSION = "id-v13-edgeX";
+const ID_VERSION = "id-v15-fm-css";
 /** Bust old header bitmaps while proving edge X lock (same as SKIP_BADGE_IDB). */
 const SKIP_ID_IDB = true;
 

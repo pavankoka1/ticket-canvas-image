@@ -276,6 +276,8 @@ function prepareRasterCloneBox(
   clone.style.right = "auto";
   clone.style.bottom = "auto";
   clone.style.transform = "none";
+  clone.style.translate = "none";
+  clone.style.scale = "none";
   clone.style.margin = "0";
   clone.style.width = `${rect.width}px`;
   clone.style.height = `${rect.height}px`;

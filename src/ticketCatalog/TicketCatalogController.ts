@@ -18,16 +18,11 @@ import {
   catalogLayoutCacheKey,
   catalogLayoutIsLandscape,
   getActiveLayout,
-  readCatalogCardHeight,
   resolveCatalogLayout,
   setActiveLayout,
   type CatalogLayout,
 } from "./layout/catalogLayout";
-import {
-  animateRemovedTickets,
-  drawGestureTotalMs,
-  takeGestureDelay,
-} from "./animation/catalogAnimations";
+import { resolveShufflePlan } from "./animation/drawPhase";
 import { resolveLiveCellBoxModel } from "./canvas/atlas/cellAtlas";
 import { ensureTicketFontsForLayout } from "./layout/ticketFont";
 import {
@@ -43,19 +38,19 @@ import {
   createTickets,
   DRAW_ROUND_COUNT,
   DRAW_ROUNDS,
+  drawGestureMs,
   finishRound,
   pickDrawBall,
-  shuffleDelayMs,
   sortTickets,
   type Ticket,
   type TicketSlot,
 } from "./model/tickets";
 import {
-  applyTicketCssVars,
-  clearTicketCssVarsInline,
-  readTicketMetricsFromCss,
-  resolvePresetFromViewport,
-} from "./model/ticketPresets";
+  snapCatalogLaneToDeviceGrid,
+  snapScrollTopToDeviceGrid,
+} from "./layout/catalogOriginSnap";
+import { applyTicketCssVars, resolveTicketMetrics } from "./model/ticketPresets";
+import { resolveTicketSparklePlan } from "./dom/ticketSparkles";
 import type { ToolbarRefs } from "./buildToolbar";
 
 const RESIZE_CANVAS_SETTLE_MS = 300;
@@ -97,9 +92,8 @@ export class TicketCatalogController {
 
   private freshIds = new Set<string>();
   private knownIds = new Set<string>();
-  private prevSlots = new Map<string, { x: number; y: number }>();
-  private shuffleMs = 400;
   private shuffleTimer = 0;
+  private roundEndTimer = 0;
   private scrollTimer = 0;
   private resizeCanvasTimer = 0;
   private warmTimer = 0;
@@ -121,6 +115,12 @@ export class TicketCatalogController {
   /** Canvas cleared for DOM WAAPI — rebuild async after gesture or on scroll cancel. */
   private gestureCanvasSuspended = false;
   private gestureCanvasTimer = 0;
+  private orientationTimer = 0;
+  /** DomPool motion batches in flight (draw, FLIP, appear). */
+  private domMotions = 0;
+  private overflowingStart: boolean | null = null;
+  private landscapePrewarmArmed = false;
+  private landscapePrewarmScheduled = false;
 
   constructor(host: TicketCatalogControllerHost) {
     this.host = host;
@@ -155,7 +155,9 @@ export class TicketCatalogController {
     if (this.scrollTimer) window.clearTimeout(this.scrollTimer);
     if (this.bulkScrollResyncTimer) window.clearTimeout(this.bulkScrollResyncTimer);
     if (this.shuffleTimer) window.clearTimeout(this.shuffleTimer);
+    if (this.roundEndTimer) window.clearTimeout(this.roundEndTimer);
     if (this.gestureCanvasTimer) window.clearTimeout(this.gestureCanvasTimer);
+    if (this.orientationTimer) window.clearTimeout(this.orientationTimer);
     this.scrollCleanup?.();
     this.settleGen += 1;
     this.settleInFlight = false;
@@ -203,8 +205,13 @@ export class TicketCatalogController {
     this.host.domHost.replaceChildren();
     this.dom = new DomPool(this.host.domHost, poolSize);
     this.canvas = new CanvasPool(this.host.canvasHost);
+    this.domMotions = 0;
     this.dom.setMotionHooks({
+      onMotionStart: () => {
+        this.domMotions += 1;
+      },
       onMotionEnd: () => {
+        this.domMotions = Math.max(0, this.domMotions - 1);
         if (this.gestureCanvasSuspended) void this.finishGestureCanvasRestore();
       },
     });
@@ -214,11 +221,13 @@ export class TicketCatalogController {
   }
 
   /** Drop tile canvases so DOM WAAPI can use the GPU compositor (Safari iOS). */
-  private beginGestureCanvasSuspend(): void {
+  private beginGestureCanvasSuspend(clearTiles = true): void {
     if (!this.canvasReady || !this.canvas) return;
     if (this.gestureCanvasTimer) window.clearTimeout(this.gestureCanvasTimer);
     this.gestureCanvasSuspended = true;
-    this.canvas.clear();
+    this.hideCanvas();
+    if (clearTiles) this.canvas.clear();
+    else this.canvas.pause();
   }
 
   private scheduleGestureCanvasRestore(ms: number): void {
@@ -229,7 +238,9 @@ export class TicketCatalogController {
     }, Math.max(0, ms));
   }
 
-  private async finishGestureCanvasRestore(): Promise<void> {
+  private async finishGestureCanvasRestore(force = false): Promise<void> {
+    // A draw that settles after its shuffle started must not repaint tiles mid-FLIP.
+    if (!force && this.domMotions > 0) return;
     if (this.gestureCanvasTimer) {
       window.clearTimeout(this.gestureCanvasTimer);
       this.gestureCanvasTimer = 0;
@@ -238,37 +249,17 @@ export class TicketCatalogController {
     this.gestureCanvasSuspended = false;
     this.canvas.pause();
     this.syncCanvas();
+    const scrollTop = this.host.scroll.scrollTop;
+    const viewH = this.host.scroll.clientHeight;
     await this.canvas.resume();
+    this.canvas.flushDirtyTilesInViewportSync(scrollTop, viewH);
+    this.revealCanvas();
   }
 
   private cancelGestureCanvasForScroll(): void {
     if (!this.gestureCanvasSuspended) return;
     this.dom?.cancelAllMotion();
-    void this.finishGestureCanvasRestore();
-  }
-
-  private scheduleShuffleFlip(
-    from: ReadonlyMap<string, { x: number; y: number }>,
-    band: readonly TicketSlot[],
-    targets: ReadonlyMap<string, { x: number; y: number }>,
-  ): void {
-    const scrollTop = this.host.scroll.scrollTop;
-    const viewH = this.host.scroll.clientHeight;
-    const margin = getActiveLayout().cardHeight;
-    const yMin = scrollTop - margin;
-    const yMax = scrollTop + viewH + margin;
-    const clampY = (pos: { x: number; y: number }) => ({
-      x: pos.x,
-      y: Math.max(yMin, Math.min(yMax, pos.y)),
-    });
-    const visFrom = new Map([...from].map(([id, pos]) => [id, clampY(pos)] as const));
-    const visTargets = new Map(
-      [...targets].map(([id, pos]) => [id, clampY(pos)] as const),
-    );
-
-    requestAnimationFrame(() => {
-      this.dom?.playMoves(visFrom, band, this.shuffleMs, visTargets);
-    });
+    void this.finishGestureCanvasRestore(true);
   }
 
   private resolvePoolSize(): number {
@@ -281,12 +272,7 @@ export class TicketCatalogController {
   }
 
   private readMetrics() {
-    clearTicketCssVarsInline(this.host.scroll);
-    const isLandscape = this.catalogAspectLandscape();
-    return readTicketMetricsFromCss(this.host.scroll, undefined, {
-      catalogWidth: window.innerWidth,
-      catalogLandscape: isLandscape,
-    });
+    return resolveTicketMetrics(window.innerWidth, window.innerHeight);
   }
 
   private resolveLayout(): CatalogLayout {
@@ -306,8 +292,6 @@ export class TicketCatalogController {
         ? observedInlineSize
         : ticketBox.clientWidth;
     this.availableWidth = Math.max(0, Math.floor(w));
-    const cardHeight = readCatalogCardHeight(this.host.scroll);
-    this.host.scroll.style.setProperty("--catalog-card-height", `${cardHeight}px`);
   }
 
   /** ResizeObserver — apply layout in the same frame (avoid one frame of stale card width). */
@@ -332,7 +316,7 @@ export class TicketCatalogController {
       scrollTop,
       this.clientHeight,
       ROW_BUFFER,
-      this.poolSize,
+      this.dom?.size ?? this.poolSize,
     );
   }
 
@@ -412,6 +396,7 @@ export class TicketCatalogController {
     const model = resolveLiveCellBoxModel(layout);
     setLiveCellBoxModel(model);
     applyCellBoxCssVars(this.host.root, model, layout.metrics);
+    applyTicketCssVars(this.host.scroll, layout.metrics);
     applyCellBoxCssVars(this.host.scroll, model, layout.metrics);
     applyTicketCssVars(this.host.atlasHost, layout.metrics);
     applyCellBoxCssVars(this.host.atlasHost, model, layout.metrics);
@@ -426,6 +411,8 @@ export class TicketCatalogController {
     this.host.content.style.boxSizing = "content-box";
     this.host.content.style.height = count > 0 && height > 0 ? `${height}px` : "";
     this.host.content.style.minHeight = "";
+
+    snapCatalogLaneToDeviceGrid(this.host.content);
 
     if (layoutChanged) {
       this.host.domHost.style.visibility = "hidden";
@@ -480,6 +467,18 @@ export class TicketCatalogController {
     this.ticketsById = new Map(this.tickets.map((t) => [t.id, t]));
   }
 
+  /** Sort / reorder only — no preset or pool geometry churn. */
+  private applySlotsAfterReorder(): void {
+    this.rebuildSlots();
+    const layout = getActiveLayout();
+    const height = contentHeight(this.tickets.length, layout);
+    const count = this.tickets.length;
+    const bandW = contentWidth(layout);
+    this.host.content.style.width = bandW > 0 ? `${bandW}px` : "";
+    this.host.content.style.height = count > 0 && height > 0 ? `${height}px` : "";
+    snapCatalogLaneToDeviceGrid(this.host.content);
+  }
+
   private scheduleCanvasAfterResize(forceRebuild = false): void {
     if (forceRebuild) this.resizeCanvasForcePending = true;
     if (this.resizeCanvasTimer) window.clearTimeout(this.resizeCanvasTimer);
@@ -523,10 +522,10 @@ export class TicketCatalogController {
       try {
         await ensureTicketFontsForLayout(layoutNow.metrics);
         if (gen !== this.atlasGen) return;
-        if (catalogLayoutCacheKey(getActiveLayout()) !== warmKey) return;
+        if (catalogLayoutCacheKey(layoutNow) !== warmKey) return;
         await ensureCatalogSvgAtlasWarm(layoutNow, warmKey);
         if (gen !== this.atlasGen) return;
-        if (catalogLayoutCacheKey(getActiveLayout()) !== warmKey) return;
+        if (catalogLayoutCacheKey(layoutNow) !== warmKey) return;
         prewarmCatalogSvgPaintJit(layoutNow);
         this.canvasReady = true;
         this.prevPaintLayoutKey = catalogLayoutCacheKey(layoutNow);
@@ -537,7 +536,7 @@ export class TicketCatalogController {
         this.syncCanvas();
         this.revealCanvas();
         this.stampBandFingerprintAtRest();
-        this.scheduleLandscapePrewarm();
+        this.armLandscapePrewarm();
         this.updateStats();
       } catch (err) {
         console.error("[catalog-warm] failed for layout", layoutNow.metrics.id, err);
@@ -545,33 +544,35 @@ export class TicketCatalogController {
     })();
   }
 
+  /** Landscape atlas prewarm — first rotation or idle, not immediately after portrait warm. */
+  private armLandscapePrewarm(): void {
+    if (this.landscapePrewarmArmed) return;
+    this.landscapePrewarmArmed = true;
+    const run = () => this.scheduleLandscapePrewarm();
+    window.addEventListener("orientationchange", run, { once: true });
+    if (window.requestIdleCallback) {
+      window.requestIdleCallback(run, { timeout: 5000 });
+    } else {
+      window.setTimeout(run, 5000);
+    }
+  }
+
   private scheduleLandscapePrewarm(): void {
+    if (this.landscapePrewarmScheduled) return;
+    this.landscapePrewarmScheduled = true;
     const host = this.host.prewarmHost;
     if (!host || window.innerWidth > window.innerHeight) return;
     const run = () => {
       const active = getActiveLayout();
-      const w = window.innerHeight;
-      const h = window.innerWidth;
-      const metrics = resolvePresetFromViewport(w, h);
-      if (metrics.id !== active.metrics.id) return;
-      const gap = 4;
-      const cols = metrics.id.startsWith("mobile") ? 3 : 5;
-      const minW = metrics.id.startsWith("mobile") ? 150 : 177;
-      const columns = Math.max(1, Math.min(cols, Math.floor((w + gap) / (minW + gap))));
-      const cardWidth = Math.floor((w - (columns - 1) * gap) / columns);
-      const next = resolveCatalogLayout(
-        metrics.id.startsWith("mobile"),
-        true,
-        cardWidth * columns + (columns - 1) * gap,
-        metrics,
-      );
-      const current = getActiveLayout();
-      if (
-        next.metrics.id === current.metrics.id &&
-        next.cardWidth === current.cardWidth
-      ) {
-        return;
-      }
+      if (!active.isMobile) return;
+      // Rotated layout viewport → GameGrid landscape band (518, or 458 compressed, minus buttons).
+      const vw = window.innerHeight;
+      const vh = window.innerWidth;
+      const compressed = vh < 320 || vw < 360;
+      const bandWidth = Math.floor(Math.min(compressed ? 458 : 518, vw - (compressed ? 104 : 112)));
+      const metrics = resolveTicketMetrics(vw, vh);
+      const next = resolveCatalogLayout(true, true, bandWidth, metrics);
+      if (catalogLayoutCacheKey(next) === catalogLayoutCacheKey(active)) return;
       void this.warmLayoutBitmaps(host, next);
     };
     const deferMs = 2500;
@@ -583,15 +584,13 @@ export class TicketCatalogController {
   }
 
   private async warmLayoutBitmaps(host: HTMLElement, layout: CatalogLayout): Promise<void> {
-    this.canvas?.pause();
     const model = resolveLiveCellBoxModel(layout, activeDpr());
     applyTicketCssVars(host, layout.metrics);
     applyCellBoxCssVars(host, model, layout.metrics);
     try {
       await warmCatalogAtlasForPrewarm(layout);
-    } finally {
-      this.syncCellBoxCssVarsOnHosts();
-      this.canvas?.resume();
+    } catch (err) {
+      console.warn("[catalog-prewarm] optional layout warm failed", layout.metrics.id, err);
     }
   }
 
@@ -622,7 +621,9 @@ export class TicketCatalogController {
   private settleBandAtRest(): void {
     const gen = ++this.settleGen;
     this.settleInFlight = true;
-    const { dom } = this.bandForScroll(this.host.scroll.scrollTop);
+    const scrollTop = this.host.scroll.scrollTop;
+    const viewH = this.host.scroll.clientHeight;
+    const { dom } = this.bandForScroll(scrollTop);
     const fp = this.bandFingerprint(dom);
     const bandChanged = fp !== this.lastBandFingerprint;
     const ids = new Set(dom.map((s) => s.id));
@@ -641,7 +642,7 @@ export class TicketCatalogController {
         this.flushDomHideQueue();
         return;
       }
-      void canvas.resumeWithBand(ids).then(() => {
+      void canvas.resumeWithBand(ids, { scrollTop, viewH }).then(() => {
         if (gen !== this.settleGen) return;
         this.settleInFlight = false;
         this.flushDomHideQueue();
@@ -703,11 +704,8 @@ export class TicketCatalogController {
 
   /** DOM band + canvas skip holes — only after scroll motion settles (300ms). */
   private onScrollSettled(): void {
-    const container = this.host.scroll;
-    container.classList.toggle(
-      "ticketCatalog_isOverflowingStart",
-      container.scrollTop > SCROLL_TOP_EPSILON_PX,
-    );
+    snapScrollTopToDeviceGrid(this.host.scroll);
+    this.setOverflowingStart(this.host.scroll.scrollTop > SCROLL_TOP_EPSILON_PX);
     this.settleBandAtRest();
   }
 
@@ -724,18 +722,22 @@ export class TicketCatalogController {
   private bindScroll(): void {
     const container = this.host.scroll;
     let legacySettleTimer = 0 as number;
+    let maskRaf = 0;
 
-    container.classList.toggle(
-      "ticketCatalog_isOverflowingStart",
-      container.scrollTop > SCROLL_TOP_EPSILON_PX,
-    );
+    this.setOverflowingStart(container.scrollTop > SCROLL_TOP_EPSILON_PX);
 
     const onScrollEnd = () => {
       this.scheduleScrollSettledWork();
     };
 
+    // Per-frame work is one scrollTop read and a class flip only when the top fade changes.
     const onScrollWhileMoving = () => {
       this.onScrollWhileMoving();
+      if (maskRaf) return;
+      maskRaf = requestAnimationFrame(() => {
+        maskRaf = 0;
+        this.setOverflowingStart(container.scrollTop > SCROLL_TOP_EPSILON_PX);
+      });
     };
 
     const onScrollLegacy = () => {
@@ -764,35 +766,41 @@ export class TicketCatalogController {
         container.removeEventListener("scroll", onScrollLegacy);
       }
       if (legacySettleTimer) window.clearTimeout(legacySettleTimer);
+      if (maskRaf) cancelAnimationFrame(maskRaf);
       if (this.scrollSettleTimer) window.clearTimeout(this.scrollSettleTimer);
     };
   }
 
-  private smoothScrollToTop(): void {
-    const c = this.host.scroll;
-    if (c.scrollTop <= SCROLL_TOP_EPSILON_PX) return;
-    if (prefersReducedMotion()) {
-      c.scrollTop = 0;
-      return;
-    }
-    c.scrollTo({ top: c.scrollTop, behavior: "auto" });
-    c.scrollTo({ top: 0, behavior: "smooth" });
+  /** Top fade mask (`ticketCatalog_isOverflowingStart`), written only when it flips. */
+  private setOverflowingStart(on: boolean): void {
+    if (on === this.overflowingStart) return;
+    this.overflowingStart = on;
+    this.host.scroll.classList.toggle("ticketCatalog_isOverflowingStart", on);
   }
 
   private bindViewport(): void {
-    const onResize = () => {
+    // Presets key off innerWidth × innerHeight, so a height-only resize can change metrics too.
+    const onViewportChange = () => {
       this.hideCanvas();
+      if (this.orientationTimer) window.clearTimeout(this.orientationTimer);
+      this.orientationTimer = window.setTimeout(() => {
+        this.orientationTimer = 0;
+        this.measureScrollGeometry();
+        this.applyLayout({ syncDomBand: true, syncCanvasCatalog: this.canvasReady });
+      }, RESIZE_CANVAS_SETTLE_MS);
     };
+    const onOrientation = onViewportChange;
 
-    window.addEventListener("resize", onResize);
-    window.addEventListener("orientationchange", onResize);
+    window.addEventListener("resize", onViewportChange);
+    window.addEventListener("orientationchange", onOrientation);
     const mq = window.matchMedia("(orientation: portrait)");
-    mq.addEventListener?.("change", onResize);
+    mq.addEventListener?.("change", onOrientation);
 
     this.resizeCleanup = () => {
-      window.removeEventListener("resize", onResize);
-      window.removeEventListener("orientationchange", onResize);
-      mq.removeEventListener?.("change", onResize);
+      window.removeEventListener("resize", onViewportChange);
+      window.removeEventListener("orientationchange", onOrientation);
+      mq.removeEventListener?.("change", onOrientation);
+      if (this.orientationTimer) window.clearTimeout(this.orientationTimer);
     };
   }
 
@@ -816,7 +824,6 @@ export class TicketCatalogController {
 
   private onTicketsChanged(added: string[]): void {
     if (this.tickets.length === 0) {
-      this.prevSlots = new Map();
       this.canvas?.clear();
       this.syncDom();
       this.updateStats();
@@ -827,10 +834,9 @@ export class TicketCatalogController {
     const animate =
       added.length > 0 && added.length < APPEAR_MAX_TICKETS && !prefersReducedMotion();
     this.freshIds = new Set(animate ? added.slice(-TICKET_ANIMATED_COUNT) : []);
-    const from = this.prevSlots;
+    // Existing cards snap to their reflowed slots (flex append); only new cards animate.
     this.syncDom();
     const bulkScroll = added.length >= APPEAR_MAX_TICKETS;
-    this.prevSlots = new Map(this.slots.map((slot) => [slot.id, { x: slot.x, y: slot.y }]));
 
     let scheduleSmoothScroll: (() => void) | undefined;
     if (added.length > 0) {
@@ -860,7 +866,6 @@ export class TicketCatalogController {
     }
 
     requestAnimationFrame(() => {
-      this.dom?.playMoves(from, this.slots, this.shuffleMs);
       if (added.length === 0) return;
       if (this.canvasReady && this.canvas) {
         this.syncCanvas();
@@ -874,7 +879,6 @@ export class TicketCatalogController {
   }
 
   private addCount(count: number): void {
-    this.shuffleMs = 400;
     const room = MAX_TICKETS - this.tickets.length;
     if (room <= 0) return;
     const prevLen = this.tickets.length;
@@ -889,28 +893,24 @@ export class TicketCatalogController {
     this.updateStats();
   }
 
+  /** Fortunamania `reset`: drop every card at once and pin to the top (no fade). */
   private reset(): void {
-    const hadTickets = this.tickets.length > 0;
-    const fadeEls = hadTickets ? this.dom?.boundCardElements() ?? [] : [];
-    const finishReset = () => {
-      this.tickets = [];
-      this.knownIds = new Set();
-      this.freshIds = new Set();
-      if (this.shuffleTimer) window.clearTimeout(this.shuffleTimer);
-      this.drawnBalls = [];
-      this.drawRound = 0;
-      this.lastDraw = "";
-      this.dom?.clearMotion();
-      this.canvas?.clear();
-      this.applyLayout({ syncDomBand: true, syncCanvasCatalog: false });
-      this.smoothScrollToTop();
-      this.updateStats();
-    };
-    if (fadeEls.length > 0) {
-      animateRemovedTickets(fadeEls, finishReset);
-      return;
-    }
-    finishReset();
+    this.tickets = [];
+    this.knownIds = new Set();
+    this.freshIds = new Set();
+    if (this.shuffleTimer) window.clearTimeout(this.shuffleTimer);
+    this.shuffleTimer = 0;
+    if (this.roundEndTimer) window.clearTimeout(this.roundEndTimer);
+    this.roundEndTimer = 0;
+    this.drawnBalls = [];
+    this.drawRound = 0;
+    this.lastDraw = "";
+    this.dom?.clearMotion();
+    this.canvas?.clear();
+    this.applyLayout({ syncDomBand: true, syncCanvasCatalog: false });
+    this.host.scroll.scrollTop = 0;
+    this.setOverflowingStart(false);
+    this.updateStats();
   }
 
   private rebuildCanvas(): void {
@@ -936,7 +936,7 @@ export class TicketCatalogController {
     this.drawnBalls.push(ball);
     const nextRound = this.drawRound + 1;
     const hits = applyDrawnBall(this.tickets, ball, spec.multiplier);
-    if (nextRound >= DRAW_ROUND_COUNT) finishRound(this.tickets);
+    const lastBall = nextRound >= DRAW_ROUND_COUNT;
     this.drawRound = nextRound;
     this.lastDraw =
       spec.multiplier > 0
@@ -944,18 +944,14 @@ export class TicketCatalogController {
         : `${ball} · dab · ${hits.length} tickets`;
 
     this.syncDom();
-    const changedIds =
-      nextRound >= DRAW_ROUND_COUNT
-        ? new Set(this.tickets.map((t) => t.id))
-        : new Set(hits.map((h) => h.id));
+    const changedIds = new Set(hits.map((h) => h.id));
     const bound = this.dom?.boundIds() ?? new Set<string>();
     const domGesture = hits.some((h) => bound.has(h.id));
-    let gestureMs = 0;
-    for (const hit of hits) {
-      if (bound.has(hit.id)) {
-        gestureMs = Math.max(gestureMs, drawGestureTotalMs(hit.kind));
-      }
-    }
+    const gestureMs = drawGestureMs(
+      hits,
+      this.ticketsById,
+      resolveTicketSparklePlan(getActiveLayout()).settleMs,
+    );
     requestAnimationFrame(() => {
       if (domGesture && this.canvasReady) {
         this.beginGestureCanvasSuspend();
@@ -966,32 +962,61 @@ export class TicketCatalogController {
       }
     });
     if (this.shuffleTimer) window.clearTimeout(this.shuffleTimer);
-    const delay = Math.max(shuffleDelayMs(hits, this.tickets), takeGestureDelay());
-    this.shuffleTimer = window.setTimeout(() => {
-      this.shuffleTimer = 0;
-      this.shuffleMs = 600;
-      const sorted = sortTickets(this.tickets);
-      const same = sorted.every((ticket, index) => ticket === this.tickets[index]);
-      if (!same) {
-        const from = this.prevSlots;
-        this.tickets = sorted;
-        if (this.canvasReady) this.beginGestureCanvasSuspend();
-        this.applyLayout({ syncDomBand: false, syncCanvasCatalog: false });
-        const band = this.bandForScroll(this.host.scroll.scrollTop).dom;
-        const targets = new Map(
-          this.slots.map((slot) => [slot.id, { x: slot.x, y: slot.y }]),
-        );
-        this.dom?.rebindForShuffle(band, this.ticketsById, from);
-        this.prevSlots = new Map(this.slots.map((slot) => [slot.id, { x: slot.x, y: slot.y }]));
-        this.scheduleShuffleFlip(from, band, targets);
-        this.scheduleGestureCanvasRestore(this.shuffleMs + 50);
-      }
-    }, delay);
+    this.shuffleTimer = 0;
+    let motionEndMs = gestureMs;
+    // Fortunamania sorts only while the catalog is scrolled to the top.
+    if (this.host.scroll.scrollTop <= SCROLL_TOP_EPSILON_PX) {
+      const plan = resolveShufflePlan(gestureMs);
+      motionEndMs = Math.max(motionEndMs, plan.delayMs + plan.durationMs);
+      this.shuffleTimer = window.setTimeout(() => {
+        this.shuffleTimer = 0;
+        this.runShuffle(plan.durationMs);
+      }, plan.delayMs);
+    }
+    // The round result (gold or green) lands after the last ball's gesture, not under it.
+    if (lastBall) {
+      this.roundEndTimer = window.setTimeout(() => {
+        this.roundEndTimer = 0;
+        this.endRound();
+      }, motionEndMs + 100);
+    }
     this.updateStats();
+  }
+
+  /** Sixth ball settled: every ticket that did not pay turns green (no animation). */
+  private endRound(): void {
+    finishRound(this.tickets);
+    this.syncDom();
+    this.canvas?.refreshForTicketIds(new Set(this.tickets.map((t) => t.id)));
+  }
+
+  /** `shuffleAnimationDelayed` body: reorder, rebind the band, FLIP every mover together. */
+  private runShuffle(durationMs: number): void {
+    const sorted = sortTickets(this.tickets);
+    if (sorted.every((ticket, index) => ticket === this.tickets[index])) return;
+    const from = new Map(this.slots.map((slot) => [slot.id, { x: slot.x, y: slot.y }]));
+    this.tickets = sorted;
+    if (this.canvasReady) this.beginGestureCanvasSuspend(false);
+    this.applySlotsAfterReorder();
+    const scroll = this.host.scroll;
+    const band = this.bandForScroll(scroll.scrollTop).dom;
+    const targets = new Map(this.slots.map((slot) => [slot.id, { x: slot.x, y: slot.y }]));
+    this.dom?.rebindForShuffle(band, this.ticketsById, from);
+    if (this.canvasReady && this.canvas) {
+      this.canvas.setCatalog(this.slots, this.ticketsById, this.domSkipIds());
+    }
+    this.dom?.playMoves(from, band, durationMs, targets, {
+      scrollTop: scroll.scrollTop,
+      viewH: scroll.clientHeight,
+      cardHeight: getActiveLayout().cardHeight,
+    });
+    this.scheduleGestureCanvasRestore(durationMs + 50);
   }
 
   private clearDraws(): void {
     if (this.shuffleTimer) window.clearTimeout(this.shuffleTimer);
+    if (this.roundEndTimer) window.clearTimeout(this.roundEndTimer);
+    this.roundEndTimer = 0;
     for (const ticket of this.tickets) {
       ticket.hits = [];
       ticket.multipliers = {};
@@ -1002,7 +1027,6 @@ export class TicketCatalogController {
     this.drawRound = 0;
     this.lastDraw = "";
     this.dom?.clearMotion();
-    this.shuffleMs = 400;
     this.tickets = [...this.tickets].sort((a, b) => Number(a.no) - Number(b.no));
     this.applyLayout({ syncDomBand: true, syncCanvasCatalog: true });
     this.refreshStates();

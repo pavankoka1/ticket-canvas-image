@@ -120,16 +120,20 @@ export async function ensureCatalogSvgAtlasWarm(
   }
   paintPack = pack;
   paintPackLayoutKey = expectedLayoutKey;
+  const commitHostInk = () => catalogLayoutCacheKey(layout) === expectedLayoutKey;
   try {
-    await warmSvgAllHostBadgeBitmaps(layout, dpr);
-    await warmSvgAllMultiplierHosts(layout, dpr);
+    await warmSvgAllHostBadgeBitmaps(layout, dpr, commitHostInk);
+    await warmSvgAllMultiplierHosts(layout, dpr, commitHostInk);
   } catch (err) {
     console.warn("[catalog-svg-warm] host ink optional warm failed; using compare badge atlas", err);
   }
   if (!isCatalogSvgAllHostInkReady()) {
     console.info("[catalog-svg-warm] host ink partial — catalog paint uses compare badge atlas fallback");
   }
-  resetHeaderMeasureState();
+  const measureKey = `${layout.metrics.id}|${layout.cardWidth}`;
+  if (measureLayoutKey !== measureKey) {
+    resetHeaderMeasureState();
+  }
   ensureMeasureCardHost(layout);
   await warmCatalogHeaderDeviceLayouts(layout, dpr, MAX_TICKETS);
 }
@@ -165,12 +169,12 @@ function measureHeaderDeviceLayout(
   return layoutEntry;
 }
 
-const WARM_HEADER_BATCH = 40;
+const WARM_HEADER_BATCH = 100;
 
-function yieldWarm(): Promise<void> {
-  const sched = (globalThis as { scheduler?: { yield?: () => Promise<void> } })
-    .scheduler;
-  if (sched?.yield) return sched.yield();
+function yieldWarmIdle(): Promise<void> {
+  if (typeof requestIdleCallback === "function") {
+    return new Promise((r) => requestIdleCallback(() => r(), { timeout: 200 }));
+  }
   return new Promise((r) => setTimeout(r, 0));
 }
 
@@ -193,7 +197,7 @@ async function warmCatalogHeaderDeviceLayouts(
       win: "",
     };
     measureHeaderDeviceLayout(ticket, layout, "normal", dpr);
-    if (n % WARM_HEADER_BATCH === 0) await yieldWarm();
+    if (n % WARM_HEADER_BATCH === 0) await yieldWarmIdle();
   }
 }
 

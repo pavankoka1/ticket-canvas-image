@@ -1,12 +1,19 @@
 /**
- * Fortunamania ticket size tokens — mirrored from
- * `TicketCatalog.module.css` + `Ticket.module.css`.
+ * Fortunamania ticket tokens — `TicketCatalog.module.css` + `Ticket.module.css`.
+ *
+ * `resolveTicketMetrics` replays that stylesheet's media cascade on the layout
+ * viewport, so the DOM overlay, the canvas atlas and the CSS all read one source.
  */
 
 import { activeDpr, snapCss } from "../layout/cellBoxModel";
 
 export type TicketPresetId =
-  "desktopMedium" | "desktopSmall" | "mobile" | "mobileLarge" | "mobileCompact";
+  | "desktopMedium"
+  | "desktopSmall"
+  | "mobile"
+  | "mobilePhone"
+  | "mobileTablet"
+  | "mobileCompact";
 
 export type TicketMetrics = {
   id: TicketPresetId;
@@ -27,12 +34,23 @@ export type TicketMetrics = {
   dabSize: number;
   /** CSS box-shadow value; empty = none. */
   cardShadow: string;
+  /** `--ticket-cell-margin-top`: moves cells and separators down. */
+  cellMarginTop: number;
+  /** `--ticket-number-drop`: moves cells down, separators stay. */
+  numberDrop: number;
+  /** `--ticket-separator-lift`: moves separators up. */
+  separatorLift: number;
 };
 
-/** ≥1366×500 — default catalog tokens. */
+type Offsets = Pick<TicketMetrics, "cellMarginTop" | "numberDrop" | "separatorLift">;
+
+const NO_OFFSETS: Offsets = { cellMarginTop: 0, numberDrop: 0, separatorLift: 0 };
+const MOBILE_SHADOW = "0 1.721px 0.86px rgb(0 0 0 / 42%)";
+
+/** ≥1366×500 — `.ticketCatalog` base tokens. */
 export const DESKTOP_MEDIUM: TicketMetrics = {
   id: "desktopMedium",
-  label: "Desktop medium (≥1366)",
+  label: "Desktop medium (≥1366×500)",
   cardHeight: 43,
   headerHeight: 17,
   bodyHeight: 26,
@@ -45,78 +63,87 @@ export const DESKTOP_MEDIUM: TicketMetrics = {
   separatorMarginTop: 4.5,
   separatorWidth: 1,
   separatorHeight: 12,
-  radius: 4,
+  radius: 5,
   dabSize: 24,
-  cardShadow: "0 2px 1px rgb(0 0 0 / 42%)",
+  cardShadow: "",
+  ...NO_OFFSETS,
 };
 
-/** 1024–1365 — desktopSmall. */
+/** `--core-media-smaller-than-medium-wide`. */
 export const DESKTOP_SMALL: TicketMetrics = {
+  ...DESKTOP_MEDIUM,
   id: "desktopSmall",
   label: "Desktop small (1024–1365)",
   cardHeight: 39,
   headerHeight: 15,
   bodyHeight: 24,
   bodyPaddingY: 2.75,
-  headerPadX: 4,
   cellHeight: 18.5,
   numberLineHeight: 18.5,
   numberFontSize: 16,
   metaFontSize: 11,
   separatorMarginTop: 3.75,
-  separatorWidth: 1,
   separatorHeight: 11,
-  radius: 5,
   dabSize: 22,
-  cardShadow: "",
 };
 
-/** <1024 — base mobile. */
+/** `--core-media-smaller-than-wide`. */
 export const MOBILE: TicketMetrics = {
+  ...DESKTOP_SMALL,
   id: "mobile",
-  label: "Mobile (<1024)",
+  label: "Mobile (<1024 or <500 tall)",
   cardHeight: 37,
   headerHeight: 15,
   bodyHeight: 22,
   bodyPaddingY: 1.5,
-  headerPadX: 4,
   cellHeight: 19,
   numberLineHeight: 17.5,
   numberFontSize: 15,
   metaFontSize: 10,
   separatorMarginTop: 4.5,
-  separatorWidth: 1,
   separatorHeight: 10,
   radius: 3,
-  dabSize: 20.65116310119629,
-  cardShadow: "0 1.721px 0.86px rgb(0 0 0 / 42%)",
+  dabSize: 21,
+  cardShadow: MOBILE_SHADOW,
 };
 
-/** Portrait mobile ≥620 — large portrait band. */
-export const MOBILE_LARGE: TicketMetrics = {
-  id: "mobileLarge",
-  label: "Mobile large (portrait ≥620)",
-  cardHeight: 43,
-  headerHeight: 17,
-  bodyHeight: 26,
-  bodyPaddingY: 2.5,
+/** Portrait phones 360–499 wide, ≥640 tall (360×640, 375×667, 375×720). */
+export const MOBILE_PHONE: TicketMetrics = {
+  ...MOBILE,
+  id: "mobilePhone",
+  label: "Mobile phone portrait (360–499)",
   headerPadX: 4,
-  cellHeight: 21,
-  numberLineHeight: 21,
-  numberFontSize: 18,
-  metaFontSize: 12,
-  separatorMarginTop: 4.5,
+  separatorMarginTop: 4,
   separatorWidth: 1,
-  separatorHeight: 12,
-  radius: 5,
-  dabSize: 24,
-  cardShadow: "0 1.721px 0.86px rgb(0 0 0 / 42%)",
+  dabSize: 20,
 };
 
-/** ≤499 or compressed landscape. */
+/** `--game-media-tablet-portrait` — 304×67. */
+export const MOBILE_TABLET: TicketMetrics = {
+  ...MOBILE,
+  id: "mobileTablet",
+  label: "Tablet portrait (≥620)",
+  cardHeight: 67,
+  headerHeight: 26,
+  bodyHeight: 41,
+  bodyPaddingY: 4,
+  headerPadX: 6,
+  cellHeight: 33,
+  numberLineHeight: 33,
+  numberFontSize: 28,
+  metaFontSize: 19,
+  separatorMarginTop: 6,
+  separatorWidth: 2,
+  separatorHeight: 19,
+  radius: 6,
+  dabSize: 37,
+};
+
+/** `--core-media-compressed` — height < 320 or width < 360. */
 export const MOBILE_COMPACT: TicketMetrics = {
+  ...MOBILE,
   id: "mobileCompact",
-  label: "Mobile compact (≤499)",
+  label: "Mobile compact (<360 wide or <320 tall)",
   cardHeight: 32,
   headerHeight: 13,
   bodyHeight: 19,
@@ -138,7 +165,8 @@ export const TICKET_PRESETS: readonly TicketMetrics[] = [
   DESKTOP_MEDIUM,
   DESKTOP_SMALL,
   MOBILE,
-  MOBILE_LARGE,
+  MOBILE_PHONE,
+  MOBILE_TABLET,
   MOBILE_COMPACT,
 ];
 
@@ -146,151 +174,94 @@ export function getPreset(id: TicketPresetId): TicketMetrics {
   return TICKET_PRESETS.find((p) => p.id === id) ?? DESKTOP_MEDIUM;
 }
 
-/** Layout viewport — Safari URL bar can make `innerHeight` disagree with CSS media. */
-export function catalogLayoutViewport(
-  width = window.innerWidth,
-  height = window.innerHeight,
-): { width: number; height: number } {
-  const vv = window.visualViewport;
-  if (!vv) return { width, height };
+/** @pp/core media atoms on a layout viewport (CSS orientation: portrait when h ≥ w). */
+function viewportMedia(width: number, height: number) {
+  const portrait = height >= width;
+  const smallerThanWide = width < 1024 || height < 500;
+  const smallerThanMediumWide = width < 1366 || height < 500;
   return {
-    width: Math.round(vv.width) || width,
-    height: Math.round(vv.height) || height,
+    portrait,
+    landscape: !portrait,
+    smallerThanWide,
+    smallerThanMediumWide,
+    largerThanMediumWide: !smallerThanMediumWide,
+    compressed: height < 320 || width < 360,
+    tabletPortrait: portrait && width >= 620 && smallerThanWide,
   };
 }
 
-/**
- * Preset id from `index.css` `.ticketCatalog` media order (later rules override).
- * Do not infer from `--ticket-card-height` alone — 43px is both mobileLarge and desktopMedium.
- */
-export function resolvePresetIdFromCssMedia(): TicketPresetId {
-  const m = (query: string) => window.matchMedia(query).matches;
+/** `.ticketCatalog` preset blocks, in stylesheet order (later rules win). */
+export function resolvePresetId(width: number, height: number): TicketPresetId {
+  const m = viewportMedia(width, height);
   let id: TicketPresetId = "desktopMedium";
-  if (m("(max-width: 1365px), (max-height: 499px)")) id = "desktopSmall";
-  if (m("(max-width: 1023px), (max-height: 499px)")) id = "mobile";
-  if (m("(max-width: 1023px) and (orientation: portrait) and (min-width: 620px)")) {
-    id = "mobileLarge";
-  }
-  if (m("(max-height: 319px), (max-width: 359px)")) id = "mobileCompact";
-  if (
-    m(
-      "(orientation: portrait) and (min-width: 360px) and (max-width: 499px) and (min-height: 640px)",
-    )
-  ) {
-    id = "mobile";
-  }
+  if (m.smallerThanMediumWide) id = "desktopSmall";
+  if (m.smallerThanWide) id = "mobile";
+  if (m.compressed) id = "mobileCompact";
+  if (m.portrait && width >= 360 && width <= 499 && height >= 640) id = "mobilePhone";
+  if (m.tabletPortrait) id = "mobileTablet";
   return id;
 }
 
-/**
- * Catalog layout preset from ticket-box width + aspect (no `max-height` media).
- * Avoids Safari URL-bar height flicker flipping `metrics.id` and cancelling motion.
- */
-export function resolvePresetIdForCatalog(width: number, isLandscape: boolean): TicketPresetId {
-  let id: TicketPresetId = "desktopMedium";
-  if (width <= 1365) id = "desktopSmall";
-  if (width <= 1023) id = "mobile";
-  if (width <= 1023 && !isLandscape && width >= 620) id = "mobileLarge";
-  if (width <= 359) id = "mobileCompact";
-  if (!isLandscape && width >= 360 && width <= 499) id = "mobile";
-  return id;
+/** `--ticket-cell-margin-top`, `--ticket-number-drop`, `--ticket-separator-lift` blocks. */
+function resolveOffsets(width: number, height: number): Offsets {
+  const m = viewportMedia(width, height);
+  let cellMarginTop = 0;
+  if (m.largerThanMediumWide) cellMarginTop = 2;
+  if (m.tabletPortrait) cellMarginTop = 1;
+  const mediumLandscape =
+    m.landscape && m.smallerThanWide && width >= 620 && height >= 375 && height < 500;
+  const largeLandscape = m.landscape && m.smallerThanWide && height >= 500;
+  if (largeLandscape) cellMarginTop = 1;
+  return {
+    cellMarginTop,
+    numberDrop: mediumLandscape ? 1 : 0,
+    separatorLift: m.largerThanMediumWide ? 2 : 0,
+  };
 }
 
-/**
- * Auto-pick like TicketCatalog.module.css media cascade
- * (last matching rule wins conceptually — we evaluate most specific first).
- */
-export function resolvePresetFromViewport(
-  _width = catalogLayoutViewport().width,
-  _height = catalogLayoutViewport().height,
+/** Full token set for a layout viewport (defaults to the window). */
+export function resolveTicketMetrics(
+  width = window.innerWidth,
+  height = window.innerHeight,
 ): TicketMetrics {
-  return getPreset(resolvePresetIdFromCssMedia());
+  return { ...getPreset(resolvePresetId(width, height)), ...resolveOffsets(width, height) };
 }
 
-/** Body band top in CSS px on the active DPR grid (header + pad, snapped once). */
+/** Cell (number box) top in card CSS px, on the active DPR grid. */
 export function snappedTicketNumberTop(m: TicketMetrics, dpr = activeDpr()): number {
-  return snapCss(m.headerHeight + m.bodyPaddingY, dpr);
+  return snapCss(m.headerHeight + m.bodyPaddingY + m.cellMarginTop + m.numberDrop, dpr);
 }
 
-/** `--ticket-body-padding-y` that matches `snappedTicketNumberTop` (header is integer). */
+/** Separator top in card CSS px (Ticket.module.css `::before` top), on the DPR grid. */
+export function snappedTicketSeparatorTop(m: TicketMetrics, dpr = activeDpr()): number {
+  return snapCss(
+    m.headerHeight + m.bodyPaddingY + m.cellMarginTop + m.separatorMarginTop - m.separatorLift,
+    dpr,
+  );
+}
+
+/** Body padding that puts HTML cells on `snappedTicketNumberTop` (offsets folded in). */
 export function snappedTicketBodyPaddingY(m: TicketMetrics, dpr = activeDpr()): number {
   return snappedTicketNumberTop(m, dpr) - m.headerHeight;
 }
 
-/** Apply fortunamania CSS custom properties onto a host. */
-function parseCssPx(cs: CSSStyleDeclaration, prop: string, fallback: number): number {
-  const raw = parseFloat(cs.getPropertyValue(prop));
-  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
-}
-
-/** Read fortunamania ticket tokens from `.ticketCatalog` after media queries apply. */
-export type ReadTicketMetricsOpts = {
-  /** When set, preset id follows width + landscape only (catalog resize stability). */
-  catalogWidth?: number;
-  catalogLandscape?: boolean;
-};
-
-export function readTicketMetricsFromCss(
-  el: HTMLElement,
-  fallback: TicketMetrics = DESKTOP_MEDIUM,
-  opts?: ReadTicketMetricsOpts,
-): TicketMetrics {
-  const cs = getComputedStyle(el);
-  const id =
-    opts?.catalogWidth !== undefined
-      ? resolvePresetIdForCatalog(opts.catalogWidth, opts.catalogLandscape ?? false)
-      : resolvePresetIdFromCssMedia();
-  const base = getPreset(id);
-  const catalogStable = opts?.catalogWidth !== undefined;
-  const cardHeight = catalogStable
-    ? base.cardHeight
-    : parseCssPx(cs, "--ticket-card-height", base.cardHeight);
-  const cardShadowRaw = cs.getPropertyValue("--ticket-card-shadow").trim();
+/** `box-shadow: 0 Ypx Bpx rgb(0 0 0 / A%)` → SVG drop-shadow; null for none. */
+export function parseTicketShadow(
+  shadow: string,
+): { dy: number; stdDeviation: number; opacity: number } | null {
+  const match = /^\s*0(?:px)?\s+([\d.]+)px\s+([\d.]+)px\s+rgb\(0 0 0 \/ ([\d.]+)%\)\s*$/.exec(shadow);
+  if (!match) return null;
   return {
-    id,
-    label: base.label,
-    cardHeight,
-    headerHeight: parseCssPx(cs, "--ticket-header-height", fallback.headerHeight),
-    bodyHeight: parseCssPx(cs, "--ticket-body-height", fallback.bodyHeight),
-    bodyPaddingY: parseCssPx(cs, "--ticket-body-padding-y", fallback.bodyPaddingY),
-    headerPadX: parseCssPx(cs, "--ticket-header-pad-x", fallback.headerPadX),
-    cellHeight: parseCssPx(cs, "--ticket-cell-height", fallback.cellHeight),
-    numberLineHeight: parseCssPx(cs, "--ticket-number-line-height", fallback.numberLineHeight),
-    numberFontSize: parseCssPx(cs, "--ticket-number-font-size", fallback.numberFontSize),
-    metaFontSize: parseCssPx(cs, "--ticket-meta-font-size", fallback.metaFontSize),
-    separatorMarginTop: parseCssPx(cs, "--ticket-separator-margin-top", fallback.separatorMarginTop),
-    separatorWidth: parseCssPx(cs, "--ticket-separator-width", fallback.separatorWidth),
-    separatorHeight: parseCssPx(cs, "--ticket-separator-height", fallback.separatorHeight),
-    radius: parseCssPx(cs, "--ticket-radius", fallback.radius),
-    dabSize: parseCssPx(cs, "--ticket-dab-size", fallback.dabSize),
-    cardShadow:
-      cardShadowRaw && cardShadowRaw !== "none" ? cardShadowRaw : base.cardShadow,
+    dy: Number(match[1]),
+    stdDeviation: Number(match[2]) / 2,
+    opacity: Number(match[3]) / 100,
   };
-}
-
-/** Strip inline ticket tokens so `index.css` / FM media queries on `.ticketCatalog` win. */
-export function clearTicketCssVarsInline(el: HTMLElement): void {
-  const s = el.style;
-  s.removeProperty("--ticket-card-height");
-  s.removeProperty("--ticket-header-height");
-  s.removeProperty("--ticket-body-height");
-  s.removeProperty("--ticket-body-padding-y");
-  s.removeProperty("--ticket-header-pad-x");
-  s.removeProperty("--ticket-number-line-height");
-  s.removeProperty("--ticket-number-font-size");
-  s.removeProperty("--ticket-meta-font-size");
-  s.removeProperty("--ticket-separator-margin-top");
-  s.removeProperty("--ticket-separator-width");
-  s.removeProperty("--ticket-separator-height");
-  s.removeProperty("--ticket-radius");
-  s.removeProperty("--ticket-dab-size");
-  s.removeProperty("--ticket-card-shadow");
-  s.removeProperty("--catalog-gap");
 }
 
 export function applyTicketCssVars(el: HTMLElement, m: TicketMetrics, dpr = activeDpr()): void {
   const s = el.style;
   s.setProperty("--ticket-card-height", `${m.cardHeight}px`);
+  s.setProperty("--catalog-card-height", `${m.cardHeight}px`);
   s.setProperty("--ticket-header-height", `${m.headerHeight}px`);
   s.setProperty("--ticket-body-height", `${m.bodyHeight}px`);
   s.setProperty("--ticket-body-padding-y", `${snappedTicketBodyPaddingY(m, dpr)}px`);
@@ -300,6 +271,10 @@ export function applyTicketCssVars(el: HTMLElement, m: TicketMetrics, dpr = acti
   s.setProperty("--ticket-number-font-size", `${m.numberFontSize}px`);
   s.setProperty("--ticket-meta-font-size", `${m.metaFontSize}px`);
   s.setProperty("--ticket-separator-margin-top", `${m.separatorMarginTop}px`);
+  s.setProperty(
+    "--ticket-separator-top",
+    `${snappedTicketSeparatorTop(m, dpr) - snappedTicketNumberTop(m, dpr)}px`,
+  );
   s.setProperty("--ticket-separator-width", `${m.separatorWidth}px`);
   s.setProperty("--ticket-separator-height", `${m.separatorHeight}px`);
   s.setProperty("--ticket-radius", `${m.radius}px`);

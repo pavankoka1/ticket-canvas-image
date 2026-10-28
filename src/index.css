@@ -114,68 +114,81 @@ button:disabled {
   font: inherit;
 }
 
-/* Fortunamania ticketGrid__ticket — fixed band width/height. */
+/*
+ * Fortunamania GameGrid / TicketGrid (bets open) — band width and height.
+ * Custom media, expanded (no postcss here):
+ *   smaller-than-medium-wide  (width < 1366px), (height < 500px)
+ *   smaller-than-wide         (width < 1024px), (height < 500px)
+ *   larger-than-medium        width >= 620px
+ *   compressed                (height < 320px), (width < 360px)
+ * Ticket tokens are not duplicated here: `applyTicketCssVars` writes them inline from
+ * `ticketPresets` (the TS mirror of TicketCatalog.module.css).
+ */
 .catalogFrame {
+  --ticket-band-height: 231px;
+
   position: relative;
-  /* ticketGrid__ticket — ticket matrix width; gap + scrollbar overhang past this box. */
   overflow: visible;
   align-self: center;
   flex: 0 0 auto;
   width: 1001px;
   max-width: 100%;
-  height: var(--ticket-band-height, 231px);
+  height: var(--ticket-band-height);
   margin-inline: auto;
   background: #0a2421;
   outline: 1px solid #1a3d38;
-
-  --ticket-band-height: 231px;
 }
 
-@media (max-width: 1365px) and (min-width: 1024px) and (min-height: 500px) {
+@media (width < 1366px), (height < 500px) {
   .catalogFrame {
-    width: 901px;
-    height: 211px;
     --ticket-band-height: 211px;
+
+    width: 901px;
   }
 }
 
-@media (max-width: 1023px) and (orientation: landscape) {
+@media (orientation: landscape) and (width < 1024px), (orientation: landscape) and (height < 500px) {
   .catalogFrame {
+    --ticket-band-height: 201px;
+
     width: 518px;
     max-width: calc(100% - 112px);
-    height: 201px;
-    --ticket-band-height: 201px;
   }
 }
 
-@media (max-width: 1023px) and (orientation: landscape) and (max-height: 319px) {
+@media (orientation: landscape) and (height < 320px), (orientation: landscape) and (width < 360px) {
   .catalogFrame {
+    --ticket-band-height: 176px;
+
     width: 458px;
     max-width: calc(100% - 104px);
-    height: 176px;
-    --ticket-band-height: 176px;
   }
 }
 
-@media (max-width: 1023px) and (orientation: portrait) {
+@media (orientation: portrait) and (width < 1024px), (orientation: portrait) and (height < 500px) {
   .catalogFrame {
+    --ticket-band-height: 160px;
+
     width: 100%;
     max-width: 612px;
-    height: 160px;
-    --ticket-band-height: 160px;
   }
 }
 
-@media (max-width: 1023px) and (orientation: portrait) and (min-width: 620px) {
+@media (orientation: portrait) and (width >= 375px) and (width < 620px) and (height >= 720px) {
   .catalogFrame {
-    height: 209px;
+    --ticket-band-height: 119px;
+  }
+}
+
+@media (orientation: portrait) and (width >= 620px) and (width < 1024px),
+  (orientation: portrait) and (width >= 620px) and (height < 500px) {
+  .catalogFrame {
     --ticket-band-height: 209px;
   }
 }
 
-@media (max-width: 1023px) and (orientation: portrait) and (max-height: 319px) {
+@media (orientation: portrait) and (height < 320px), (orientation: portrait) and (width < 360px) {
   .catalogFrame {
-    height: 104px;
     --ticket-band-height: 104px;
   }
 }
@@ -194,21 +207,20 @@ button:disabled {
   overflow: visible;
 }
 
-/* FM TicketCatalog.module.css — gap cascade (later rules win at narrower widths). */
-@media (min-width: 1024px) and (min-height: 500px) {
+@media (width >= 1024px) and (height >= 500px) {
   .ticketCatalogHost {
     --catalog-scrollbar-gap: 4px;
     --catalog-scrollbar-width: 6px;
   }
 }
 
-@media (min-width: 1024px) and (min-height: 500px) and (max-width: 1799px) {
+@media (width >= 1024px) and (width < 1800px) and (height >= 500px) {
   .ticketCatalogHost {
     --catalog-scrollbar-gap: 3.5px;
   }
 }
 
-@media (min-width: 1024px) and (min-height: 500px) and (max-width: 1511px) {
+@media (width >= 1024px) and (width < 1512px) and (height >= 500px) {
   .ticketCatalogHost {
     --catalog-scrollbar-gap: 3px;
   }
@@ -217,22 +229,6 @@ button:disabled {
 .ticketCatalog {
   --catalog-gap: 4px;
   --catalog-spacer-rows: 3;
-  --catalog-card-height: 43px;
-  --ticket-card-height: 43px;
-  --ticket-header-height: 17px;
-  --ticket-body-height: 26px;
-  --ticket-body-padding-y: 2.5px;
-  --ticket-header-pad-x: 4px;
-  --ticket-cell-height: 21px;
-  --ticket-number-line-height: 21px;
-  --ticket-number-font-size: 18px;
-  --ticket-meta-font-size: 12px;
-  --ticket-separator-margin-top: 4.5px;
-  --ticket-separator-width: 1px;
-  --ticket-separator-height: 12px;
-  --ticket-radius: 5px;
-  --ticket-dab-size: 24px;
-  --ticket-card-shadow: none;
 
   position: relative;
   display: block;
@@ -255,18 +251,19 @@ button:disabled {
   -ms-overflow-style: none;
 }
 
+/* GameGrid portrait (bets open) keeps one trailing spacer row. */
+@media (orientation: portrait) and (width < 1024px), (orientation: portrait) and (height < 500px) {
+  .ticketCatalog {
+    --catalog-spacer-rows: 1;
+  }
+}
+
+/* Top fade only. Toggled from a rAF scroll handler, only when it flips. */
 .ticketCatalog_isOverflowingStart {
   mask-image: linear-gradient(transparent, red 4px, red);
 }
 
-/* FM --core-media-larger-than-wide */
-@media (min-width: 1024px) and (min-height: 500px) {
-  .ticketCatalog_isOverflowingStart {
-    mask-image: linear-gradient(transparent, red 8px, red);
-  }
-}
-
-@media (max-width: 1023px), (max-height: 499px) {
+@media (width < 1024px), (height < 500px) {
   .ticketCatalog::-webkit-scrollbar {
     display: none;
     width: 0;
@@ -275,7 +272,7 @@ button:disabled {
 }
 
 /* FM desktop native scrollbar — compositor-driven, no JS thumb. */
-@media (min-width: 1024px) and (min-height: 500px) {
+@media (width >= 1024px) and (height >= 500px) {
   .ticketCatalog {
     /* Scroller wider than catalogFrame so gap + track sit outside the ticket band. */
     width: calc(100% + var(--catalog-scrollbar-gap) + var(--catalog-scrollbar-width));
@@ -283,6 +280,10 @@ button:disabled {
     scrollbar-gutter: stable;
     scrollbar-width: thin;
     scrollbar-color: #ff9301 transparent;
+  }
+
+  .ticketCatalog_isOverflowingStart {
+    mask-image: linear-gradient(transparent, red 8px, red);
   }
 
   @supports selector(.ticketCatalog::-webkit-scrollbar) {
@@ -318,151 +319,6 @@ button:disabled {
       width: 0;
       height: 0;
     }
-  }
-}
-
-/* FM --core-media-larger-than-medium-wide (≥1366×500) */
-@media (min-width: 1366px) and (min-height: 500px) {
-  .ticketCatalog {
-    --ticket-cell-margin-top: 2px;
-  }
-}
-
-/* FM --core-media-smaller-than-medium-wide — desktop small 1024–1365×500+ */
-@media (max-width: 1365px), (max-height: 499px) {
-  .ticketCatalog {
-    --catalog-card-height: 39px;
-    --ticket-card-height: 39px;
-    --ticket-header-height: 15px;
-    --ticket-body-height: 24px;
-    --ticket-body-padding-y: 2.75px;
-    --ticket-cell-height: 18.5px;
-    --ticket-number-line-height: 18.5px;
-    --ticket-number-font-size: 16px;
-    --ticket-meta-font-size: 11px;
-    --ticket-separator-margin-top: 3.75px;
-    --ticket-separator-height: 11px;
-    --ticket-dab-size: 22px;
-  }
-}
-
-/* FM --core-media-smaller-than-wide */
-@media (max-width: 1023px), (max-height: 499px) {
-  .ticketCatalog {
-    --catalog-spacer-rows: 1;
-    --catalog-card-height: 37px;
-    --ticket-card-height: 37px;
-    --ticket-header-height: 15px;
-    --ticket-body-height: 22px;
-    --ticket-body-padding-y: 1.5px;
-    --ticket-cell-height: 19px;
-    --ticket-number-line-height: 17.5px;
-    --ticket-number-font-size: 15px;
-    --ticket-meta-font-size: 10px;
-    --ticket-separator-margin-top: 4.5px;
-    --ticket-separator-height: 10px;
-    --ticket-radius: 3px;
-    --ticket-dab-size: 21px;
-    --ticket-card-shadow: 0 1.721px 0.86px rgb(0 0 0 / 42%);
-  }
-}
-
-/* Large portrait — match GameGrid band (43×5 + gaps). */
-@media (max-width: 1023px) and (orientation: portrait) and (min-width: 620px) {
-  .ticketCatalog {
-    --catalog-card-height: 43px;
-    --ticket-card-height: 43px;
-    --ticket-header-height: 17px;
-    --ticket-body-height: 26px;
-    --ticket-body-padding-y: 2.5px;
-    --ticket-header-pad-x: 4px;
-    --ticket-cell-height: 21px;
-    --ticket-number-line-height: 21px;
-    --ticket-number-font-size: 18px;
-    --ticket-meta-font-size: 12px;
-    --ticket-separator-margin-top: 4.5px;
-    --ticket-separator-width: 1px;
-    --ticket-separator-height: 12px;
-    --ticket-radius: 5px;
-    --ticket-dab-size: 24px;
-    --ticket-card-shadow: 0 1.721px 0.86px rgb(0 0 0 / 42%);
-  }
-}
-
-/* FM --core-media-compressed */
-@media (max-height: 319px), (max-width: 359px) {
-  .ticketCatalog {
-    --catalog-card-height: 32px;
-    --ticket-card-height: 32px;
-    --ticket-header-height: 13px;
-    --ticket-body-height: 19px;
-    --ticket-body-padding-y: 1px;
-    --ticket-header-pad-x: 2px;
-    --ticket-cell-height: 17px;
-    --ticket-number-line-height: 17px;
-    --ticket-number-font-size: 13px;
-    --ticket-meta-font-size: 9px;
-    --ticket-separator-margin-top: 4px;
-    --ticket-separator-width: 1px;
-    --ticket-separator-height: 9px;
-    --ticket-radius: 3px;
-    --ticket-dab-size: 17px;
-    --ticket-card-shadow: 0 1.488px 0.744px rgb(0 0 0 / 42%);
-  }
-}
-
-/* Portrait phones 360×640, 375×667, 375×720 — 37px ticket. */
-@media (orientation: portrait) and (min-width: 360px) and (max-width: 499px) and (min-height: 640px) {
-  .ticketCatalog {
-    --catalog-card-height: 37px;
-    --ticket-card-height: 37px;
-    --ticket-header-height: 15px;
-    --ticket-body-height: 22px;
-    --ticket-body-padding-y: 1.5px;
-    --ticket-header-pad-x: 4px;
-    --ticket-cell-height: 19px;
-    --ticket-number-line-height: 17.5px;
-    --ticket-number-font-size: 15px;
-    --ticket-meta-font-size: 10px;
-    --ticket-separator-margin-top: 4px;
-    --ticket-separator-width: 1px;
-    --ticket-separator-height: 10px;
-    --ticket-radius: 3px;
-    --ticket-dab-size: 20px;
-    --ticket-card-shadow: 0 1.721px 0.86px rgb(0 0 0 / 42%);
-  }
-}
-
-@media (orientation: portrait) and (width: 375px) and (height: 667px),
-  (orientation: portrait) and (width: 375px) and (height: 720px) {
-  .ticketCatalog {
-    --ticket-card-width: 178px;
-  }
-}
-
-@media (max-width: 1023px) and (orientation: landscape), (max-height: 499px) and (orientation: landscape) {
-  .ticketCatalog {
-    --catalog-spacer-rows: 2;
-  }
-}
-
-@media (orientation: landscape) and (width: 1023px) and (height: 667px) {
-  .ticketCatalog {
-    --ticket-cell-margin-top: 1px;
-  }
-}
-
-@media (width: 1024px) and (height: 576px) {
-  .ticketCatalog {
-    --ticket-cell-margin-top: 1px;
-    --ticket-separator-nudge-y: -1px;
-    --ticket-id-offset-y: 1px;
-  }
-}
-
-@media (width: 1366px) and (height: 769px) {
-  .ticketCatalog {
-    --ticket-separator-nudge-y: -2px;
   }
 }
 
@@ -626,20 +482,17 @@ button:disabled {
   margin-left: var(--ticket-separator-width, 1px);
 }
 
+/* Top is relative to the cell: FM `separatorMarginTop − numberDrop − separatorLift`, snapped. */
 .ticketCard__cell:not(:first-child)::before {
   content: "";
   position: absolute;
-  top: var(--ticket-separator-margin-top, 4.5px);
+  top: var(--ticket-separator-top, var(--ticket-separator-margin-top, 4.5px));
   left: calc(-1 * var(--ticket-separator-width, 1px));
   width: var(--ticket-separator-width, 1px);
   height: var(--ticket-separator-height, 12px);
-  border-radius: 2px;
+  border-radius: 1px;
   background: rgb(177 151 151 / 50%);
   pointer-events: none;
-  transform: translate(
-    var(--ticket-sep-nudge-x, 0px),
-    var(--ticket-sep-nudge-y, 0px)
-  );
 }
 
 /* Hit state is semantic only — the dab disc covers the number once it lands. */
@@ -789,9 +642,13 @@ button:disabled {
   overflow: visible;
 }
 
-/* Shine sweep and multiplier sparkles — Fortunamania ticket draw. */
+/*
+ * Shine sweep and multiplier sparkles — Fortunamania ticket draw. The game stacks
+ * badge 1 < shine 2 < sparkles 3; here the svg overlay (chrome + ink + badges, z 2) is
+ * re-appended on every ink refresh, so shine and sparkles sit one step higher.
+ */
 .ticketCard__shine {
-  z-index: 2;
+  z-index: 3;
   position: absolute;
   display: none;
   inset: 0;
@@ -804,6 +661,10 @@ button:disabled {
   position: absolute;
   top: 50%;
   left: 50%;
+  /* Sized in px from resolveTicketShineStyles (diagonal × ratio) before WAAPI. */
+  width: 40%;
+  height: 220%;
+  will-change: transform;
   background: linear-gradient(
     90deg,
     rgb(255 255 255 / 0%) 0%,
@@ -815,19 +676,27 @@ button:disabled {
 }
 
 .ticketCard__sparkles {
-  z-index: 3;
+  z-index: 4;
   position: absolute;
   inset: 0;
   overflow: visible;
   pointer-events: none;
 }
 
+/* Centred on the left/top anchor from `resolveTicketSparklePlan`; WAAPI drives opacity only. */
 .ticketCard__sparkle {
   position: absolute;
+  top: 50%;
   width: calc(var(--ticket-dab-size, 24px) * 1.15);
   height: calc(var(--ticket-dab-size, 24px) * 1.15);
   object-fit: contain;
   opacity: 0;
+  background: radial-gradient(
+    circle,
+    rgb(255 255 255 / 95%) 0%,
+    rgb(255 236 170 / 60%) 35%,
+    rgb(255 255 255 / 0%) 70%
+  );
   transform: translate(-50%, -50%);
   pointer-events: none;
 }

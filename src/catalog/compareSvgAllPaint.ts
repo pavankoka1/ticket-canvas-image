@@ -51,6 +51,7 @@ async function pngDataUrlToDeviceSquare(
 export async function warmSvgAllHostBadgeBitmaps(
   layout: CatalogLayout,
   dpr: number,
+  commitIf?: () => boolean,
 ): Promise<void> {
   const key = `${layout.metrics.id}|${layout.cardWidth}|${dpr}`;
   if (hostBadgeWarmKey === key && hostDiscBitmaps.size === 2) return;
@@ -65,6 +66,7 @@ export async function warmSvgAllHostBadgeBitmaps(
     nextDisc.set(disabled, await pngDataUrlToDeviceSquare(discUrl, sizeDev));
     nextDab.set(disabled, await pngDataUrlToDeviceSquare(dabUrl, sizeDev));
   }
+  if (commitIf && !commitIf()) return;
   hostBadgeWarmKey = key;
   hostDiscBitmaps.clear();
   hostDabBitmaps.clear();
@@ -83,6 +85,7 @@ export function isCatalogSvgAllHostInkReady(): boolean {
 export async function warmSvgAllMultiplierHosts(
   layout: CatalogLayout,
   dpr: number,
+  commitIf?: () => boolean,
 ): Promise<void> {
   const key = `${layout.metrics.id}|${layout.cardWidth}|${dpr}`;
   if (multHostWarmKey === key && multHostCache.size > 0) return;
@@ -90,6 +93,8 @@ export async function warmSvgAllMultiplierHosts(
   await ensureTicketFontsForLayout(layout.metrics);
   const dab = layout.metrics.dabSize;
   const next = new Map<string, MultHostSprite>();
+  type CaptureJob = { cacheKey: string; probe: HTMLDivElement };
+  const jobs: CaptureJob[] = [];
   for (const face of ["normal", "gold", "disabled"] as const) {
     const disabled = face === "disabled";
     const disc = discDataUrl(disabled);
@@ -103,19 +108,25 @@ export async function warmSvgAllMultiplierHosts(
       applyTicketCssVars(probe, layout.metrics);
       probe.append(multiplierHostSvg(String(value), dab, disabled, disc));
       document.body.append(probe);
+      jobs.push({ cacheKey: `${face}|${value}`, probe });
+    }
+  }
+  await Promise.all(
+    jobs.map(async ({ cacheKey, probe }) => {
       try {
         const bitmap = await rasterizeTicketSvg(probe, dpr, 0, layout.metrics);
         if (bitmap.width > 0 && bitmap.height > 0) {
-          next.set(`${face}|${value}`, { bitmap });
+          next.set(cacheKey, { bitmap });
         }
       } catch {
         // Fall back to compare badge atlas at paint time.
       } finally {
         probe.remove();
       }
-    }
-  }
+    }),
+  );
   if (next.size === 0) return;
+  if (commitIf && !commitIf()) return;
   multHostWarmKey = key;
   multHostCache.clear();
   for (const [k, v] of next) multHostCache.set(k, v);
@@ -163,6 +174,7 @@ export function paintSvgAllCompareTicket(
   dpr: number,
   badgeBlit: SvgAllBadgeBlit = "body-band",
   cells?: readonly CellBox[],
+  omitHitBadges = false,
 ): void {
   const m = layout.metrics;
   const pad = Math.round(16 * dpr);
@@ -170,7 +182,7 @@ export function paintSvgAllCompareTicket(
   const bandY = originY + Math.round(m.headerHeight * dpr);
   const bodyTopDev = Math.round(m.headerHeight * dpr);
 
-  for (let i = 0; i < 6; i++) {
+  if (!omitHitBadges) for (let i = 0; i < 6; i++) {
     const mult = ticketCellMultiplier(ticket, i);
     if (!ticket.hits.includes(i) && !mult) continue;
     const badge = pack.badges.get(`${face}|${mult || 1}`);
@@ -237,6 +249,7 @@ export function paintSvgAllCatalogTicketInk(
   dpr: number,
   cells: readonly CellBox[],
 ): void {
+  const hostInkReady = isCatalogSvgAllHostInkReady();
   paintSvgAllCompareTicket(
     ctx,
     ticket,
@@ -251,14 +264,22 @@ export function paintSvgAllCatalogTicketInk(
   );
 
   const m = layout.metrics;
+  const dabDisabled = face === "disabled";
   for (let i = 0; i < 6; i++) {
-    const mult = ticketCellMultiplier(ticket, i);
-    if (!mult || !ticket.hits.includes(i)) continue;
-    const sprite = multHostCache.get(`${face}|${mult}`);
-    if (!multHostBitmapUsable(sprite)) continue;
+    if (!ticket.hits.includes(i)) continue;
     const cell = cells[i];
     if (!cell) continue;
     const host = badgeHostDevice(cell, m.dabSize, dpr);
-    ctx.drawImage(sprite!.bitmap, originX + host.x, originY + host.y, host.w, host.h);
+    const mult = ticketCellMultiplier(ticket, i);
+    if (mult) {
+      const sprite = multHostCache.get(`${face}|${mult}`);
+      if (!multHostBitmapUsable(sprite)) continue;
+      ctx.drawImage(sprite!.bitmap, originX + host.x, originY + host.y, host.w, host.h);
+      continue;
+    }
+    if (!hostInkReady) continue;
+    const dab = hostDabBitmaps.get(dabDisabled);
+    if (!dab) continue;
+    ctx.drawImage(dab, originX + host.x, originY + host.y, host.w, host.h);
   }
 }

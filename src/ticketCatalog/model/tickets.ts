@@ -1,4 +1,5 @@
 import { activeDpr, snapCss } from "../layout/cellBoxModel";
+import { resolveDrawSettleMs, type DrawKind } from "../animation/drawPhase";
 
 export type Ticket = {
   id: string;
@@ -112,7 +113,7 @@ export const DRAW_ROUNDS: readonly { multiplier: number }[] = [
 export type DrawHit = {
   id: string;
   cell: number;
-  kind: "dab" | "win" | "mult";
+  kind: DrawKind;
 };
 
 /**
@@ -145,20 +146,27 @@ export function finishRound(tickets: readonly Ticket[]): void {
   for (const ticket of tickets) refreshTicketFace(ticket, true);
 }
 
+/** Gold face shown on the card (a disabled ticket is green even when it paid). */
+export function showsGoldFace(ticket: Ticket): boolean {
+  return isWinTicket(ticket) && !ticket.disabled;
+}
+
 /**
- * Shuffle waits out the draw gesture, same clock as the catalog:
- * dab dip 600, multiplier dip 650, gold shine 1500.
+ * Longest draw gesture in this batch (`noteDrawGesture` → `takeGestureDelay`) — decides
+ * the shared shuffle delay. `multShineSettleMs` is the layout's sparkle run end.
  */
-export function shuffleDelayMs(hits: readonly DrawHit[], tickets: readonly Ticket[]): number {
-  const byId = new Map(tickets.map((ticket) => [ticket.id, ticket]));
-  let delay = 600;
+export function drawGestureMs(
+  hits: readonly DrawHit[],
+  ticketsById: ReadonlyMap<string, Ticket>,
+  multShineSettleMs: number,
+): number {
+  let ms = 0;
   for (const hit of hits) {
-    const ticket = byId.get(hit.id);
-    const win = ticket ? isWinTicket(ticket) : false;
-    if ((hit.kind === "mult" && win) || hit.kind === "win") return 1500;
-    if (hit.kind === "mult") delay = 650;
+    const ticket = ticketsById.get(hit.id);
+    const gold = ticket ? showsGoldFace(ticket) : false;
+    ms = Math.max(ms, resolveDrawSettleMs(hit.kind, gold, multShineSettleMs));
   }
-  return delay;
+  return ms;
 }
 
 /** Prefer a number that is still open on a visible ticket, so the gesture is on screen. */

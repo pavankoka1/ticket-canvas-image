@@ -53,12 +53,12 @@ export type ComparePaintPack = {
 type Pack = ComparePaintPack;
 
 /** Bump when warm capture or layout/cell geometry semantics change (invalidates IDB sheets). */
-const COMPARE_PACK_SCHEMA = 'v60';
+const COMPARE_PACK_SCHEMA = 'v63-fm-center';
 
 export function comparePackLayoutGeomKey(layout: CatalogLayout, dpr: number): string {
   const model = resolveCellBoxModel(layout, dpr);
   const m = layout.metrics;
-  return `${COMPARE_PACK_SCHEMA}|${m.id}|${layout.cardWidth}|${m.cardHeight}|${m.headerHeight}|${m.bodyHeight}|${dpr}|${model.cellW}x${model.cellH}`;
+  return `${COMPARE_PACK_SCHEMA}|${m.id}|${layout.cardWidth}|${m.cardHeight}|${m.headerHeight}|${m.bodyHeight}|${dpr}|${model.cellW}x${model.cellH}|${m.cellMarginTop}|${m.numberDrop}|${m.separatorLift}|${m.dabSize}|${m.separatorMarginTop}`;
 }
 
 function prefix(layout: CatalogLayout, dpr: number): string {
@@ -720,6 +720,9 @@ function compareParallelWarmWidth(): number {
   return webkit && !chromium ? 1 : 3;
 }
 
+/** Number ink/opaque sheets share one FO capture per batch — must not overlap. */
+const COMPARE_NUMBER_WARM_PARALLEL = 1;
+
 /** Isolated offscreen cards — safe to run up to `width` raster captures at once. */
 async function parallelCaptures<T>(jobs: (() => Promise<T>)[], width = 3): Promise<T[]> {
   const out: T[] = [];
@@ -850,6 +853,7 @@ async function warmPackImpl(
         const batchCard = new TicketCard();
         batchHost.append(batchCard.dom);
         document.body.append(batchHost);
+        configureCompareCaptureHost(batchHost, batchCard, layout, dpr);
         const batchCapture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(batchCard.dom, dpr, m, part);
         try {
           const ticket = sourceTicket(disabled, balls[0]!);
@@ -877,15 +881,18 @@ async function warmPackImpl(
             let ink = measureInkBounds(cellBitmap);
             return { n, cell, cellCrop, ink, cellBitmap };
           });
-          if (entries.some((row) => !row.ink) && usesSvgText()) {
+          const retryMissingInk = async () => {
+            if (!entries.some((row) => !row.ink)) return;
             refreshSvgOverlayInk(batchCard.dom);
             await document.fonts.ready;
-            sheet = await captureInkSheet();
+            const retrySheet = await captureInkSheet();
             for (const row of entries) {
-              if (row.ink) continue;
-              row.cellBitmap = cropFromWarmSheet(sheet, union, row.cellCrop, dpr);
+              row.cellBitmap = cropFromWarmSheet(retrySheet, union, row.cellCrop, dpr);
               row.ink = measureInkBounds(row.cellBitmap);
             }
+          };
+          for (let attempt = 0; attempt < 2 && entries.some((row) => !row.ink); attempt++) {
+            await retryMissingInk();
           }
           const finalized = entries.map(({ n, cellCrop, ink }) => {
             if (!ink) throw new Error(`Compare number ink bounds missing: ${disabled} ${n}`);
@@ -939,6 +946,7 @@ async function warmPackImpl(
         const batchCard = new TicketCard();
         batchHost.append(batchCard.dom);
         document.body.append(batchHost);
+        configureCompareCaptureHost(batchHost, batchCard, layout, dpr);
         const batchCapture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(batchCard.dom, dpr, m, part);
         try {
           const ticket = sourceTicket(disabled, balls[0]!);
@@ -1027,7 +1035,7 @@ async function warmPackImpl(
           ticket.win = '';
           batchCard.bind(ticket, 0, 0, layout);
           forceBadgeFace(batchCard, face);
-          for (let i = 0; i < 6; i++) batchCard.clearCellDigit(i);
+          batchCard.clearCellDigits();
           prepareCompareCard(batchCard, layout, dpr);
           const cellCrops = BADGE_WARM_CELLS.map((cellIndex) =>
             badgeBodyCrop(model, cellIndex, m.headerHeight, m.bodyHeight),
@@ -1087,14 +1095,14 @@ async function warmPackImpl(
       for (const disabled of [false, true]) {
         const inkCounts = await parallelCaptures(
           Array.from({ length: 10 }, (_, batch) => () => warmNumberInkBatch(disabled, batch)),
-          compareParallelWarmWidth(),
+          COMPARE_NUMBER_WARM_PARALLEL,
         );
         captures += inkCounts.reduce((sum, n) => sum + n, 0);
       }
       for (const face of ['normal', 'gold', 'disabled'] as const) {
         const opaqueCounts = await parallelCaptures(
           Array.from({ length: 10 }, (_, batch) => () => warmNumberOpaqueBatch(face, batch)),
-          compareParallelWarmWidth(),
+          COMPARE_NUMBER_WARM_PARALLEL,
         );
         captures += opaqueCounts.reduce((sum, n) => sum + n, 0);
       }

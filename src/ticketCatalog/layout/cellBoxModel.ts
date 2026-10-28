@@ -2,7 +2,11 @@ import { getActiveLayout, type CatalogLayout } from "./catalogLayout";
 import type { TicketMetrics } from "../model/ticketPresets";
 import { resolveTicketCellGeometry } from "./ticketCellGeometry";
 
-export type CellBox = { x: number; y: number; w: number; h: number };
+/**
+ * Snapped cell box (digit sprites share one size). `cx` / `cy` are the unsnapped flex
+ * cell centre that Fortunamania's `top/left: 50%` badge host centres on.
+ */
+export type CellBox = { x: number; y: number; w: number; h: number; cx?: number; cy?: number };
 
 export type CellBoxModel = {
   dpr: number;
@@ -149,6 +153,7 @@ export function applyCellBoxCssVars(
 let liveModel: CellBoxModel | null = null;
 
 export function setLiveCellBoxModel(model: CellBoxModel): void {
+  /** Committed with setActiveLayout from catalog controller / Compare only. */
   liveModel = model;
 }
 
@@ -162,15 +167,17 @@ export type DeviceBox = { x: number; y: number; w: number; h: number };
  * @deprecated Prefer badgeBlitOriginCss from ticketCellGeometry for catalog paint.
  */
 export function badgeHostDevice(
-  cell: { x: number; y: number; w: number; h: number },
+  cell: CellBox,
   dabSizeCss: number,
   dpr: number = spriteRasterDpr(),
 ): DeviceBox & { leftCss: number; topCss: number; sizeCss: number } {
   const x0 = cell.x * dpr;
   const y0 = cell.y * dpr;
   const size = Math.max(1, Math.round(dabSizeCss * dpr));
-  const x = Math.round(x0 + (cell.w * dpr - size) / 2);
-  const y = Math.round(y0 + (cell.h * dpr - size) / 2);
+  const cx = (cell.cx ?? cell.x + cell.w / 2) * dpr;
+  const cy = (cell.cy ?? cell.y + cell.h / 2) * dpr;
+  const x = Math.round(cx - size / 2);
+  const y = Math.round(cy - size / 2);
   return {
     x,
     y,

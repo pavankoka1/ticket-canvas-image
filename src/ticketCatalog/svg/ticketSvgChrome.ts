@@ -3,9 +3,13 @@
  * Painted inside the svg-all overlay on catalog home.
  */
 
-import { snapCss } from "../layout/cellBoxModel";
 import { svgEl } from "../../catalog/compareSvgMultiplier";
-import type { TicketMetrics } from "../model/ticketPresets";
+import { ticketCellLeft } from "../layout/ticketCellGeometry";
+import {
+  parseTicketShadow,
+  snappedTicketSeparatorTop,
+  type TicketMetrics,
+} from "../model/ticketPresets";
 
 export const SVG_CHROME_CLASS = "ticketCard__svgChrome";
 
@@ -35,15 +39,6 @@ const PALETTE = {
   },
 } as const;
 
-function sepX(cellIndex: number, cellW: number, sep: number): number {
-  return cellIndex * (cellW + sep) - sep;
-}
-
-/** One device pixel as a CSS length at `dpr`. */
-export function deviceSepWidthCss(dpr: number): number {
-  return Math.round(1 * dpr) / dpr;
-}
-
 function separatorFill(face: Face): string {
   return face === "gold"
     ? PALETTE.gold.separator
@@ -72,31 +67,27 @@ function bodyBandPath(cardWidth: number, headerH: number, bodyH: number, r: numb
   return `M 0 ${y0} H ${w} V ${y1 - cr} A ${cr} ${cr} 0 0 1 ${w - cr} ${y1} H ${cr} A ${cr} ${cr} 0 0 1 0 ${y1 - cr} V ${y0} Z`;
 }
 
-/** Five column separators with device-snapped x and width (card CSS px). */
+/** Five column separators: `.ticketCard__cell:not(:first-child)::before` (card CSS px). */
 export function buildTicketSeparatorSvg(
   metrics: TicketMetrics,
-  cellW: number,
+  cardWidth: number,
   face: Face,
   dpr: number,
 ): SVGElement[] {
-  const headerH = metrics.headerHeight;
-  const padY = metrics.bodyPaddingY;
-  const sepH = metrics.separatorHeight;
-  const sepTop = metrics.separatorMarginTop;
   const sep = metrics.separatorWidth;
-  const separator = separatorFill(face);
-  const sepWidth = deviceSepWidthCss(dpr);
+  const y = snappedTicketSeparatorTop(metrics, dpr);
+  const fill = separatorFill(face);
   const parts: SVGElement[] = [];
   for (let i = 1; i < 6; i++) {
     parts.push(
       svgEl("rect", {
-        x: snapCss(sepX(i, cellW, sep), dpr),
-        y: headerH + padY + sepTop,
-        width: sepWidth,
-        height: sepH,
-        rx: 2,
-        ry: 2,
-        fill: separator,
+        x: ticketCellLeft(i, cardWidth, sep, dpr) - sep,
+        y,
+        width: sep,
+        height: metrics.separatorHeight,
+        rx: 1,
+        ry: 1,
+        fill,
       }),
     );
   }
@@ -108,7 +99,6 @@ export function buildTicketChromeSvg(
   cardWidth: number,
   metrics: TicketMetrics,
   face: Face,
-  cellW: number,
   idSuffix: string,
   dpr: number,
 ): SVGElement[] {
@@ -119,18 +109,23 @@ export function buildTicketChromeSvg(
   const shadowId = `cmpTicketShadow-${suf}`;
   const parts: SVGElement[] = [];
 
-  const shadow = svgEl(
-    "filter",
-    { id: shadowId, x: "-20%", y: "-20%", width: "140%", height: "140%" },
-    svgEl("feDropShadow", {
-      dx: 0,
-      dy: 2,
-      stdDeviation: 0.5,
-      "flood-color": "#000000",
-      "flood-opacity": 0.42,
-    }),
-  );
-  parts.push(shadow);
+  // `.ticketCard_disabled { box-shadow: none }`; desktop presets have no shadow either.
+  const shadow = face === "disabled" ? null : parseTicketShadow(metrics.cardShadow);
+  if (shadow) {
+    parts.push(
+      svgEl(
+        "filter",
+        { id: shadowId, x: "-20%", y: "-20%", width: "140%", height: "140%" },
+        svgEl("feDropShadow", {
+          dx: 0,
+          dy: shadow.dy,
+          stdDeviation: shadow.stdDeviation,
+          "flood-color": "#000000",
+          "flood-opacity": shadow.opacity,
+        }),
+      ),
+    );
+  }
 
   const chromeInk: SVGElement[] = [];
 
@@ -200,8 +195,8 @@ export function buildTicketChromeSvg(
     );
   }
 
-  parts.push(svgEl("g", { filter: `url(#${shadowId})` }, ...chromeInk));
-  parts.push(...buildTicketSeparatorSvg(metrics, cellW, face, dpr));
+  parts.push(svgEl("g", shadow ? { filter: `url(#${shadowId})` } : {}, ...chromeInk));
+  parts.push(...buildTicketSeparatorSvg(metrics, cardWidth, face, dpr));
 
   return [svgEl("g", { class: SVG_CHROME_CLASS }, ...parts)];
 }

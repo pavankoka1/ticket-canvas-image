@@ -1,8 +1,5 @@
-import { playTicketAppear } from '../animation/appear';
-import {
-  drawGestureTotalMs,
-  noteDrawGesture,
-} from '../animation/catalogAnimations';
+import { playTicketAppear, prefersReducedMotion } from '../animation/appear';
+import { EASE_IN_OUT_CUBIC } from '../animation/drawPhase';
 import { getActiveLayout, rowHeight } from '../layout/catalogLayout';
 import { playTicketDraw } from '../animation/drawGesture';
 import { DOM_POOL_SIZE } from '../constants';
@@ -20,6 +17,26 @@ export type DomPoolMotionHooks = {
   onMotionStart?: () => void;
   onMotionEnd?: () => void;
 };
+
+export type FlipScrollContext = {
+  scrollTop: number;
+  viewH: number;
+  cardHeight: number;
+};
+
+/**
+ * Pull an off-screen FLIP endpoint to just past the viewport edge on its side, so a card
+ * from far below enters as if it sat one card under the fold (same duration as every card).
+ */
+function clampToViewportEdge(y: number, ctx: FlipScrollContext): number {
+  const top = ctx.scrollTop - ctx.cardHeight;
+  const bottom = ctx.scrollTop + ctx.viewH;
+  return Math.max(top, Math.min(bottom, y));
+}
+
+function isOutsideViewport(y: number, ctx: FlipScrollContext): boolean {
+  return y + ctx.cardHeight <= ctx.scrollTop || y >= ctx.scrollTop + ctx.viewH;
+}
 
 /** Fixed viewport DOM pool — never grows with catalog size. */
 export class DomPool {
@@ -164,7 +181,7 @@ export class DomPool {
       const isNew = idx === undefined;
       if (idx === undefined) {
         idx = this.free.pop();
-        if (idx === undefined) break;
+        if (idx === undefined) continue;
         this.byId.set(slot.id, idx);
       }
       const card = this.cards[idx]!;
@@ -251,85 +268,96 @@ export class DomPool {
   }
 
   /**
-   * FLIP visible cards whose slot changed. New cards are left to the appear
-   * gesture. Off-screen cards are not in the pool, so they snap.
+   * Fortunamania `flipTicketsFromRects`: one duration and easing for every card. Endpoints
+   * outside the viewport are clamped to its edge (see `clampToViewportEdge`); cards that
+   * start and end off-screen snap.
    */
   playMoves(
     from: ReadonlyMap<string, { x: number; y: number }>,
     slots: readonly TicketSlot[],
     durationMs: number,
     targetsById?: ReadonlyMap<string, { x: number; y: number }>,
+    flipScroll?: FlipScrollContext,
   ): void {
-    if (!this.ready || durationMs <= 0) return;
-    if (typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    if (!this.ready) return;
+    if (durationMs <= 0 || prefersReducedMotion()) {
       this.commitShuffleEvict();
       return;
     }
-    const easing = "cubic-bezier(0.65, 0, 0.35, 1)";
-    const moves: { card: TicketCard; token: number; anim: Animation; nx: number; ny: number }[] =
-      [];
+    type PendingFlip = {
+      card: TicketCard;
+      ox: number;
+      oy: number;
+      nx: number;
+      ny: number;
+      /** Real slot; differs from `ny` when the target is clamped off-screen. */
+      fx: number;
+      fy: number;
+    };
+    const pendingFlips: PendingFlip[] = [];
 
-    const queueFlip = (
-      card: TicketCard,
-      ox: number,
-      oy: number,
-      nx: number,
-      ny: number,
-    ): void => {
-      if (Math.abs(ox - nx) < 0.5 && Math.abs(oy - ny) < 0.5) return;
-      const el = card.dom;
-      card.cancelMotion();
-      const token = card.beginMotion();
-      el.style.transform = `translate3d(${ox}px, ${oy}px, 0)`;
-      const anim = el.animate(
-        [
-          { transform: `translate3d(${ox}px, ${oy}px, 0)` },
-          { transform: `translate3d(${nx}px, ${ny}px, 0)` },
-        ],
-        { duration: durationMs, easing },
-      );
-      moves.push({ card, token, anim, nx, ny });
+    const queueFlip = (card: TicketCard, prev: { x: number; y: number }, next: { x: number; y: number }) => {
+      const was = snapSlot(prev.x, prev.y);
+      const now = snapSlot(next.x, next.y);
+      let { x: ox, y: oy } = was;
+      let ny = now.y;
+      if (flipScroll) {
+        if (isOutsideViewport(oy, flipScroll) && isOutsideViewport(ny, flipScroll)) {
+          card.cancelMove();
+          card.snapTo(now.x, now.y);
+          return;
+        }
+        oy = clampToViewportEdge(oy, flipScroll);
+        ny = clampToViewportEdge(ny, flipScroll);
+      }
+      if (Math.abs(ox - now.x) < 0.5 && Math.abs(oy - ny) < 0.5) {
+        card.cancelMove();
+        card.snapTo(now.x, now.y);
+        return;
+      }
+      pendingFlips.push({ card, ox, oy, nx: now.x, ny, fx: now.x, fy: now.y });
     };
 
     for (const slot of slots) {
       const prev = from.get(slot.id);
       const idx = this.byId.get(slot.id);
       if (!prev || idx === undefined) continue;
-      const was = snapSlot(prev.x, prev.y);
-      const now = snapSlot(slot.x, slot.y);
-      queueFlip(this.cards[idx]!, was.x, was.y, now.x, now.y);
+      queueFlip(this.cards[idx]!, prev, slot);
     }
 
     if (targetsById) {
       for (const { id, idx } of this.deferredLeave) {
         const prev = from.get(id);
         const target = targetsById.get(id);
-        const boundIdx = this.byId.get(id);
-        if (!prev || !target || boundIdx !== idx) continue;
-        const was = snapSlot(prev.x, prev.y);
-        const now = snapSlot(target.x, target.y);
-        queueFlip(this.cards[idx]!, was.x, was.y, now.x, now.y);
+        if (!prev || !target || this.byId.get(id) !== idx) continue;
+        queueFlip(this.cards[idx]!, prev, target);
       }
     }
 
-    if (moves.length === 0) {
+    if (pendingFlips.length === 0) {
       this.commitShuffleEvict();
       return;
     }
+
     this.motionHooks.onMotionStart?.();
-    let pending = moves.length;
+    let pending = pendingFlips.length;
     const oneDone = () => {
       pending -= 1;
-      if (pending === 0) {
-        this.commitShuffleEvict();
-        this.motionHooks.onMotionEnd?.();
-      }
+      if (pending > 0) return;
+      this.commitShuffleEvict();
+      this.motionHooks.onMotionEnd?.();
     };
-    for (const { card, token, anim, nx, ny } of moves) {
+
+    // Only `translate` moves: a draw dip (`scale`), badge or shine still running keeps going.
+    for (const { card, ox, oy, nx, ny, fx, fy } of pendingFlips) {
+      const anim = card.startMove(
+        [{ translate: `${ox}px ${oy}px` }, { translate: `${nx}px ${ny}px` }],
+        { duration: durationMs, easing: EASE_IN_OUT_CUBIC },
+      );
       const settle = () => {
         anim.cancel();
-        card.snapTransformTo(nx, ny);
-        card.endMotion(token);
+        card.endMove(anim);
+        card.snapTo(fx, fy);
         oneDone();
       };
       void anim.finished.then(settle, settle);
@@ -351,9 +379,7 @@ export class DomPool {
       remaining -= 1;
       if (remaining === 0) this.motionHooks.onMotionEnd?.();
     };
-    let gestureMs = 0;
     for (const hit of pending) {
-      gestureMs = Math.max(gestureMs, drawGestureTotalMs(hit.kind));
       const idx = this.byId.get(hit.id)!;
       playTicketDraw(
         this.cards[idx]!,
@@ -364,7 +390,6 @@ export class DomPool {
         oneDone,
       );
     }
-    if (gestureMs > 0) noteDrawGesture(gestureMs);
   }
 
   /** After layout change, root CSS vars already resize cards — only reset badge overlay keys. */

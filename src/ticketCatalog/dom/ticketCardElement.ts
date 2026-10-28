@@ -14,12 +14,9 @@ import { resolveLiveCellBoxModel } from "../canvas/atlas/cellAtlas";
 import type { TicketMetrics } from "../model/ticketPresets";
 import { BALLS_PER_TICKET, POOL_OFFSCREEN_PX } from "../constants";
 import { MultiplierLabelNode } from "../canvas/sprites/multiplierLabel";
-import { isWinTicket, type Ticket } from "../model/tickets";
-import {
-  measureTicketSparkleSpots,
-  resolveTicketSparklePlan,
-  type TicketSparklePlan,
-} from "./ticketSparkles";
+import { showsGoldFace, isWinTicket, type Ticket } from "../model/tickets";
+import { resolveTicketShineStyles } from "../animation/drawPhase";
+import type { TicketSparklePlan } from "./ticketSparkles";
 
 export type TicketDomParts = {
   root: HTMLElement;
@@ -81,13 +78,17 @@ export function applyTicketCellLayout(
   root.style.width = `${model.cardWidth}px`;
   root.style.height = `${cardHeight}px`;
   applyCellBoxCssVars(root, model, metrics);
-  for (const cell of cellEls) {
+  let prevRight = 0;
+  cellEls.forEach((cell, i) => {
+    const box = model.cells[i]!;
     cell.style.boxSizing = "border-box";
     cell.style.width = `${model.cellW}px`;
     cell.style.height = `${model.cellH}px`;
     cell.style.flex = `0 0 ${model.cellW}px`;
-    cell.style.removeProperty("margin");
-  }
+    // Cell lefts are device-snapped per index, so each gap is set explicitly.
+    cell.style.marginLeft = `${box.x - prevRight}px`;
+    prevRight = box.x + model.cellW;
+  });
 }
 
 /** Per-cell dab/multiplier badge, built lazily like fortunamania. */
@@ -96,8 +97,12 @@ type CellBadge = {
   label: MultiplierLabelNode | null;
 };
 
-export function poolOffscreenTransform(): string {
-  return `translate3d(-${POOL_OFFSCREEN_PX}px, -${POOL_OFFSCREEN_PX}px, 0)`;
+/**
+ * Cards sit at left/top 0 and are placed with the CSS `translate` property, like the
+ * game's FLIP. The draw dip runs on `scale` and composes with a running shuffle.
+ */
+export function poolOffscreenTranslate(): string {
+  return `-${POOL_OFFSCREEN_PX}px -${POOL_OFFSCREEN_PX}px`;
 }
 
 export function ticketContentKey(ticket: Ticket): string {
@@ -118,9 +123,6 @@ export class TicketCard {
   private readonly winText: Text;
   private readonly cellTexts: Text[] = [];
   private readonly cellEls: HTMLElement[] = [];
-  private readonly winEl: HTMLElement;
-  private readonly idEl: HTMLElement;
-  private readonly bodyEl: HTMLElement;
   private readonly badges: (CellBadge | null)[] = [];
   private layoutKey: string | null = null;
   private winClass = false;
@@ -129,11 +131,13 @@ export class TicketCard {
   private shineBandEl: HTMLElement | null = null;
   private sparkleEls: HTMLElement[] | null = null;
   /**
-   * Non-zero while appear / draw / FLIP WAAPI is running. hide() and
+   * Non-zero while a draw gesture (dip, badge, shine, sparkles) runs. hide() and
    * cancelMotion() only call getAnimations when this is set — the scroll
    * eviction path must not force a document-wide style flush for static cards.
    */
   private motionGen = 0;
+  /** Shuffle FLIP or appear on the root `translate`; replaced, never stacked. */
+  private moveAnim: Animation | null = null;
   private boundId: string | null = null;
   private contentKey = "";
   private slotX = Number.NaN;
@@ -149,14 +153,11 @@ export class TicketCard {
     const parts = createTicketDom();
     parts.root.style.position = "absolute";
     parts.root.style.pointerEvents = "none";
-    parts.root.style.transform = poolOffscreenTransform();
+    parts.root.style.translate = poolOffscreenTranslate();
 
     this.dom = parts.root;
     this.idText = parts.idText;
     this.winText = parts.winText;
-    this.winEl = parts.root.querySelector(".ticketCard__win")!;
-    this.idEl = parts.root.querySelector(".ticketCard__id")!;
-    this.bodyEl = parts.root.querySelector(".ticketCard__body")!;
     this.cellEls = parts.cellEls;
     this.cellTexts = parts.cellTexts;
     this.badges = parts.cellEls.map(() => null);
@@ -303,13 +304,34 @@ export class TicketCard {
     if (disabled) this.dom.classList.add("ticketCard_disabled");
   }
 
-  /** Snap inline transform after FLIP (Safari — do not rely on WAAPI fill). */
-  snapTransformTo(x: number, y: number): void {
+  /** Rest pose at the snapped slot (set inline after a move; do not rely on WAAPI fill). */
+  snapTo(x: number, y: number): void {
     const { x: sx, y: sy } = snapSlot(x, y);
     this.slotX = sx;
     this.slotY = sy;
-    this.dom.style.transform = `translate3d(${sx}px, ${sy}px, 0)`;
+    this.dom.style.translate = `${sx}px ${sy}px`;
     this.shown = true;
+  }
+
+  /**
+   * Start a FLIP / appear on the root. Only the previous move is cancelled — a draw
+   * dip (`scale`), badge pop or shine keeps running, as in the game.
+   */
+  startMove(keyframes: Keyframe[], options: KeyframeAnimationOptions): Animation {
+    this.moveAnim?.cancel();
+    const anim = this.dom.animate(keyframes, options);
+    this.moveAnim = anim;
+    return anim;
+  }
+
+  cancelMove(): void {
+    this.moveAnim?.cancel();
+    this.moveAnim = null;
+  }
+
+  /** Clear the move slot once `anim` settles (no-op if a newer move replaced it). */
+  endMove(anim: Animation): void {
+    if (this.moveAnim === anim) this.moveAnim = null;
   }
 
   bind(
@@ -330,20 +352,14 @@ export class TicketCard {
     if (this.winText.data !== winStr) this.winText.data = winStr;
 
     for (let i = 0; i < BALLS_PER_TICKET; i++) {
-      const hit = ticket.hits.includes(i);
-      const mult = ticket.multipliers[i] ?? 0;
+      // The digit stays under a dab / multiplier; the opaque disc covers it once it lands.
       const ball = String(ticket.balls[i] ?? "");
-      // Multiplier clears immediately. Plain dab keeps the digit until draw
-      // settle() clears it after the pop animation (sticky once cleared).
-      let next = ball;
-      if (mult > 0) next = "";
-      else if (hit && this.cellTexts[i]!.data === "") next = "";
-      if (this.cellTexts[i]!.data !== next) this.cellTexts[i]!.data = next;
-      this.applyCellBadge(i, hit, mult);
+      if (this.cellTexts[i]!.data !== ball) this.cellTexts[i]!.data = ball;
+      this.applyCellBadge(i, ticket.hits.includes(i), ticket.multipliers[i] ?? 0);
     }
 
     const disabled = Boolean(ticket.disabled);
-    const win = isWinTicket(ticket) && !disabled;
+    const win = showsGoldFace(ticket);
     if (win !== this.winClass) {
       this.winClass = win;
       this.dom.classList.toggle("ticketCard_win", win);
@@ -354,7 +370,7 @@ export class TicketCard {
     }
 
     if (x !== undefined && y !== undefined && !opts?.deferPosition) {
-      this.snapTransformTo(x, y);
+      this.snapTo(x, y);
     }
     this.shown = true;
   }
@@ -365,12 +381,6 @@ export class TicketCard {
 
   badgeLabelAt(cell: number): HTMLElement | null {
     return this.badges[cell]?.label?.dom ?? null;
-  }
-
-  /** Hide the ball digit after dab / multiplier draw motion finishes. */
-  clearCellDigit(cell: number): void {
-    const text = this.cellTexts[cell];
-    if (text && text.data !== "") text.data = "";
   }
 
   /**
@@ -386,18 +396,30 @@ export class TicketCard {
     if (token === this.motionGen) this.motionGen = 0;
   }
 
+  /** Badge atlas warm: capture discs without the digits underneath. */
+  clearCellDigits(): void {
+    for (const text of this.cellTexts) text.data = "";
+  }
+
+  /** False once the gesture was cancelled or superseded. */
+  ownsMotion(token: number): boolean {
+    return token !== 0 && token === this.motionGen;
+  }
+
   /**
    * Cancel running WAAPI only if this card was marked as animating.
    * No-op for the common scroll-eviction case (static card leaving the band).
    */
   cancelMotion(): void {
+    this.moveAnim?.cancel();
+    this.moveAnim = null;
     if (this.motionGen === 0) return;
     this.dom.getAnimations({ subtree: true }).forEach((animation) => animation.cancel());
     this.motionGen = 0;
   }
 
-  /** Shine band, parked off the card until the draw gesture starts it. */
-  shineBand(cardWidth: number, cardHeight: number, multiplier: boolean): HTMLElement {
+  /** Size the shine band and park it off the card before the host is shown. */
+  showShine(cardWidth: number, cardHeight: number, multiplier: boolean): HTMLElement {
     if (!this.shineHost || !this.shineBandEl) {
       const host = document.createElement("span");
       host.className = "ticketCard__shine";
@@ -408,11 +430,10 @@ export class TicketCard {
       this.shineHost = host;
       this.shineBandEl = band;
     }
-    const deg = multiplier ? -45 : -30;
-    const rad = (deg * Math.PI) / 180;
-    const projected = Math.abs(cardWidth * Math.cos(rad)) + Math.abs(cardHeight * Math.sin(rad));
-    const travel = projected + Math.hypot(cardWidth, cardHeight) * 0.45;
-    this.shineBandEl.style.transform = `translate(-50%, -50%) rotate(${deg}deg) translateX(${-travel / 2}px)`;
+    const shine = resolveTicketShineStyles(cardWidth, cardHeight, 0, multiplier);
+    this.shineBandEl.style.width = `${shine.bandWidth}px`;
+    this.shineBandEl.style.height = `${shine.bandHeight}px`;
+    this.shineBandEl.style.transform = shine.transform;
     this.shineHost.style.display = "block";
     return this.shineBandEl;
   }
@@ -421,56 +442,35 @@ export class TicketCard {
   hideShine(): void {
     if (!this.shineHost || !this.shineBandEl) return;
     this.shineHost.style.display = "none";
+    this.shineBandEl.style.removeProperty("width");
+    this.shineBandEl.style.removeProperty("height");
     this.shineBandEl.style.removeProperty("transform");
   }
 
-  sparkles(): HTMLElement[] {
-    if (this.sparkleEls) return this.sparkleEls;
-    const container = document.createElement("span");
-    container.className = "ticketCard__sparkles";
-    const imgs: HTMLElement[] = [];
-    for (let i = 0; i < 3; i++) {
-      const img = document.createElement("img");
-      img.className = "ticketCard__sparkle";
-      img.src = "/sparkle.webp";
-      img.alt = "";
-      img.draggable = false;
-      img.style.opacity = "0";
-      container.appendChild(img);
-      imgs.push(img);
+  /** Three sparkle imgs at the plan's anchors (`layoutMultiplierSparkles`). */
+  sparkles(plan: TicketSparklePlan): HTMLElement[] {
+    if (!this.sparkleEls) {
+      const container = document.createElement("span");
+      container.className = "ticketCard__sparkles";
+      this.sparkleEls = plan.spots.map(() => {
+        const img = document.createElement("img");
+        img.className = "ticketCard__sparkle";
+        img.src = "/sparkle.webp";
+        img.alt = "";
+        img.decoding = "async";
+        img.draggable = false;
+        img.style.opacity = "0";
+        container.appendChild(img);
+        return img;
+      });
+      this.dom.appendChild(container);
     }
-    this.dom.appendChild(container);
-    this.sparkleEls = imgs;
-    return imgs;
-  }
-
-  /** DOM-measured sparkle anchors synced to the mult shine sweep (Fortunamania). */
-  layoutMultiplierSparkles(cardWidth: number, cardHeight: number): TicketSparklePlan {
-    const cardRect = this.dom.getBoundingClientRect();
-    const w = cardRect.width > 0 ? cardRect.width : cardWidth;
-    const h = cardRect.height > 0 ? cardRect.height : cardHeight;
-    const spots = measureTicketSparkleSpots(
-      this.dom,
-      this.winEl,
-      this.idEl,
-      this.bodyEl,
-      {
-        firstSeparatorCell: this.cellEls[1] ?? null,
-        thirdSeparatorCell: this.cellEls[3] ?? null,
-        fifthSeparatorCell: this.cellEls[5] ?? null,
-      },
-      w,
-    );
-    const plan = resolveTicketSparklePlan(spots, w, h);
-    const sparks = this.sparkles();
-    for (let i = 0; i < sparks.length; i++) {
-      const spot = plan.spots[i];
-      const img = sparks[i];
-      if (!spot || !img) continue;
+    plan.spots.forEach((spot, i) => {
+      const img = this.sparkleEls![i]!;
       img.style.left = `${spot.x}px`;
       img.style.top = `${spot.y}px`;
-    }
-    return plan;
+    });
+    return this.sparkleEls;
   }
 
   clearSparkles(): void {
@@ -482,10 +482,9 @@ export class TicketCard {
     this.cancelMotion();
     this.hideShine();
     this.dom.classList.remove("ticketCard_appear");
-    this.dom.style.transform = poolOffscreenTransform();
+    this.dom.style.translate = poolOffscreenTranslate();
     this.dom.style.removeProperty("z-index");
     this.dom.style.removeProperty("opacity");
-    this.dom.style.removeProperty("translate");
     this.dom.style.removeProperty("scale");
     this.boundId = null;
     this.contentKey = "";
@@ -496,7 +495,7 @@ export class TicketCard {
   }
 }
 
-/** Device-snapped slot origin. Same rounding the resting `translate3d` uses. */
+/** Device-snapped slot origin. Same rounding the resting `translate` uses. */
 export function snapSlot(x: number, y: number): { x: number; y: number } {
   const dpr = activeDpr();
   return { x: snapCss(x, dpr), y: snapCss(y, dpr) };

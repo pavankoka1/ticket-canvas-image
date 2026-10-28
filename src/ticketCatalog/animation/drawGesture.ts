@@ -1,80 +1,58 @@
 /**
- * Ball-draw gesture from Fortunamania `playTicketDrawWaapi` + `drawPhase`.
+ * Ball-draw gesture — Fortunamania `ticket/playDrawWaapi.ts` on the pooled card.
  *
- * Plain dab: badge 3→1 (0–250), ticket dip (250–600), gold shine −30° (600–1500) on a new win.
- * Multiplier: disc 2→1 (0–250), text 4→1→0.8→1 (250–650), dip with the text (450–650),
- * shine −45° and three sparkles (900–1500) only when the ticket is gold.
- *
- * The badge host is already placed on a device pixel, so its pop uses the `scale`
- * property. The game's `translate(-50%, -50%)` would slide that host.
- * Dip scales in the same `transform` as the slot `translate3d` so transform-origin
- * does not pull the card toward the catalog origin (standalone `scale` + `transform`).
+ * The card sits on `translate`, so the dip animates `scale` (centre origin) and composes
+ * with a shuffle that starts before it ends. The badge host is already placed on a device
+ * pixel, so its pop uses `scale` instead of the game's `translate(-50%, -50%) scale()`.
  */
 import {
   beginDrawDabMotion,
   beginDrawMultiplierMotion,
   refreshSvgOverlayInk,
 } from "../../catalog/compareSvgText";
-import { SHINE_END_MS, SPARKLE_PEAK_OPACITY } from "./drawPhase";
+import {
+  DAB_APPEAR_MS,
+  DAB_START_SCALE,
+  EASE_IN_OUT_CUBIC,
+  EASE_OUT_CUBIC,
+  MULT_DIP_BOTTOM_MS,
+  MULT_DIP_END_MS,
+  MULT_DIP_START_MS,
+  MULT_DISC_START_SCALE,
+  MULT_SHINE_MS,
+  MULT_SHINE_START_MS,
+  MULT_TEXT_LAND_MS,
+  MULT_TEXT_PUNCH_MS,
+  MULT_TEXT_PUNCH_SCALE,
+  MULT_TEXT_SETTLE_MS,
+  MULT_TEXT_START_SCALE,
+  SHINE_MS,
+  SHINE_START_MS,
+  SPARKLE_DURATION_MS,
+  SPARKLE_PEAK_OFFSET,
+  SPARKLE_PEAK_OPACITY,
+  SPARKLE_STAGGER_MS,
+  TICKET_DIP_BOTTOM_MS,
+  TICKET_DIP_END_MS,
+  TICKET_DIP_SCALE,
+  TICKET_DIP_START_MS,
+  drawPlaysShine,
+  resolveDrawSettleMs,
+  resolveTicketShineStyles,
+  type DrawKind,
+} from "./drawPhase";
+import { prefersReducedMotion } from "./appear";
+import { getActiveLayout } from "../layout/catalogLayout";
 import type { TicketCard } from "../dom/ticketCardElement";
+import { resolveTicketSparklePlan } from "../dom/ticketSparkles";
 
-const EASE_OUT = "cubic-bezier(0.33, 1, 0.68, 1)";
-const EASE_IN_OUT = "cubic-bezier(0.65, 0, 0.35, 1)";
+const SPARKLE_KEYFRAMES: Keyframe[] = [
+  { opacity: 0, offset: 0, easing: "linear" },
+  { opacity: SPARKLE_PEAK_OPACITY, offset: SPARKLE_PEAK_OFFSET, easing: "linear" },
+  { opacity: 0, offset: 1 },
+];
 
-const DAB_MS = 250;
-const DAB_START = 3;
-const MULT_DISC_START = 2;
-
-const DIP_START = 250;
-const DIP_BOTTOM = 400;
-const DIP_END = 600;
-const DIP_SCALE = 0.94;
-
-const MULT_TEXT_LAND = 450;
-const MULT_TEXT_PUNCH = 550;
-const MULT_TEXT_END = 650;
-const MULT_TEXT_START = 4;
-const MULT_TEXT_PUNCH_SCALE = 0.8;
-
-const SHINE_DELAY = 600;
-const SHINE_MS = 900;
-const MULT_SHINE_DELAY = 900;
-const MULT_SHINE_MS = 600;
-const SHINE_ANGLE = -30;
-const MULT_SHINE_ANGLE = -45;
-const SHINE_WIDTH_RATIO = 0.45;
-
-export type DrawKind = "dab" | "win" | "mult";
-
-function reduced(): boolean {
-  return typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
-}
-
-function clearPlayEffectStyles(el: HTMLElement, clearTransform: boolean): void {
-  el.style.removeProperty("opacity");
-  el.style.removeProperty("scale");
-  el.style.removeProperty("translate");
-  if (clearTransform) el.style.removeProperty("transform");
-}
-
-function clearOverlayEffectStyles(el: SVGGElement): void {
-  el.style.removeProperty("opacity");
-  el.style.removeProperty("transform");
-}
-
-/** Opacity-only — do not strip `transform` (sparkles use translate(-50%, -50%)). */
-function playSparkleOpacity(el: HTMLElement, keyframes: Keyframe[], opts: KeyframeAnimationOptions): void {
-  el.getAnimations().forEach((a) => a.cancel());
-  el.style.removeProperty("opacity");
-  const anim = el.animate(keyframes, { ...opts, fill: "both" });
-  const settle = () => {
-    anim.cancel();
-    if (el.getAnimations().length > 0) return;
-    el.style.removeProperty("opacity");
-  };
-  void anim.finished.then(settle, settle);
-}
-
+/** `playClear` for badge hosts / labels: fill forwards for the run, then drop this effect. */
 function play(
   el: HTMLElement,
   keyframes: Keyframe[],
@@ -84,10 +62,23 @@ function play(
   const anim = el.animate(keyframes, { ...opts, fill: "forwards" });
   const settle = () => {
     anim.cancel();
-    clearPlayEffectStyles(el, clearTransform);
+    if (el.getAnimations().length > 0) return;
+    el.style.removeProperty("opacity");
+    el.style.removeProperty("scale");
+    if (clearTransform) el.style.removeProperty("transform");
   };
   void anim.finished.then(settle, settle);
   return anim;
+}
+
+function playOverlay(el: SVGGElement, keyframes: Keyframe[], opts: KeyframeAnimationOptions): void {
+  const anim = el.animate(keyframes, { ...opts, fill: "forwards" });
+  const settle = () => {
+    anim.cancel();
+    el.style.removeProperty("opacity");
+    el.style.removeProperty("transform");
+  };
+  void anim.finished.then(settle, settle);
 }
 
 function overlayTranslatePrefix(el: SVGGElement): string {
@@ -96,97 +87,136 @@ function overlayTranslatePrefix(el: SVGGElement): string {
   return `translate(${match[1]}px, ${match[2]}px) `;
 }
 
-function playOverlayPop(el: SVGGElement, isMult: boolean): void {
-  const start = isMult ? MULT_DISC_START : DAB_START;
-  const at = overlayTranslatePrefix(el);
-  const anim = el.animate(
-    [
-      { transform: `${at}scale(${start})`, opacity: 0 },
-      { transform: `${at}scale(1)`, opacity: 1, easing: EASE_OUT },
-    ],
-    { duration: DAB_MS, easing: isMult ? "linear" : EASE_OUT, fill: "forwards" },
-  );
-  const settle = () => {
-    anim.cancel();
-    clearOverlayEffectStyles(el);
-  };
-  void anim.finished.then(settle, settle);
-}
-
-function playOverlayMultLabel(el: SVGGElement): void {
-  const end = MULT_TEXT_END;
-  const at = overlayTranslatePrefix(el);
-  const anim = el.animate(
-    [
-      { transform: `${at}scale(${MULT_TEXT_START})`, opacity: 0, offset: 0 },
-      {
-        transform: `${at}scale(${MULT_TEXT_START})`,
-        opacity: 0,
-        offset: DAB_MS / end,
-        easing: "linear",
-      },
-      { transform: `${at}scale(1)`, opacity: 1, offset: MULT_TEXT_LAND / end, easing: EASE_OUT },
-      {
-        transform: `${at}scale(${MULT_TEXT_PUNCH_SCALE})`,
-        opacity: 1,
-        offset: MULT_TEXT_PUNCH / end,
-        easing: EASE_OUT,
-      },
-      { transform: `${at}scale(1)`, opacity: 1, offset: 1, easing: EASE_OUT },
-    ],
-    { duration: end, easing: "linear", fill: "forwards" },
-  );
-  const settle = () => {
-    anim.cancel();
-    clearOverlayEffectStyles(el);
-  };
-  void anim.finished.then(settle, settle);
-}
-
-function readSlotTranslatePx(el: HTMLElement): { x: number; y: number } {
-  const match = /translate3d\(([-\d.]+)px,\s*([-\d.]+)px/.exec(el.style.transform);
-  if (!match) return { x: 0, y: 0 };
-  return { x: Number(match[1]), y: Number(match[2]) };
-}
-
-function dipTransform(sx: number, sy: number, scale: number): string {
-  return `translate3d(${sx}px, ${sy}px, 0) scale(${scale})`;
-}
-
-function dipKeyframes(sx: number, sy: number, multiplier: boolean): Keyframe[] {
-  const end = multiplier ? MULT_TEXT_END : DIP_END;
-  const start = multiplier ? MULT_TEXT_LAND : DIP_START;
-  const bottom = multiplier ? MULT_TEXT_PUNCH : DIP_BOTTOM;
+function badgePopKeyframes(at: string, startScale: number): Keyframe[] {
   return [
-    { transform: dipTransform(sx, sy, 1), offset: 0 },
-    { transform: dipTransform(sx, sy, 1), offset: start / end, easing: "linear" },
-    { transform: dipTransform(sx, sy, DIP_SCALE), offset: bottom / end, easing: EASE_OUT },
-    { transform: dipTransform(sx, sy, 1), offset: 1, easing: EASE_OUT },
+    { transform: `${at}scale(${startScale})`, opacity: 0 },
+    { transform: `${at}scale(1)`, opacity: 1, easing: EASE_OUT_CUBIC },
   ];
 }
 
-function shineTransform(cardWidth: number, cardHeight: number, progress: number, multiplier: boolean): string {
-  const deg = multiplier ? MULT_SHINE_ANGLE : SHINE_ANGLE;
-  const rad = (deg * Math.PI) / 180;
-  const projected = Math.abs(cardWidth * Math.cos(rad)) + Math.abs(cardHeight * Math.sin(rad));
-  const bandWidth = Math.hypot(cardWidth, cardHeight) * SHINE_WIDTH_RATIO;
-  const travel = projected + bandWidth;
-  const centre = -travel / 2 + progress * travel;
-  return `translate(-50%, -50%) rotate(${deg}deg) translateX(${centre}px)`;
+function multTextKeyframes(at: string): Keyframe[] {
+  const end = MULT_TEXT_SETTLE_MS;
+  return [
+    { transform: `${at}scale(${MULT_TEXT_START_SCALE})`, opacity: 0, offset: 0 },
+    {
+      transform: `${at}scale(${MULT_TEXT_START_SCALE})`,
+      opacity: 0,
+      offset: DAB_APPEAR_MS / end,
+      easing: "linear",
+    },
+    { transform: `${at}scale(1)`, opacity: 1, offset: MULT_TEXT_LAND_MS / end, easing: EASE_OUT_CUBIC },
+    {
+      transform: `${at}scale(${MULT_TEXT_PUNCH_SCALE})`,
+      opacity: 1,
+      offset: MULT_TEXT_PUNCH_MS / end,
+      easing: EASE_OUT_CUBIC,
+    },
+    { transform: `${at}scale(1)`, opacity: 1, offset: 1, easing: EASE_OUT_CUBIC },
+  ];
 }
 
-function shineSize(cardWidth: number, cardHeight: number, multiplier: boolean): { width: number; height: number } {
-  const deg = multiplier ? MULT_SHINE_ANGLE : SHINE_ANGLE;
-  const rad = (deg * Math.PI) / 180;
-  const projected = Math.abs(cardWidth * Math.cos(rad)) + Math.abs(cardHeight * Math.sin(rad));
-  const diagonal = Math.hypot(cardWidth, cardHeight);
-  return {
-    width: diagonal * SHINE_WIDTH_RATIO,
-    height: Math.max(projected, diagonal) * 2,
-  };
+/** `buildDipScaleAnimation`: hold, 1 → 0.94 → 1 on the `scale` property. */
+function playDip(root: HTMLElement, multiplier: boolean): void {
+  const end = multiplier ? MULT_DIP_END_MS : TICKET_DIP_END_MS;
+  const start = multiplier ? MULT_DIP_START_MS : TICKET_DIP_START_MS;
+  const bottom = multiplier ? MULT_DIP_BOTTOM_MS : TICKET_DIP_BOTTOM_MS;
+  const anim = root.animate(
+    [
+      { scale: "1", offset: 0 },
+      { scale: "1", offset: start / end, easing: "linear" },
+      { scale: String(TICKET_DIP_SCALE), offset: bottom / end, easing: EASE_OUT_CUBIC },
+      { scale: "1", offset: 1, easing: EASE_OUT_CUBIC },
+    ],
+    { duration: end, easing: "linear", fill: "forwards" },
+  );
+  const settle = () => anim.cancel();
+  void anim.finished.then(settle, settle);
 }
 
-/** One visible ticket. Off-screen tickets are canvas and stay on the settled frame. */
+function playMultBadge(card: TicketCard, cell: number): void {
+  const root = card.dom;
+  refreshSvgOverlayInk(root);
+  const { disc, label } = beginDrawMultiplierMotion(root, cell);
+  const discOpts = { duration: DAB_APPEAR_MS, easing: "linear" };
+  const textOpts = { duration: MULT_TEXT_SETTLE_MS, easing: "linear" };
+  if (disc) {
+    playOverlay(disc, badgePopKeyframes(overlayTranslatePrefix(disc), MULT_DISC_START_SCALE), discOpts);
+  } else {
+    const host = card.badgeHostAt(cell);
+    if (host) {
+      play(host, [
+        { scale: String(MULT_DISC_START_SCALE), opacity: 0 },
+        { scale: "1", opacity: 1 },
+      ], discOpts);
+    }
+  }
+  if (label) {
+    playOverlay(label, multTextKeyframes(overlayTranslatePrefix(label)), textOpts);
+  } else {
+    const htmlLabel = card.badgeLabelAt(cell);
+    if (htmlLabel) play(htmlLabel, multTextKeyframes(""), textOpts, true);
+  }
+}
+
+function playDabBadge(card: TicketCard, cell: number): void {
+  beginDrawDabMotion(card.dom, cell);
+  const host = card.badgeHostAt(cell);
+  if (!host) return;
+  play(
+    host,
+    [
+      { scale: String(DAB_START_SCALE), opacity: 0 },
+      { scale: "1", opacity: 1 },
+    ],
+    { duration: DAB_APPEAR_MS, easing: EASE_OUT_CUBIC },
+  );
+}
+
+/** Shine sweep; on a multiplier also the three staggered sparkle pulses. */
+function playShineAndSparkles(
+  card: TicketCard,
+  isMult: boolean,
+  cardWidth: number,
+  cardHeight: number,
+): void {
+  const band = card.showShine(cardWidth, cardHeight, isMult);
+  const anim = band.animate(
+    [
+      { transform: resolveTicketShineStyles(cardWidth, cardHeight, 0, isMult).transform },
+      { transform: resolveTicketShineStyles(cardWidth, cardHeight, 1, isMult).transform },
+    ],
+    {
+      duration: isMult ? MULT_SHINE_MS : SHINE_MS,
+      delay: isMult ? MULT_SHINE_START_MS : SHINE_START_MS,
+      easing: isMult ? "linear" : EASE_IN_OUT_CUBIC,
+      fill: "both",
+    },
+  );
+  void anim.finished.then(
+    () => card.hideShine(),
+    () => card.hideShine(),
+  );
+  if (!isMult) return;
+  const sparkles = card.sparkles(resolveTicketSparklePlan(getActiveLayout()));
+  sparkles.forEach((sparkle, i) => {
+    const spark = sparkle.animate(SPARKLE_KEYFRAMES, {
+      duration: SPARKLE_DURATION_MS,
+      delay: MULT_SHINE_START_MS + i * SPARKLE_STAGGER_MS,
+      easing: "linear",
+      fill: "both",
+    });
+    const settle = () => {
+      spark.cancel();
+      sparkle.style.opacity = "0";
+    };
+    void spark.finished.then(settle, settle);
+  });
+}
+
+/**
+ * One visible ticket. Returns the gesture length (`resolveDrawSettleMs`).
+ * Off-screen tickets are canvas and stay on the settled frame.
+ */
 export function playTicketDraw(
   card: TicketCard,
   cell: number,
@@ -194,139 +224,38 @@ export function playTicketDraw(
   cardWidth: number,
   cardHeight: number,
   onSettled?: () => void,
-): void {
-  if (reduced()) {
-    card.clearCellDigit(cell);
-    onSettled?.();
-    return;
-  }
+): number {
   const root = card.dom;
-  const isMult = kind === "mult";
   const hasWin = root.classList.contains("ticketCard_win");
-  const playShine = kind === "win" || (isMult && hasWin);
+  if (prefersReducedMotion()) {
+    onSettled?.();
+    return 0;
+  }
+  const isMult = kind === "mult";
+  const settleMs = resolveDrawSettleMs(
+    kind,
+    hasWin,
+    resolveTicketSparklePlan(getActiveLayout()).settleMs,
+  );
 
   card.cancelMotion();
   card.hideShine();
   card.clearSparkles();
   const token = card.beginMotion();
-  const { x: slotX, y: slotY } = readSlotTranslatePx(root);
 
-  const dip = play(root, dipKeyframes(slotX, slotY, isMult), {
-    duration: isMult ? MULT_TEXT_END : DIP_END,
-    easing: "linear",
-  });
+  playDip(root, isMult);
+  if (isMult) playMultBadge(card, cell);
+  else playDabBadge(card, cell);
+  if (drawPlaysShine(kind, hasWin)) playShineAndSparkles(card, isMult, cardWidth, cardHeight);
 
-  const host = card.badgeHostAt(cell);
-  if (isMult) {
-    refreshSvgOverlayInk(root);
-    const { disc, label } = beginDrawMultiplierMotion(root, cell);
-    if (disc) playOverlayPop(disc, true);
-    else if (host) {
-      play(
-        host,
-        [
-          { scale: String(MULT_DISC_START), opacity: 0 },
-          { scale: "1", opacity: 1, easing: EASE_OUT },
-        ],
-        { duration: DAB_MS, easing: "linear" },
-      );
+  window.setTimeout(() => {
+    if (card.ownsMotion(token)) {
+      refreshSvgOverlayInk(root);
+      card.clearSparkles();
+      card.hideShine();
+      card.endMotion(token);
     }
-    if (label) playOverlayMultLabel(label);
-    else {
-      const htmlLabel = card.badgeLabelAt(cell);
-      if (htmlLabel) {
-        const end = MULT_TEXT_END;
-        play(
-          htmlLabel,
-          [
-            { transform: `scale(${MULT_TEXT_START})`, opacity: 0, offset: 0 },
-            {
-              transform: `scale(${MULT_TEXT_START})`,
-              opacity: 0,
-              offset: DAB_MS / end,
-              easing: "linear",
-            },
-            { transform: "scale(1)", opacity: 1, offset: MULT_TEXT_LAND / end, easing: EASE_OUT },
-            {
-              transform: `scale(${MULT_TEXT_PUNCH_SCALE})`,
-              opacity: 1,
-              offset: MULT_TEXT_PUNCH / end,
-              easing: EASE_OUT,
-            },
-            { transform: "scale(1)", opacity: 1, offset: 1, easing: EASE_OUT },
-          ],
-          { duration: end, easing: "linear" },
-          true,
-        );
-      }
-    }
-  } else {
-    beginDrawDabMotion(root, cell);
-    if (host) {
-      play(
-        host,
-        [
-          { scale: String(DAB_START), opacity: 0 },
-          { scale: "1", opacity: 1, easing: EASE_OUT },
-        ],
-        { duration: DAB_MS, easing: EASE_OUT },
-      );
-    }
-  }
-
-  let gestureEndMs = isMult ? MULT_TEXT_END : DIP_END;
-  let settled = false;
-  const settle = () => {
-    if (settled) return;
-    settled = true;
-    card.clearCellDigit(cell);
-    refreshSvgOverlayInk(root);
-    card.clearSparkles();
-    card.hideShine();
-    card.endMotion(token);
     onSettled?.();
-  };
-
-  if (!playShine) {
-    void dip.finished.then(settle, settle);
-    return;
-  }
-
-  const band = card.shineBand(cardWidth, cardHeight, isMult);
-  const size = shineSize(cardWidth, cardHeight, isMult);
-  band.style.width = `${size.width}px`;
-  band.style.height = `${size.height}px`;
-  const delay = isMult ? MULT_SHINE_DELAY : SHINE_DELAY;
-  const duration = isMult ? MULT_SHINE_MS : SHINE_MS;
-  band.animate(
-    [
-      { transform: shineTransform(cardWidth, cardHeight, 0, isMult) },
-      { transform: shineTransform(cardWidth, cardHeight, 1, isMult) },
-    ],
-    { duration, delay, easing: isMult ? "linear" : EASE_IN_OUT, fill: "both" },
-  );
-
-  gestureEndMs = isMult ? delay + duration : SHINE_END_MS;
-  if (isMult) {
-    const plan = card.layoutMultiplierSparkles(cardWidth, cardHeight);
-    gestureEndMs = plan.runEndMs;
-    const sparks = card.sparkles();
-    for (let i = 0; i < sparks.length; i++) {
-      const window = plan.windows[i];
-      const el = sparks[i];
-      if (!window || !el) continue;
-      const pulseDuration = Math.max(1, window.end - window.start);
-      playSparkleOpacity(
-        el,
-        [
-          { opacity: 0, offset: 0, easing: "linear" },
-          { opacity: SPARKLE_PEAK_OPACITY, offset: 0.5, easing: "linear" },
-          { opacity: 0, offset: 1 },
-        ],
-        { duration: pulseDuration, delay: window.start, easing: "linear" },
-      );
-    }
-  }
-
-  window.setTimeout(settle, gestureEndMs + 50);
+  }, settleMs + 50);
+  return settleMs;
 }

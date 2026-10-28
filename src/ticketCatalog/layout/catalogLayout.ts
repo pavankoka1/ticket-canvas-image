@@ -66,12 +66,14 @@ export function getActiveLayout(): CatalogLayout {
 }
 
 export function setActiveLayout(next: CatalogLayout): void {
+  /** Only TicketCatalogController.applyLayout (and Compare mount) may commit live layout. */
   active = next;
 }
 
-/** Stable key for atlas warm + canvas paint (card width changes invalidate). */
+/** Stable key for atlas warm + canvas paint (card width or token offsets invalidate). */
 export function catalogLayoutCacheKey(layout: CatalogLayout): string {
-  return `${layout.metrics.id}|${layout.cardWidth}|${layout.columns}|${layout.cardHeight}`;
+  const m = layout.metrics;
+  return `${m.id}|${layout.cardWidth}|${layout.columns}|${layout.cardHeight}|${m.cellMarginTop}|${m.numberDrop}|${m.separatorLift}`;
 }
 
 export function rowHeight(layout: CatalogLayout = active): number {
@@ -91,12 +93,6 @@ export function contentHeight(ticketCount: number, layout: CatalogLayout = activ
   const rows = Math.ceil(ticketCount / layout.columns);
   if (rows === 0) return 0;
   return rows * layout.cardHeight + (rows - 1) * layout.gap;
-}
-
-export function readCatalogCardHeight(el: HTMLElement | null, fallback = 43): number {
-  if (!el) return fallback;
-  const raw = parseFloat(getComputedStyle(el).getPropertyValue("--ticket-card-height"));
-  return Number.isFinite(raw) && raw > 0 ? raw : fallback;
 }
 
 /** @pp/core `--core-media-larger-than-wide` */

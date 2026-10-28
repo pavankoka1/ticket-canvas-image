@@ -21,6 +21,7 @@ import {
 } from "./atlas/idDigitAtlas";
 import { BALLS_PER_TICKET, canvasTileTickets } from "../constants";
 import { isWinTicket, type Ticket, type TicketSlot } from "../model/tickets";
+import { snappedTicketSeparatorTop } from "../model/ticketPresets";
 
 /** Cooperative yield so scroll can preempt; tiles still finish in one frame. */
 function yieldToMain(): Promise<void> {
@@ -116,11 +117,17 @@ export class CanvasPool {
    * Settled DOM band: one skip update and one async tile flush.
    * Skip changes and resume share that flush, so settle cannot paint twice.
    */
-  resumeWithBand(skipIds: ReadonlySet<string>): Promise<void> {
+  resumeWithBand(
+    skipIds: ReadonlySet<string>,
+    viewport?: { scrollTop: number; viewH: number },
+  ): Promise<void> {
     if (!this.ready) return Promise.resolve();
     const skipChanged = this.applySkip(skipIds);
     if (!skipChanged && !this.paused) return this.paintTail;
     this.paused = false;
+    if (viewport) {
+      this.flushDirtyTilesInViewportSync(viewport.scrollTop, viewport.viewH);
+    }
     return this.flushDirtyTiles();
   }
 
@@ -226,6 +233,20 @@ export class CanvasPool {
     const gen = ++this.paintGen;
     for (const tile of this.tiles) {
       if (!tile.dirty) continue;
+      if (!this.paintOneDirtyTile(tile, gen)) return;
+    }
+  }
+
+  /** Paint dirty tiles intersecting the scrollport (sync) — scroll settle safety net. */
+  flushDirtyTilesInViewportSync(scrollTop: number, viewH: number): void {
+    if (!this.ready || this.paused) return;
+    const gen = ++this.paintGen;
+    const top = scrollTop;
+    const bottom = scrollTop + viewH;
+    for (const tile of this.tiles) {
+      if (!tile.dirty) continue;
+      const tileBottom = tile.minY + tile.cssH;
+      if (tile.minY >= bottom || tileBottom <= top) continue;
       if (!this.paintOneDirtyTile(tile, gen)) return;
     }
   }
@@ -373,6 +394,7 @@ export class CanvasPool {
         canvas.className = "ticketCanvasLayer";
         canvas.style.position = "absolute";
         canvas.style.left = "0";
+        canvas.style.top = "0";
         canvas.style.pointerEvents = "none";
         canvas.style.opacity = "1";
         canvas.style.visibility = "visible";
@@ -795,7 +817,7 @@ function paintSeparators(
     const box = boxes[i]!;
     // Absolute snap once (same rule as cell blit).
     const sx = Math.round((x + box.x - sep) * dpr) / dpr;
-    const sy = Math.round((y + box.y + m.separatorMarginTop) * dpr) / dpr;
+    const sy = Math.round((y + snappedTicketSeparatorTop(m, dpr)) * dpr) / dpr;
     ctx.fillRect(sx, sy, sep, m.separatorHeight);
   }
 }

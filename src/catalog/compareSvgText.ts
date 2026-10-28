@@ -144,18 +144,8 @@ function textOf(el: Element | null): string {
     .trim();
 }
 
-/** Dab / multiplier cells must not paint the ball digit in the SVG overlay. */
+/** Ball digit, kept under a dab / multiplier disc (it is painted before the badge). */
 function cellOverlayNumber(cell: HTMLElement): string {
-  if (cell.classList.contains("ticketCard__cell_hit")) return "";
-  const host = cell.querySelector<HTMLElement>(".ticketCard__badgeHost");
-  if (
-    host &&
-    host.style.display !== "none" &&
-    (host.classList.contains("ticketCard__badgeHost_dab") ||
-      host.classList.contains("ticketCard__badgeHost_multiplier"))
-  ) {
-    return "";
-  }
   return textOf(cell);
 }
 
@@ -315,9 +305,9 @@ export function buildTicketOverlay(root: HTMLElement, dpr = activeDpr()): SVGSVG
   const children: SVGElement[] = [];
   const chromeId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
   if (root.classList.contains(SVG_FACE_CLASS) && cellW > 0) {
-    children.push(...buildTicketChromeSvg(W, layout.metrics, face, cellW, chromeId, dpr));
+    children.push(...buildTicketChromeSvg(W, layout.metrics, face, chromeId, dpr));
   } else if (cellW > 0) {
-    children.push(...buildTicketSeparatorSvg(layout.metrics, cellW, face, dpr));
+    children.push(...buildTicketSeparatorSvg(layout.metrics, W, face, dpr));
   }
   children.push(...buildTicketOverlayInkChildren(root, dpr));
   const svg = svgEl(

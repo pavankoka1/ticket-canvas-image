@@ -1,106 +1,72 @@
+/**
+ * Multiplier sparkle anchors — Fortunamania `dom/ticketSparkles.ts`.
+ *
+ * The game measures its flex DOM; here the same boxes come from the layout so a draw
+ * does no layout reads. Spots, in card CSS px:
+ *   1 — first body separator, 2px under the win amount (header bottom)
+ *   2 — third separator, 2px under the separator ticks
+ *   3 — last separator + 2.5px, 2px under the ticket id (header bottom)
+ */
+import { catalogLayoutCacheKey, type CatalogLayout } from "../layout/catalogLayout";
 import {
   MULT_SHINE_END_MS,
-  MULT_SHINE_MS,
   MULT_SHINE_START_MS,
-  type SparkleWindow,
+  SPARKLE_COUNT,
+  SPARKLE_DURATION_MS,
+  SPARKLE_STAGGER_MS,
+  resolveShineProgressAtCardPoint,
   resolveSparkleDurationForPeaks,
   resolveSparkleWindow,
+  MULT_SHINE_MS,
 } from "../animation/drawPhase";
 
-import { resolveShineProgressAtCardPoint } from "./ticketShine";
-
-export type TicketSparkleSpot = { x: number; y: number };
+const SPARKLE_TRAIL_SEPARATOR_OFFSET_X = 2.5;
+const SPARKLE_BELOW_PX = 2;
 
 export type TicketSparklePlan = {
-  spots: readonly TicketSparkleSpot[];
-  windows: readonly SparkleWindow[];
-  durationMs: number;
-  runEndMs: number;
+  spots: readonly { x: number; y: number }[];
+  /** When the last pulse ends — the gesture settle for a multiplier on a gold ticket. */
+  settleMs: number;
 };
 
-export type TicketSparkleMeasureContext = {
-  firstSeparatorCell: HTMLElement | null;
-  thirdSeparatorCell: HTMLElement | null;
-  fifthSeparatorCell: HTMLElement | null;
-};
+let cachedKey = "";
+let cachedPlan: TicketSparklePlan | null = null;
 
-const SPARKLE_TRAIL_SEPARATOR_OFFSET_X = 2.5;
-
-function separatorX(cellEl: HTMLElement, cardRect: DOMRect): number {
-  return cellEl.getBoundingClientRect().left - cardRect.left;
+/** Flex cell left edge (`flex: 1 1 0`, separator margin between cells). */
+function cellLeft(i: number, cardWidth: number, sep: number): number {
+  return i * ((cardWidth - 5 * sep) / 6 + sep);
 }
 
-function readSeparatorMetrics(metricsEl: HTMLElement): { marginTop: number; height: number } {
-  const defaults = { marginTop: 4.5, height: 12 };
-  if (typeof getComputedStyle !== "function") return defaults;
-  const style = getComputedStyle(metricsEl);
-  return {
-    marginTop: Number.parseFloat(style.getPropertyValue("--ticket-separator-margin-top")) || defaults.marginTop,
-    height: Number.parseFloat(style.getPropertyValue("--ticket-separator-height")) || defaults.height,
-  };
-}
+export function resolveTicketSparklePlan(layout: CatalogLayout): TicketSparklePlan {
+  const key = catalogLayoutCacheKey(layout);
+  if (cachedPlan && key === cachedKey) return cachedPlan;
 
-function yBelowBodySeparatorRow(bodyEl: HTMLElement, cardEl: HTMLElement, cardRect: DOMRect): number {
-  const bodyRect = bodyEl.getBoundingClientRect();
-  const { marginTop, height } = readSeparatorMetrics(cardEl);
-  let paddingTop = 2.5;
-  if (typeof getComputedStyle === "function") {
-    paddingTop = Number.parseFloat(getComputedStyle(bodyEl).paddingTop) || paddingTop;
-  }
-  return bodyRect.top - cardRect.top + paddingTop + marginTop + height + 2;
-}
-
-export function measureTicketSparkleSpots(
-  cardEl: HTMLElement,
-  winEl: HTMLElement,
-  idEl: HTMLElement,
-  bodyEl: HTMLElement,
-  cells: TicketSparkleMeasureContext,
-  cardWidth: number,
-): readonly TicketSparkleSpot[] {
-  const winRect = winEl.getBoundingClientRect();
-  const idRect = idEl.getBoundingClientRect();
-  const bodyRect = bodyEl.getBoundingClientRect();
-  const cardRect = cardEl.getBoundingClientRect();
-
-  let x1 = cardWidth * (1 / 6);
-  if (cells.firstSeparatorCell) {
-    x1 = separatorX(cells.firstSeparatorCell, cardRect);
-  }
-
-  const yBelowWin = winRect.bottom - cardRect.top + 2;
-  const bodyMidY = bodyRect.top - cardRect.top + bodyRect.height / 2;
-  const y1 = Math.min(Math.max(yBelowWin, bodyRect.top - cardRect.top), bodyMidY);
-
-  const yBelowSep = yBelowBodySeparatorRow(bodyEl, cardEl, cardRect);
-  let x2 = cardWidth * (3 / 6);
-  const y2 = yBelowSep;
-  if (cells.thirdSeparatorCell) {
-    x2 = separatorX(cells.thirdSeparatorCell, cardRect);
-  }
-
-  let x3 = cardWidth - 4;
-  const y3 = idRect.bottom - cardRect.top + 2;
-  if (cells.fifthSeparatorCell) {
-    x3 = separatorX(cells.fifthSeparatorCell, cardRect) + SPARKLE_TRAIL_SEPARATOR_OFFSET_X;
-  }
-
-  return [
-    { x: x1, y: y1 },
-    { x: x2, y: y2 },
-    { x: x3, y: y3 },
+  const m = layout.metrics;
+  const w = layout.cardWidth;
+  const h = layout.cardHeight;
+  const sep = m.separatorWidth;
+  const header = m.headerHeight;
+  const underHeader = Math.min(Math.max(header + SPARKLE_BELOW_PX, header), header + m.bodyHeight / 2);
+  const underSeparators =
+    header + m.bodyPaddingY + m.separatorMarginTop + m.separatorHeight + SPARKLE_BELOW_PX;
+  const spots = [
+    { x: cellLeft(1, w, sep), y: underHeader },
+    { x: cellLeft(3, w, sep), y: underSeparators },
+    { x: cellLeft(5, w, sep) + SPARKLE_TRAIL_SEPARATOR_OFFSET_X, y: header + SPARKLE_BELOW_PX },
   ];
-}
 
-export function resolveTicketSparklePlan(
-  spots: readonly TicketSparkleSpot[],
-  cardWidth: number,
-  cardHeight: number,
-): TicketSparklePlan {
-  const progresses = spots.map((spot) => resolveShineProgressAtCardPoint(spot.x, spot.y, cardWidth, cardHeight, true));
-  const peakAts = progresses.map((p) => MULT_SHINE_START_MS + p * MULT_SHINE_MS);
-  const durationMs = resolveSparkleDurationForPeaks(peakAts);
-  const windows = progresses.map((p) => resolveSparkleWindow(MULT_SHINE_START_MS, MULT_SHINE_MS, p, durationMs));
-  const runEndMs = windows.reduce((max, w) => Math.max(max, w.end), MULT_SHINE_END_MS);
-  return { spots, windows, durationMs, runEndMs };
+  const progresses = spots.map((s) => resolveShineProgressAtCardPoint(s.x, s.y, w, h, true));
+  const duration = resolveSparkleDurationForPeaks(
+    progresses.map((p) => MULT_SHINE_START_MS + p * MULT_SHINE_MS),
+  );
+  const runEndMs = progresses.reduce(
+    (end, p) => Math.max(end, resolveSparkleWindow(p, duration).end),
+    MULT_SHINE_END_MS,
+  );
+  const lastPulseEnd =
+    MULT_SHINE_START_MS + (SPARKLE_COUNT - 1) * SPARKLE_STAGGER_MS + SPARKLE_DURATION_MS;
+
+  cachedKey = key;
+  cachedPlan = { spots, settleMs: Math.max(runEndMs, lastPulseEnd) };
+  return cachedPlan;
 }
