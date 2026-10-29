@@ -6,10 +6,10 @@ import {
   getLiveCellBoxModel,
   resolveCellBoxModel,
   setLiveCellBoxModel,
-  snapCss,
   type CellBoxModel,
 } from "../layout/cellBoxModel";
 import { getActiveLayout, type CatalogLayout } from "../layout/catalogLayout";
+import { snapLayoutOrigin } from "../layout/catalogOriginSnap";
 import { resolveLiveCellBoxModel } from "../canvas/atlas/cellAtlas";
 import type { TicketMetrics } from "../model/ticketPresets";
 import { BALLS_PER_TICKET, POOL_OFFSCREEN_PX } from "../constants";
@@ -495,10 +495,9 @@ export class TicketCard {
   }
 }
 
-/** Device-snapped slot origin. Same rounding the resting `translate` uses. */
+/** Snapped slot origin. Same rounding the resting `translate` uses. */
 export function snapSlot(x: number, y: number): { x: number; y: number } {
-  const dpr = activeDpr();
-  return { x: snapCss(x, dpr), y: snapCss(y, dpr) };
+  return { x: snapLayoutOrigin(x), y: snapLayoutOrigin(y) };
 }
 
 let slotDriftLogged = false;

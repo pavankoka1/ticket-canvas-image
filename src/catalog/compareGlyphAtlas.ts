@@ -6,12 +6,13 @@ import {
   quantizeGlyphDeviceX,
 } from "./compareGlyphEngine";
 import { OVERLAY_CLASS } from "./compareSvgText";
+import { getActiveLayout } from "../ticketCatalog/layout/catalogLayout";
+import { resolveTicketTextBaselines } from "../ticketCatalog/layout/ticketTextBaselines";
 import type { CompareRasterPart } from "../ticketCatalog/svg/ticketSvgRaster";
 
 export const AMOUNT_GLYPHS = "0123456789$,.";
 const GLYPH_REF_X0 = 6;
 const GLYPH_REF_STEP = 20;
-const HEADER_BASELINE_EM = 0.36;
 const HEADER_FONT = "MB-Onest, Onest, sans-serif";
 const HEADER_TEXT_STYLE = "font-kerning:none;font-feature-settings:'kern' 0";
 
@@ -50,10 +51,8 @@ function cssVarPx(root: HTMLElement, name: string): number {
   return parseFloat(root.style.getPropertyValue(name)) || 0;
 }
 
-function headerBaselineY(root: HTMLElement): number {
-  const headerH = cssVarPx(root, "--ticket-header-height");
-  const metaPx = cssVarPx(root, "--ticket-meta-font-size");
-  return headerH / 2 + HEADER_BASELINE_EM * metaPx;
+function headerBaselineY(): number {
+  return resolveTicketTextBaselines(getActiveLayout().metrics).header;
 }
 
 function overlayHeaderText(root: HTMLElement, field: HeaderField): SVGTextElement {
@@ -189,7 +188,7 @@ function batchedGlyphPart(
         if (node.nodeName.toLowerCase() !== "defs") node.remove();
       }
       const metaPx = cssVarPx(root, "--ticket-meta-font-size");
-      const headerY = headerBaselineY(root);
+      const headerY = headerBaselineY();
       for (const slot of slots) {
         const xCss = slot.refXCss + compareGlyphPhaseShiftCss(phase, dpr, phases);
         const t = svgEl("text", {
@@ -300,6 +299,21 @@ export async function warmHeaderGlyphPack(
     }
   }
 
+  // Restore every stored sheet at once; the serial loop below then only captures misses.
+  const prefetch: string[][] = [];
+  for (let phase = 0; phase < phases; phase++) {
+    for (const face of ["normal", "gold", "disabled"] as const) {
+      const fill = ID_FILLS[face];
+      prefetch.push(idSlots(fill).map((slot) => `${key}|glyph-id|${fill}|${slot.char}|${phase}|iso`));
+    }
+    for (const fill of [AMOUNT_FILLS.normal, AMOUNT_FILLS.disabled]) {
+      prefetch.push(
+        amountSlots(fill).map((slot) => `${key}|glyph-amt|${fill}|${encodeURIComponent(slot.char)}|${phase}|iso`),
+      );
+    }
+  }
+  await Promise.all(prefetch.map((keys) => cachedHasAll(keys).catch(() => false)));
+
   for (const face of ["normal", "gold", "disabled"] as const) {
     const idFill = ID_FILLS[face];
     const slots = idSlots(idFill);
@@ -394,21 +408,47 @@ export async function stampHeaderGlyphs(
   }
 }
 
-export function measureHeaderGlyphDeviceXs(
+/**
+ * Device x of each header glyph for many headers in one layout pass. Each header is
+ * a clone of the live overlay's id / amount `<text>` (same attributes, parent and
+ * CTM), so the positions equal a full bind + overlay rebuild per ticket.
+ */
+export function measureHeaderGlyphDeviceXsBatch(
   root: HTMLElement,
-  ticketNo: string,
-  win: string,
+  headers: readonly { no: string; win: string }[],
   dpr: number,
-): { id: number[]; amt: number[] } {
-  const id: number[] = [];
-  for (let i = 0; i < ticketNo.length; i++) {
-    id.push(tryMeasureHeaderGlyphDeviceX(root, "id", i, dpr) ?? 0);
+): { id: number[]; amt: number[] }[] {
+  const idRef = overlayHeaderText(root, "id");
+  const amtRef = headers.some((h) => h.win) ? overlayHeaderText(root, "amount") : null;
+  const cloneOf = (ref: SVGTextElement | null, value: string) => {
+    if (!ref || !value) return null;
+    const t = ref.cloneNode(false) as SVGTextElement;
+    t.textContent = value;
+    return t;
+  };
+  const clones = headers.map((h) => ({ id: cloneOf(idRef, h.no), amt: cloneOf(amtRef, h.win) }));
+  const added = clones.flatMap((c) => [c.id, c.amt]).filter((t): t is SVGTextElement => t !== null);
+  idRef.after(...added);
+  try {
+    const m = idRef.getScreenCTM();
+    if (!m) throw new Error("compare glyph: no screen CTM");
+    const left = root.getBoundingClientRect().left;
+    const xs = (t: SVGTextElement | null, len: number) => {
+      const out: number[] = [];
+      for (let i = 0; i < len; i++) {
+        if (!t) {
+          out.push(0);
+          continue;
+        }
+        const pt = t.getStartPositionOfChar(i);
+        out.push((new DOMPoint(pt.x, pt.y).matrixTransform(m).x - left) * dpr);
+      }
+      return out;
+    };
+    return headers.map((h, k) => ({ id: xs(clones[k]!.id, h.no.length), amt: xs(clones[k]!.amt, h.win.length) }));
+  } finally {
+    for (const t of added) t.remove();
   }
-  const amt: number[] = [];
-  for (let i = 0; i < win.length; i++) {
-    amt.push(tryMeasureHeaderGlyphDeviceX(root, "amount", i, dpr) ?? 0);
-  }
-  return { id, amt };
 }
 
 /** Catalog tile paint — device X from warm-time or cached measure (no live DOM reads). */

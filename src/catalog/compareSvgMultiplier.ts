@@ -8,14 +8,16 @@
  * (shadow, gradient stroke, gradient fill) of `.ticketCard__multiplier`.
  */
 
+import { getActiveLayout } from "../ticketCatalog/layout/catalogLayout";
+import { resolveTicketTextBaselines } from "../ticketCatalog/layout/ticketTextBaselines";
+
 const SVG_NS = "http://www.w3.org/2000/svg";
 const ROTATION_DEG = -15;
 const SUFFIX_SCALE = 0.769;
-const SUFFIX_GAP_EM = 0.06;
+/** FM `margin-left: 0.06em` on the suffix, whose own font is `SUFFIX_SCALE` em. */
+const SUFFIX_GAP_EM = 0.06 * SUFFIX_SCALE;
 const STROKE_EM = 0.13;
 const SHADOW_DY_EM = 0.0556;
-/** Optical centre: baseline offset from the badge centre, in em (Onest caps). */
-const BASELINE_EM = 0.36;
 
 export function svgEl<K extends keyof SVGElementTagNameMap>(
   tag: K,
@@ -107,8 +109,18 @@ export function svgMultiplierAssetsReady(): boolean {
   );
 }
 
-/** Rotated three-layer label centred on (cx, cy), in the caller's coordinates. */
-export function multiplierGroup(value: string, cx: number, cy: number, fontPx: number, disabled: boolean): SVGGElement {
+/**
+ * Rotated three-layer label centred on (cx, cy), in the caller's coordinates.
+ * `baselineDy` is the FM label baseline below the badge centre (`resolveTicketTextBaselines`).
+ */
+export function multiplierGroup(
+  value: string,
+  cx: number,
+  cy: number,
+  fontPx: number,
+  disabled: boolean,
+  baselineDy: number,
+): SVGGElement {
   const layer = (fill: string, stroke: string | null, dy: number) => {
     const suffix = svgEl("tspan", { "font-size": SUFFIX_SCALE * fontPx, dx: SUFFIX_GAP_EM * fontPx });
     suffix.textContent = "×";
@@ -116,7 +128,7 @@ export function multiplierGroup(value: string, cx: number, cy: number, fontPx: n
     digits.textContent = value;
     const attrs: Record<string, string | number> = {
       x: cx,
-      y: cy + BASELINE_EM * fontPx + dy,
+      y: cy + baselineDy + dy,
       "text-anchor": "middle",
       "font-family": "MB-Onest, Onest, sans-serif",
       "font-weight": 700,
@@ -150,27 +162,32 @@ export function multiplierHostSvg(
   dabSizeCss: number,
   disabled: boolean,
   discHref?: string,
+  /** Sub-pixel host offset (CSS px); the SVG grows by 1px to hold it. */
+  offset?: { x: number; y: number },
 ): SVGSVGElement {
   const fontPx = (13 * dabSizeCss) / 24;
   const size = dabSizeCss;
+  const box = offset ? size + 1 : size;
   const disc = discHref;
   const c = size / 2;
-  const svg = svgEl(
-    "svg",
-    {
-      class: "ticketCard__multiplierSvg",
-      width: size,
-      height: size,
-      viewBox: `0 0 ${size} ${size}`,
-      overflow: "visible",
-      "aria-hidden": "true",
-    },
+  const ink: SVGElement[] = [
     // Disc at explicit coordinates: no CSS background-size resampling of a
     // fractional host box.
     ...(disc ? [svgEl("image", { href: disc, x: 0, y: 0, width: size, height: size, preserveAspectRatio: "none" })] : []),
-    multiplierGroup(value, c, c, fontPx, disabled),
+    multiplierGroup(value, c, c, fontPx, disabled, resolveTicketTextBaselines(getActiveLayout().metrics).multiplier),
+  ];
+  return svgEl(
+    "svg",
+    {
+      class: "ticketCard__multiplierSvg",
+      width: box,
+      height: box,
+      viewBox: `0 0 ${box} ${box}`,
+      overflow: "visible",
+      "aria-hidden": "true",
+    },
+    ...(offset ? [svgEl("g", { transform: `translate(${offset.x} ${offset.y})` }, ...ink)] : ink),
   );
-  return svg;
 }
 
 /**

@@ -96,7 +96,7 @@ export function badgeSurfaceForTicket(ticket: Ticket): BadgeSurface {
   return "normal";
 }
 
-const BADGE_VERSION = "b55-fm-center";
+const BADGE_VERSION = "b56-fm-baselines";
 const SKIP_BADGE_IDB = false;
 const badgeCache = new Map<string, ImageBitmap>();
 const labelPlace = new Map<string, { dx: number; dy: number }>();

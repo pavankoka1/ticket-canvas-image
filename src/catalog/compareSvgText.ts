@@ -28,14 +28,14 @@ import {
   resolveCellBoxModel,
 } from "../ticketCatalog/layout/cellBoxModel";
 import { getActiveLayout } from "../ticketCatalog/layout/catalogLayout";
+import type { TicketMetrics } from "../ticketCatalog/model/ticketPresets";
+import { resolveTicketTextBaselines } from "../ticketCatalog/layout/ticketTextBaselines";
 import {
   buildTicketChromeSvg,
   buildTicketSeparatorSvg,
   SVG_CHROME_CLASS,
 } from "../ticketCatalog/svg/ticketSvgChrome";
 
-/** Baseline below the box centre, in em (Onest cap height ≈ 0.72 em). */
-const BASELINE_EM = 0.36;
 const FONT = "MB-Onest, Onest, sans-serif";
 export const OVERLAY_CLASS = "ticketCard__svgOverlay";
 export const SVG_FACE_CLASS = "ticketCard_svgFace";
@@ -87,6 +87,49 @@ export function beginDrawDabMotion(root: HTMLElement, cell: number): void {
     applyBadgeChrome(host, box, false, activeDpr());
   }
   host.style.zIndex = "3";
+}
+
+function cardClipRadius(W: number, m: TicketMetrics, dpr: number): number {
+  return Math.min(Math.round(m.radius * dpr) / dpr, W / 2, m.cardHeight / 2);
+}
+
+/** True when a badge box reaches outside the card's rounded rect. */
+function badgeLeavesCard(
+  cx: number,
+  cy: number,
+  size: number,
+  W: number,
+  m: TicketMetrics,
+  dpr: number,
+): boolean {
+  const x0 = cx - size / 2;
+  const y0 = cy - size / 2;
+  const x1 = x0 + size;
+  const y1 = y0 + size;
+  const H = m.cardHeight;
+  if (x0 < 0 || y0 < 0 || x1 > W || y1 > H) return true;
+  const r = cardClipRadius(W, m, dpr);
+  return (x0 < r || x1 > W - r) && (y0 < r || y1 > H - r);
+}
+
+let cardClipSeq = 0;
+
+/**
+ * A dab or disc that reaches past the card is clipped to it, like the canvas tile
+ * clip (`clipTicketRoundRectDevice`); on desktop ≥1366 the 24px dab sits 1px below
+ * the card. Only those layers: WebKit paints a clipped group through its own
+ * layer, so wrapping in-bounds ink (multiplier labels) moves it when draw motion
+ * reparents it. Ids are per overlay — `url(#id)` resolves document-wide.
+ */
+function clippedToCard(W: number, m: TicketMetrics, dpr: number, layer: SVGElement): SVGGElement {
+  const r = cardClipRadius(W, m, dpr);
+  const id = `ticketCardClip-${++cardClipSeq}`;
+  const clip = svgEl(
+    "clipPath",
+    { id, clipPathUnits: "userSpaceOnUse" },
+    svgEl("rect", { x: 0, y: 0, width: W, height: m.cardHeight, rx: r, ry: r }),
+  );
+  return svgEl("g", { "clip-path": `url(#${id})` }, clip, layer);
 }
 
 export type OverlayDrawLayers = { disc: SVGGElement | null; label: SVGGElement | null };
@@ -221,10 +264,9 @@ export function syncSvgOverlayHeaderInk(root: HTMLElement, dpr = activeDpr()): v
   }
   const face = overlayFace(root);
   const W = px(root, "--ticket-card-width") || parseFloat(root.style.width);
-  const headerH = px(root, "--ticket-header-height");
   const padX = px(root, "--ticket-header-pad-x");
   const metaPx = px(root, "--ticket-meta-font-size");
-  const headerY = headerH / 2 + BASELINE_EM * metaPx;
+  const headerY = resolveTicketTextBaselines(getActiveLayout().metrics, dpr).header;
   const id = textOf(root.querySelector(".ticketCard__id"));
   const amount = textOf(root.querySelector(".ticketCard__win"));
   upsertOverlayHeaderText(overlay, "end", id, W - padX, headerY, metaPx, COLORS.id[face]);
@@ -234,7 +276,6 @@ export function syncSvgOverlayHeaderInk(root: HTMLElement, dpr = activeDpr()): v
 function buildTicketOverlayInkChildren(root: HTMLElement, dpr: number): SVGElement[] {
   const face = overlayFace(root);
   const W = px(root, "--ticket-card-width") || parseFloat(root.style.width);
-  const headerH = px(root, "--ticket-header-height");
   const padX = px(root, "--ticket-header-pad-x");
   const metaPx = px(root, "--ticket-meta-font-size");
   const numberPx = px(root, "--ticket-number-font-size");
@@ -243,7 +284,9 @@ function buildTicketOverlayInkChildren(root: HTMLElement, dpr: number): SVGEleme
   const model = resolveCellBoxModel(layout, dpr);
   const cellW = model.cellW;
   const children: SVGElement[] = [];
-  const headerY = headerH / 2 + BASELINE_EM * metaPx;
+  const baselines = resolveTicketTextBaselines(layout.metrics, dpr);
+  const badgeInk: SVGElement[] = [];
+  const headerY = baselines.header;
   const id = textOf(root.querySelector(".ticketCard__id"));
   const amount = textOf(root.querySelector(".ticketCard__win"));
   if (id) children.push(text(id, W - padX, headerY, "end", metaPx, COLORS.id[face], true));
@@ -252,14 +295,13 @@ function buildTicketOverlayInkChildren(root: HTMLElement, dpr: number): SVGEleme
   root.querySelectorAll<HTMLElement>(".ticketCard__cell").forEach((cell, i) => {
     const cellBox = model.cells[i]!;
     const x0 = cellBox.x;
-    const y0 = cellBox.y;
     const value = cellOverlayNumber(cell);
     if (value) {
       children.push(
         text(
           value,
           x0 + cellW / 2,
-          y0 + cellBox.h / 2 + BASELINE_EM * numberPx,
+          baselines.number,
           "middle",
           numberPx,
           COLORS.number[face],
@@ -269,8 +311,13 @@ function buildTicketOverlayInkChildren(root: HTMLElement, dpr: number): SVGEleme
     const placeBadgeInk = (host: HTMLElement | null, imageHref: string | undefined) => {
       if (!host || host.style.display === "none" || !imageHref) return;
       const { cx, cy, size } = badgeHostInCardCss(i, layout, dpr);
-      children.push(
-        badgeHostLayer(i, cx, cy, size, svgEl("image", { href: imageHref, preserveAspectRatio: "none" })),
+      const layer = badgeHostLayer(
+        i, cx, cy, size, svgEl("image", { href: imageHref, preserveAspectRatio: "none" }),
+      );
+      badgeInk.push(
+        badgeLeavesCard(cx, cy, size, W, layout.metrics, dpr)
+          ? clippedToCard(W, layout.metrics, dpr, layer)
+          : layer,
       );
     };
     const dabHost = cell.querySelector<HTMLElement>(".ticketCard__badgeHost_dab");
@@ -286,11 +333,12 @@ function buildTicketOverlayInkChildren(root: HTMLElement, dpr: number): SVGEleme
       transform: `translate(${cx} ${cy})`,
     });
     labelWrap.append(
-      multiplierGroup(label, 0, 0, (13 * dab) / 24, face === "disabled"),
+      multiplierGroup(label, 0, 0, (13 * dab) / 24, face === "disabled", baselines.multiplier),
     );
-    children.push(labelWrap);
+    badgeInk.push(labelWrap);
   });
 
+  children.push(...badgeInk);
   return children;
 }
 

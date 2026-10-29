@@ -165,9 +165,10 @@ button:disabled {
   }
 }
 
+/* POC: portrait phone bands are FM's plus two rows (2 × (card + 4px gap)). */
 @media (orientation: portrait) and (width < 1024px), (orientation: portrait) and (height < 500px) {
   .catalogFrame {
-    --ticket-band-height: 160px;
+    --ticket-band-height: 242px; /* FM 160 */
 
     width: 100%;
     max-width: 612px;
@@ -176,7 +177,7 @@ button:disabled {
 
 @media (orientation: portrait) and (width >= 375px) and (width < 620px) and (height >= 720px) {
   .catalogFrame {
-    --ticket-band-height: 119px;
+    --ticket-band-height: 201px; /* FM 119 */
   }
 }
 
@@ -189,7 +190,7 @@ button:disabled {
 
 @media (orientation: portrait) and (height < 320px), (orientation: portrait) and (width < 360px) {
   .catalogFrame {
-    --ticket-band-height: 104px;
+    --ticket-band-height: 176px; /* FM 104 */
   }
 }
 
@@ -327,6 +328,7 @@ button:disabled {
   position: relative;
   display: flex;
   width: 100%;
+  margin-inline: auto;
   line-height: 0;
   text-align: center;
   flex-wrap: wrap;

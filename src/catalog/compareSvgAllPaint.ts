@@ -4,7 +4,7 @@
  * badge-body sprites at headerHeight, number patches, then header glyphs.
  */
 
-import { badgeHostDevice, type CellBox } from "../ticketCatalog/layout/cellBoxModel";
+import { badgeHostDevice, resolveCellBoxModel, type CellBox } from "../ticketCatalog/layout/cellBoxModel";
 import type { CatalogLayout } from "../ticketCatalog/layout/catalogLayout";
 import { ensureTicketFontsForLayout } from "../ticketCatalog/layout/ticketFont";
 import { applyTicketCssVars } from "../ticketCatalog/model/ticketPresets";
@@ -18,10 +18,10 @@ import {
   multiplierHostSvg,
 } from "./compareSvgMultiplier";
 
-type MultHostSprite = { bitmap: HTMLCanvasElement };
+/** `sx`/`sy`: device offset of the host box inside the phase-shifted bitmap. */
+type MultHostSprite = { bitmap: HTMLCanvasElement; sx: number; sy: number };
 
-const multHostCache = new Map<string, MultHostSprite>();
-let multHostWarmKey = "";
+const multHostCache = new Map<string, MultHostSprite>();let multHostWarmKey = "";
 
 const hostDiscBitmaps = new Map<boolean, HTMLCanvasElement>();
 const hostDabBitmaps = new Map<boolean, HTMLCanvasElement>();
@@ -93,30 +93,42 @@ export async function warmSvgAllMultiplierHosts(
   await ensureTicketFontsForLayout(layout.metrics);
   const dab = layout.metrics.dabSize;
   const next = new Map<string, MultHostSprite>();
-  type CaptureJob = { cacheKey: string; probe: HTMLDivElement };
+  type CaptureJob = { cacheKey: string; probe: HTMLDivElement; sx: number; sy: number };
   const jobs: CaptureJob[] = [];
+  const phases = new Map<string, { px: number; py: number }>();
+  const step = Math.max(1, Math.round(dpr));
+  for (const cell of resolveCellBoxModel(layout, dpr).cells) {
+    const py = devicePhase(badgeHostDevice(cell, dab, dpr).y, dpr);
+    for (let px = 0; px < step; px++) phases.set(`${px}|${py}`, { px, py });
+  }
   for (const face of ["normal", "gold", "disabled"] as const) {
     const disabled = face === "disabled";
     const disc = discDataUrl(disabled);
     if (!disc) continue;
     for (const value of MULTIPLIER_VALUES) {
-      const probe = document.createElement("div");
-      probe.style.cssText =
-        "position:fixed;left:-10000px;top:0;opacity:0.001;pointer-events:none;overflow:hidden";
-      probe.style.width = `${dab}px`;
-      probe.style.height = `${dab}px`;
-      applyTicketCssVars(probe, layout.metrics);
-      probe.append(multiplierHostSvg(String(value), dab, disabled, disc));
-      document.body.append(probe);
-      jobs.push({ cacheKey: `${face}|${value}`, probe });
+      for (const { px, py } of phases.values()) {
+        const probe = document.createElement("div");
+        // The raster clone copies computed opacity and logical insets, so park the
+        // probe with a transform (reset on the clone), not `left` or opacity.
+        probe.style.cssText =
+          "position:fixed;left:0;top:0;transform:translateX(-10000px);pointer-events:none;overflow:hidden";
+        probe.style.width = `${dab + 1}px`;
+        probe.style.height = `${dab + 1}px`;
+        applyTicketCssVars(probe, layout.metrics);
+        probe.append(
+          multiplierHostSvg(String(value), dab, disabled, disc, { x: px / dpr, y: py / dpr }),
+        );
+        document.body.append(probe);
+        jobs.push({ cacheKey: multHostKey(face, value, px, py), probe, sx: px, sy: py });
+      }
     }
   }
   await Promise.all(
-    jobs.map(async ({ cacheKey, probe }) => {
+    jobs.map(async ({ cacheKey, probe, sx, sy }) => {
       try {
         const bitmap = await rasterizeTicketSvg(probe, dpr, 0, layout.metrics);
         if (bitmap.width > 0 && bitmap.height > 0) {
-          next.set(cacheKey, { bitmap });
+          next.set(cacheKey, { bitmap, sx, sy });
         }
       } catch {
         // Fall back to compare badge atlas at paint time.
@@ -129,7 +141,25 @@ export async function warmSvgAllMultiplierHosts(
   if (commitIf && !commitIf()) return;
   multHostWarmKey = key;
   multHostCache.clear();
-  for (const [k, v] of next) multHostCache.set(k, v);
+  for (const [k, v] of next) {
+    multHostCache.set(k, v);
+    const [face, value] = k.split("|");
+    if (!multHostCache.has(`${face}|${value}`)) multHostCache.set(`${face}|${value}`, v);
+  }
+}
+
+/**
+ * Device offset of a badge host within its CSS px. Cards sit on whole CSS px, and
+ * WebKit places the label's SVG text differently at each sub-pixel phase, so the
+ * sprite is rasterized at the host's own phase (flex cell centres vary per cell).
+ */
+function devicePhase(deviceX: number, dpr: number): number {
+  const step = Math.max(1, Math.round(dpr));
+  return ((deviceX % step) + step) % step;
+}
+
+function multHostKey(face: string, value: number | string, px: number, py: number): string {
+  return `${face}|${value}|${px}|${py}`;
 }
 
 function multHostBitmapUsable(sprite: MultHostSprite | undefined): boolean {
@@ -250,6 +280,8 @@ export function paintSvgAllCatalogTicketInk(
   cells: readonly CellBox[],
 ): void {
   const hostInkReady = isCatalogSvgAllHostInkReady();
+  // Body-band badges carry the capture card's body behind the dab; under the host
+  // sprites that shows at the dab's corners. Fallback only.
   paintSvgAllCompareTicket(
     ctx,
     ticket,
@@ -261,20 +293,27 @@ export function paintSvgAllCatalogTicketInk(
     originX,
     originY,
     dpr,
+    "body-band",
+    undefined,
+    hostInkReady,
   );
 
   const m = layout.metrics;
   const dabDisabled = face === "disabled";
   for (let i = 0; i < 6; i++) {
-    if (!ticket.hits.includes(i)) continue;
+    const mult = ticketCellMultiplier(ticket, i);
+    if (!mult && !ticket.hits.includes(i)) continue;
     const cell = cells[i];
     if (!cell) continue;
     const host = badgeHostDevice(cell, m.dabSize, dpr);
-    const mult = ticketCellMultiplier(ticket, i);
     if (mult) {
-      const sprite = multHostCache.get(`${face}|${mult}`);
+      const sprite =
+        multHostCache.get(multHostKey(face, mult, devicePhase(host.x, dpr), devicePhase(host.y, dpr))) ??
+        multHostCache.get(multHostKey(face, mult, 0, devicePhase(host.y, dpr))) ??
+        multHostCache.get(`${face}|${mult}`);
       if (!multHostBitmapUsable(sprite)) continue;
-      ctx.drawImage(sprite!.bitmap, originX + host.x, originY + host.y, host.w, host.h);
+      const { bitmap, sx, sy } = sprite!;
+      ctx.drawImage(bitmap, sx, sy, host.w, host.h, originX + host.x, originY + host.y, host.w, host.h);
       continue;
     }
     if (!hostInkReady) continue;

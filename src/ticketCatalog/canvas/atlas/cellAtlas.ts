@@ -49,7 +49,7 @@ type AtlasEntry = {
 };
 
 /** Snapshot from real ticket DOM; cellW = (cw − 6) / 6. Sprites ink-shifted to native. */
-const ATLAS_VERSION = "v25-fm-center";
+const ATLAS_VERSION = "v26-fm-baselines";
 
 const ramCache = new Map<string, AtlasEntry>();
 

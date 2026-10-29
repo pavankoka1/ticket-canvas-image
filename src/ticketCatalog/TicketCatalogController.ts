@@ -45,10 +45,7 @@ import {
   type Ticket,
   type TicketSlot,
 } from "./model/tickets";
-import {
-  snapCatalogLaneToDeviceGrid,
-  snapScrollTopToDeviceGrid,
-} from "./layout/catalogOriginSnap";
+import { snapCatalogFrameOrigin } from "./layout/catalogOriginSnap";
 import { applyTicketCssVars, resolveTicketMetrics } from "./model/ticketPresets";
 import { resolveTicketSparklePlan } from "./dom/ticketSparkles";
 import type { ToolbarRefs } from "./buildToolbar";
@@ -101,6 +98,7 @@ export class TicketCatalogController {
   private scrollCleanup: (() => void) | null = null;
   private resizeCleanup: (() => void) | null = null;
   private ro: ResizeObserver | null = null;
+  private originRo: ResizeObserver | null = null;
   private bandResyncGen = 0;
   private lastBandFingerprint = "";
   /** Bumped to drop a settle rAF chain or an in-flight tile flush's DOM hide. */
@@ -136,7 +134,7 @@ export class TicketCatalogController {
     this.bindViewport();
     this.bindResizeObserver();
 
-    this.scheduleAtlasWarm();
+    this.startCanvasWarm();
   }
 
   /** Coalesce atlas warm with resize settle (Safari mobile URL bar shifts card width). */
@@ -163,6 +161,7 @@ export class TicketCatalogController {
     this.settleInFlight = false;
     this.resizeCleanup?.();
     this.ro?.disconnect();
+    this.originRo?.disconnect();
     this.canvas?.clear();
     this.host.domHost.replaceChildren();
     this.dom = null;
@@ -412,7 +411,7 @@ export class TicketCatalogController {
     this.host.content.style.height = count > 0 && height > 0 ? `${height}px` : "";
     this.host.content.style.minHeight = "";
 
-    snapCatalogLaneToDeviceGrid(this.host.content);
+    this.snapFrameOrigin();
 
     if (layoutChanged) {
       this.host.domHost.style.visibility = "hidden";
@@ -476,7 +475,10 @@ export class TicketCatalogController {
     const bandW = contentWidth(layout);
     this.host.content.style.width = bandW > 0 ? `${bandW}px` : "";
     this.host.content.style.height = count > 0 && height > 0 ? `${height}px` : "";
-    snapCatalogLaneToDeviceGrid(this.host.content);
+  }
+
+  private snapFrameOrigin(): void {
+    snapCatalogFrameOrigin(this.host.catalogFrame, this.host.content, this.host.scroll);
   }
 
   private scheduleCanvasAfterResize(forceRebuild = false): void {
@@ -704,7 +706,6 @@ export class TicketCatalogController {
 
   /** DOM band + canvas skip holes — only after scroll motion settles (300ms). */
   private onScrollSettled(): void {
-    snapScrollTopToDeviceGrid(this.host.scroll);
     this.setOverflowingStart(this.host.scroll.scrollTop > SCROLL_TOP_EPSILON_PX);
     this.settleBandAtRest();
   }
@@ -820,6 +821,9 @@ export class TicketCatalogController {
       this.onCatalogFrameResize(inlineSize);
     });
     this.ro.observe(this.host.catalogFrame);
+    // The toolbar's text height places the frame; re-snap when it changes.
+    this.originRo = new ResizeObserver(() => this.snapFrameOrigin());
+    this.originRo.observe(this.host.ui.toolbar);
   }
 
   private onTicketsChanged(added: string[]): void {

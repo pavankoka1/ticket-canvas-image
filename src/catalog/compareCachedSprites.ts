@@ -1,4 +1,5 @@
 /** Compare-only reusable HTML/CSS sprites. No catalog cache or geometry mutation. */
+import { ticketTextBaselinesKey } from '../ticketCatalog/layout/ticketTextBaselines';
 import { loadSprites, saveSpritesBatch } from '../ticketCatalog/canvas/atlas/atlasStore';
 import { encodeCompareCanvasPng } from './comparePersistEncodeClient';
 import {
@@ -53,7 +54,7 @@ export type ComparePaintPack = {
 type Pack = ComparePaintPack;
 
 /** Bump when warm capture or layout/cell geometry semantics change (invalidates IDB sheets). */
-const COMPARE_PACK_SCHEMA = 'v63-fm-center';
+const COMPARE_PACK_SCHEMA = 'v66-badge-clip-edge';
 
 export function comparePackLayoutGeomKey(layout: CatalogLayout, dpr: number): string {
   const model = resolveCellBoxModel(layout, dpr);
@@ -63,7 +64,7 @@ export function comparePackLayoutGeomKey(layout: CatalogLayout, dpr: number): st
 
 function prefix(layout: CatalogLayout, dpr: number): string {
   const phases = usesSvgText() ? compareGlyphPhaseCount() : 0;
-  return `compare-sprites-${COMPARE_PACK_SCHEMA}|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|number-sheet-patches|badge-no-cell-digits|overlay-dab|disabled-face-no-win|body-pad-snap|defer-idb-persist|sheet-glyphs-badges|layout-geom|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header`;
+  return `compare-sprites-${COMPARE_PACK_SCHEMA}|html-zoom|whole-css-origin|${usesSvgText() ? 'svg-all' : usesSvgMultiplier() ? 'svg-mult' : 'html-mult'}|glyph-phases-${phases}|isolated-header|kerning-css|number-sheet-patches|badge-no-cell-digits|overlay-dab|disabled-face-no-win|body-pad-snap|defer-idb-persist|sheet-glyphs-badges|layout-geom|${JSON.stringify(layout)}|${dpr}|MB-Onest-700|center-header|fm-baselines-${ticketTextBaselinesKey(layout.metrics, dpr)}`;
 }
 
 type CssRect = { x: number; y: number; width: number; height: number };
@@ -102,6 +103,20 @@ type SheetPersistItem = {
 
 const persistQueue: (SpritePersistItem | SheetPersistItem)[] = [];
 const decodedSheets = new Map<string, Promise<HTMLCanvasElement | null>>();
+/** IDB sheet records, shared by every sprite cropped from the sheet. Misses are not kept. */
+const storedSheets = new Map<string, Promise<Awaited<ReturnType<typeof loadSprites>>>>();
+
+function loadSheetRecord(sheetKey: string): ReturnType<typeof loadSprites> {
+  let pending = storedSheets.get(sheetKey);
+  if (!pending) {
+    pending = loadSprites(sheetKey).then((row) => {
+      if (!row) storedSheets.delete(sheetKey);
+      return row;
+    });
+    storedSheets.set(sheetKey, pending);
+  }
+  return pending;
+}
 const numberPatchMeta = new Map<string, { dx: number; dy: number }>();
 const PERSIST_ENCODE_CHUNK = 8;
 let persistDrain: Promise<void> | null = null;
@@ -156,6 +171,7 @@ function scheduleFlushPersistQueue(): void {
           records.push(...encoded);
         }
         await saveSpritesBatch(records);
+        for (const record of records) storedSheets.delete(record.key);
       }
     } finally {
       persistDrain = null;
@@ -324,7 +340,7 @@ async function loadInkDeviceRectFromSheet(
 ): Promise<DeviceRect | null> {
   const sheetKey = sheetKeyForSprite(spriteKey);
   if (!sheetKey) return null;
-  const stored = await loadSprites(sheetKey);
+  const stored = await loadSheetRecord(sheetKey);
   if (!stored?.blobs[0] || !isCompareSheetMeta(stored.meta)) return null;
   const expectedGeom = expectedLayoutGeomKey(dpr, layoutGeomKey);
   if (!stored.meta.layoutGeomKey || stored.meta.layoutGeomKey !== expectedGeom) return null;
@@ -341,12 +357,16 @@ function invalidateWarmSheetRam(sheetKey: string, spriteKeys: readonly string[],
     numberPatchMeta.delete(spriteKey);
   }
   decodedSheets.delete(`${sheetKey}|d${dpr}`);
+  storedSheets.delete(sheetKey);
 }
 
 function invalidatePackDecodedSheets(packPrefix: string, dpr: number): void {
   const sheetRoot = `sheet|${packPrefix}|`;
   for (const k of decodedSheets.keys()) {
     if (k.startsWith(sheetRoot) && k.endsWith(`|d${dpr}`)) decodedSheets.delete(k);
+  }
+  for (const k of storedSheets.keys()) {
+    if (k.startsWith(sheetRoot)) storedSheets.delete(k);
   }
 }
 
@@ -375,7 +395,7 @@ async function loadSpriteFromSheet(
 ): Promise<Sprite | null> {
   const sheetKey = sheetKeyForSprite(spriteKey);
   if (!sheetKey) return null;
-  const stored = await loadSprites(sheetKey);
+  const stored = await loadSheetRecord(sheetKey);
   const blob = stored?.blobs[0];
   if (!blob || !isCompareSheetMeta(stored.meta)) return null;
   const expectedGeom = expectedLayoutGeomKey(dpr, layoutGeomKey);
@@ -386,10 +406,10 @@ async function loadSpriteFromSheet(
   if (!sheetCanvas || sheetCanvas.width < 1 || sheetCanvas.height < 1) return null;
   const source = stored.meta.source instanceof Blob ? stored.meta.source : blob;
   const union = stored.meta.sheetUnion;
+  if (!sheetRegionHasVisibleInk(sheetCanvas, union, crop, dpr)) return null;
   const bitmap = spriteKey.includes('|glyph-')
     ? cropGlyphFromSheet(sheetCanvas, union, crop, dpr)
     : cropFromWarmSheet(sheetCanvas, union, crop, dpr);
-  if (!bitmapHasVisibleInk(bitmap)) return null;
   return { bitmap, blob: source };
 }
 
@@ -409,6 +429,7 @@ function commitCompareWarmSheet(
   cropFromSheet: CropFromSheet,
   layoutGeomKey: string,
 ): void {
+  storedSheets.delete(sheetKey);
   const captured = rasterSvgBlob(sheet);
   const source = captured;
   if (!source) throw new Error('Compare warm sheet has no SVG source');
@@ -434,6 +455,9 @@ function resetPackWarmRamCaches(packPrefix: string): void {
   for (const k of decodedSheets.keys()) {
     if (k.startsWith(sheetRoot)) decodedSheets.delete(k);
   }
+  for (const k of storedSheets.keys()) {
+    if (k.startsWith(sheetRoot)) storedSheets.delete(k);
+  }
 }
 
 async function loadNumberPatch(
@@ -452,7 +476,7 @@ async function loadNumberPatch(
   }
   const sheetKey = sheetKeyForSprite(spriteKey);
   if (!sheetKey) return null;
-  const stored = await loadSprites(sheetKey);
+  const stored = await loadSheetRecord(sheetKey);
   if (!stored?.blobs[0] || !isCompareSheetMeta(stored.meta)) return null;
   const crop = stored.meta.crops.find((row) => row.key === spriteKey);
   if (!crop || crop.dx === undefined || crop.dy === undefined) return null;
@@ -497,10 +521,8 @@ async function cachedHasAll(
   dpr = activeDpr(),
   layoutGeomKey?: string,
 ): Promise<boolean> {
-  for (const key of keys) {
-    if (!(await loadCachedIfPresent(key, dpr, layoutGeomKey))) return false;
-  }
-  return true;
+  const found = await Promise.all(keys.map((key) => loadCachedIfPresent(key, dpr, layoutGeomKey)));
+  return found.every(Boolean);
 }
 
 async function inkBatchReadyFromSheets(
@@ -508,12 +530,14 @@ async function inkBatchReadyFromSheets(
   dpr: number,
   layoutGeomKey: string,
 ): Promise<boolean> {
-  for (const spriteKey of inkKeys) {
-    if (!(await loadInkDeviceRectFromSheet(spriteKey, dpr, layoutGeomKey))) return false;
-    const sprite = await loadSpriteFromSheet(spriteKey, dpr, layoutGeomKey);
-    if (!sprite) return false;
-  }
-  return true;
+  const ready = await Promise.all(
+    inkKeys.map(
+      async (spriteKey) =>
+        Boolean(await loadInkDeviceRectFromSheet(spriteKey, dpr, layoutGeomKey)) &&
+        Boolean(await loadSpriteFromSheet(spriteKey, dpr, layoutGeomKey)),
+    ),
+  );
+  return ready.every(Boolean);
 }
 
 async function cached(key: string, capture: () => Promise<HTMLCanvasElement>): Promise<Sprite> {
@@ -630,6 +654,33 @@ function numberCellCrop(
   bodyHeight: number,
 ) {
   return { x: model.cells[cellIndex]!.x, y: headerHeight, width: model.cellW, height: bodyHeight };
+}
+
+const sheetPixels = new WeakMap<HTMLCanvasElement, Uint8ClampedArray>();
+
+/**
+ * `bitmapHasVisibleInk` of a crop, read from the sheet: one readback per sheet
+ * instead of one per sprite. Same source rect as `cropFromWarmSheet` / `cropGlyphFromSheet`.
+ */
+function sheetRegionHasVisibleInk(sheet: HTMLCanvasElement, union: CssRect, crop: CssRect, dpr: number, minAlpha = 10): boolean {
+  const { width: sw, height: sh } = sheet;
+  let pixels = sheetPixels.get(sheet);
+  if (!pixels) {
+    pixels = sheet.getContext('2d')!.getImageData(0, 0, sw, sh).data;
+    sheetPixels.set(sheet, pixels);
+  }
+  const sx = Math.round((crop.x - union.x) * dpr);
+  const sy = Math.round((crop.y - union.y) * dpr);
+  const x0 = Math.max(0, sx);
+  const y0 = Math.max(0, sy);
+  const x1 = Math.min(sw, sx + Math.round(crop.width * dpr));
+  const y1 = Math.min(sh, sy + Math.round(crop.height * dpr));
+  for (let y = y0; y < y1; y++) {
+    for (let x = x0; x < x1; x++) {
+      if (pixels[(y * sw + x) * 4 + 3]! >= minAlpha) return true;
+    }
+  }
+  return false;
 }
 
 function bitmapHasVisibleInk(bitmap: HTMLCanvasElement, minAlpha = 10): boolean {
@@ -800,6 +851,28 @@ async function ensureCompareWarmCaptureReady(
   await document.fonts.ready;
 }
 
+/**
+ * Read and decode every stored sheet of a pack at once. The warm loops below run
+ * one batch at a time (captures share layout state); restored batches then hit the
+ * decoded-sheet cache instead of waiting on IDB + decode in series.
+ */
+async function prefetchPackSheets(packPrefix: string, dpr: number, layoutGeomKey: string): Promise<void> {
+  const keys: string[] = [];
+  for (let batch = 0; batch < 10; batch++) {
+    for (const disabled of [false, true]) keys.push(compareSheetKey(packPrefix, 'number-ink', String(disabled), batch));
+    for (const face of ['normal', 'gold', 'disabled']) keys.push(compareSheetKey(packPrefix, 'number-opaque', face, batch));
+  }
+  for (const face of ['normal', 'gold', 'disabled']) keys.push(compareSheetKey(packPrefix, 'badge-body', face, 0));
+  await Promise.all(
+    keys.map(async (sheetKey) => {
+      const stored = await loadSheetRecord(sheetKey).catch(() => null);
+      if (!stored?.blobs[0] || !isCompareSheetMeta(stored.meta)) return;
+      if (stored.meta.layoutGeomKey !== layoutGeomKey) return;
+      await decodeStoredSheet(sheetKey, stored, dpr).catch(() => null);
+    }),
+  );
+}
+
 async function warmPackImpl(
   layout: CatalogLayout,
   dpr: number,
@@ -813,6 +886,7 @@ async function warmPackImpl(
     const layoutGeomKey = comparePackLayoutGeomKey(layout, dpr);
     const skipIdb = opts?.skipIdb === true;
     resetPackWarmRamCaches(key);
+    if (!skipIdb) await prefetchPackSheets(key, dpr, layoutGeomKey);
 
     const host = document.createElement('div');
     host.style.cssText = 'position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none';

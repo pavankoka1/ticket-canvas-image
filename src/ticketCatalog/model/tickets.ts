@@ -1,4 +1,4 @@
-import { activeDpr, snapCss } from "../layout/cellBoxModel";
+import { snapLayoutOrigin } from "../layout/catalogOriginSnap";
 import { resolveDrawSettleMs, type DrawKind } from "../animation/drawPhase";
 
 export type Ticket = {
@@ -232,7 +232,6 @@ export function buildSlots(
   rowGap: number,
 ): TicketSlot[] {
   const count = tickets.length;
-  const dpr = activeDpr();
   const fullRow = columns * cardW + Math.max(0, columns - 1) * colGap;
   const rows = Math.ceil(count / columns);
   return tickets.map((t, index) => {
@@ -248,8 +247,8 @@ export function buildSlots(
     return {
       id: t.id,
       index,
-      x: snapCss(x, dpr),
-      y: snapCss(y, dpr),
+      x: snapLayoutOrigin(x),
+      y: snapLayoutOrigin(y),
     };
   });
 }
