@@ -224,15 +224,11 @@ export class DomPool {
   /** Hide pool slots evicted from the band — call after canvas has repainted them. */
   hideEvictedSlots(pendingHide: readonly number[]): void {
     if (!this.ready || pendingHide.length === 0) return;
+    // A slot evicted from the band may have been rebound to another ticket in
+    // the same pass. One set beats rescanning every binding per evicted slot.
+    const stillBound = new Set(this.byId.values());
     for (const idx of pendingHide) {
-      let reused = false;
-      for (const bound of this.byId.values()) {
-        if (bound === idx) {
-          reused = true;
-          break;
-        }
-      }
-      if (!reused) this.cards[idx]!.hide();
+      if (!stillBound.has(idx)) this.cards[idx]!.hide();
     }
   }
 

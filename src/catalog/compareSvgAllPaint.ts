@@ -22,7 +22,10 @@ import {
 /** `sx`/`sy`: device offset of the host box inside the phase-shifted bitmap. */
 type MultHostSprite = { bitmap: HTMLCanvasElement; sx: number; sy: number };
 
+/** Keyed by face, value and device phase. Rebuilt whole on every warm. */
 const multHostCache = new Map<string, MultHostSprite>();
+/** Keyed by face and value only — used when a cell lands on an unwarmed phase. */
+const multHostFallback = new Map<string, MultHostSprite>();
 let multHostWarmKey = "";
 
 function hostInkKey(layout: CatalogLayout, dpr: number): string {
@@ -119,7 +122,7 @@ export async function warmSvgAllMultiplierHosts(
   // One sheet, one capture (WebKit stalls on concurrent foreignObject decodes).
   // Each host sits in a whole-CSS-px slot, shifted by its device phase like the
   // DOM overlay's `translate(cx cy)`.
-  type Slot = { cacheKey: string; sx: number; sy: number };
+  type Slot = { face: string; value: number; cacheKey: string; sx: number; sy: number };
   const slots: Slot[] = [];
   const pitch = Math.ceil(dab) + 2;
   const cols = phases.size;
@@ -142,6 +145,8 @@ export async function warmSvgAllMultiplierHosts(
           ),
         );
         slots.push({
+          face,
+          value,
           cacheKey: multHostKey(face, value, px, py),
           sx: Math.round(x0 * dpr) + px,
           sy: Math.round(y0 * dpr) + py,
@@ -184,10 +189,12 @@ export async function warmSvgAllMultiplierHosts(
   if (commitIf && !commitIf()) return;
   multHostWarmKey = key;
   multHostCache.clear();
-  for (const [k, v] of next) {
-    multHostCache.set(k, v);
-    const [face, value] = k.split("|");
-    if (!multHostCache.has(`${face}|${value}`)) multHostCache.set(`${face}|${value}`, v);
+  multHostFallback.clear();
+  for (const [k, v] of next) multHostCache.set(k, v);
+  for (const slot of slots) {
+    const sprite = next.get(slot.cacheKey);
+    const fallbackKey = `${slot.face}|${slot.value}`;
+    if (sprite && !multHostFallback.has(fallbackKey)) multHostFallback.set(fallbackKey, sprite);
   }
 }
 
@@ -237,32 +244,45 @@ export function clipTicketRoundRectDevice(
   ctx.clip();
 }
 
-/** Compare reuses the warm body band; catalog SVG chrome already paints the body. */
-export type SvgAllBadgeBlit = "body-band" | "badge-host";
+export type SvgAllTicketFace = "normal" | "gold" | "disabled";
+
+/**
+ * Everything a ticket blit needs that does not change from ticket to ticket:
+ * the warm sprite pack and this layout's device grid.
+ *
+ * Hoisted out of the tile loop on purpose. Building it per ticket cost 5–10%
+ * of the inked paint path, because `resolveCellBoxModel` rebuilds six cell
+ * boxes on every call.
+ */
+export type SvgAllPaintContext = {
+  pack: ComparePaintPack;
+  layout: CatalogLayout;
+  dpr: number;
+  /** Snapped cell boxes for this layout and dpr (`resolveCellBoxModel`). */
+  cells: readonly CellBox[];
+  cellW: number;
+};
 
 const EMPTY_CELLS: ReadonlySet<number> = new Set();
 
+/**
+ * Badge bands and cell digits for one ticket, at a device-pixel origin.
+ * `omitBadgeCells` are cells a caller is covering with host ink of its own.
+ */
 export function paintSvgAllCompareTicket(
   ctx: CanvasRenderingContext2D,
+  context: SvgAllPaintContext,
   ticket: Ticket,
-  pack: ComparePaintPack,
-  layout: CatalogLayout,
-  cellX: readonly number[],
-  cellW: number,
-  face: "normal" | "gold" | "disabled",
+  face: SvgAllTicketFace,
   originX: number,
   originY: number,
-  dpr: number,
-  badgeBlit: SvgAllBadgeBlit = "body-band",
-  cells?: readonly CellBox[],
-  /** Cells already covered by host ink. Everything else still needs the atlas badge. */
   omitBadgeCells: ReadonlySet<number> = EMPTY_CELLS,
 ): void {
+  const { pack, layout, dpr, cells, cellW } = context;
   const m = layout.metrics;
   const pad = Math.round(16 * dpr);
   const width = Math.round(cellW * dpr);
   const bandY = originY + Math.round(m.headerHeight * dpr);
-  const bodyTopDev = Math.round(m.headerHeight * dpr);
 
   for (let i = 0; i < 6; i++) {
     if (omitBadgeCells.has(i)) continue;
@@ -270,32 +290,13 @@ export function paintSvgAllCompareTicket(
     if (!ticket.hits.includes(i) && !mult) continue;
     const badge = pack.badges.get(`${face}|${mult || 1}`);
     if (!badge) continue;
-    if (badgeBlit === "badge-host" && cells?.[i]) {
-      const cell = cells[i]!;
-      const host = badgeHostDevice(cell, m.dabSize, dpr);
-      const cellLeftDev = Math.round(cellX[i]! * dpr);
-      const srcX = host.x - cellLeftDev + pad;
-      const srcY = host.y - bodyTopDev;
-      ctx.drawImage(
-        badge.bitmap,
-        srcX,
-        srcY,
-        host.w,
-        host.h,
-        originX + host.x,
-        originY + host.y,
-        host.w,
-        host.h,
-      );
-      continue;
-    }
     ctx.drawImage(
       badge.bitmap,
       pad,
       0,
       width,
       badge.bitmap.height,
-      originX + Math.round(cellX[i]! * dpr),
+      originX + Math.round(cells[i]!.x * dpr),
       bandY,
       width,
       badge.bitmap.height,
@@ -309,7 +310,7 @@ export function paintSvgAllCompareTicket(
     if (!patch) continue;
     ctx.drawImage(
       patch.sprite.bitmap,
-      originX + Math.round(cellX[i]! * dpr) + patch.dx,
+      originX + Math.round(cells[i]!.x * dpr) + patch.dx,
       bandY + patch.dy,
     );
   }
@@ -318,20 +319,19 @@ export function paintSvgAllCompareTicket(
 /**
  * Catalog tiles: compare body-band badges, then DOM-matched multiplier host sprites
  * (atlas body-band often bakes disc without label ink).
+ *
+ * Only for a ticket that `ticketHasBadgeInk` — one with none needs nothing but
+ * `paintSvgAllCompareTicket`.
  */
 export function paintSvgAllCatalogTicketInk(
   ctx: CanvasRenderingContext2D,
+  context: SvgAllPaintContext,
   ticket: Ticket,
-  pack: ComparePaintPack,
-  layout: CatalogLayout,
-  cellX: readonly number[],
-  cellW: number,
-  face: "normal" | "gold" | "disabled",
+  face: SvgAllTicketFace,
   originX: number,
   originY: number,
-  dpr: number,
-  cells: readonly CellBox[],
 ): void {
+  const { layout, dpr, cells } = context;
   const m = layout.metrics;
   const dabDisabled = face === "disabled";
 
@@ -351,7 +351,7 @@ export function paintSvgAllCatalogTicketInk(
             multHostKey(face, mult, devicePhase(host.x, dpr), devicePhase(host.y, dpr)),
           ) ??
           multHostCache.get(multHostKey(face, mult, 0, devicePhase(host.y, dpr))) ??
-          multHostCache.get(`${face}|${mult}`))
+          multHostFallback.get(`${face}|${mult}`))
         : dabHostSprite(dabDisabled);
       if (!multHostBitmapUsable(sprite)) continue;
       hosts.set(i, { sprite: sprite!, host });
@@ -360,21 +360,7 @@ export function paintSvgAllCatalogTicketInk(
 
   // Body-band badges carry the capture card's body behind the dab; under the host
   // sprites that shows at the dab's corners, so they cover only the rest.
-  paintSvgAllCompareTicket(
-    ctx,
-    ticket,
-    pack,
-    layout,
-    cellX,
-    cellW,
-    face,
-    originX,
-    originY,
-    dpr,
-    "body-band",
-    undefined,
-    new Set(hosts.keys()),
-  );
+  paintSvgAllCompareTicket(ctx, context, ticket, face, originX, originY, new Set(hosts.keys()));
 
   for (const { sprite, host } of hosts.values()) {
     ctx.drawImage(

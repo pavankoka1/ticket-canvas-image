@@ -11,7 +11,7 @@ import {
   isCatalogSvgPaintReady,
   paintCatalogTicketSvgAll,
 } from "./paint/catalogSvgPaint";
-import { catalogLaneWidth, getActiveLayout } from "../layout/catalogLayout";
+import { catalogLaneWidth, getActiveLayout, type CatalogLayout } from "../layout/catalogLayout";
 import { getCellBitmap } from "./atlas/cellAtlas";
 import {
   activeDpr,
@@ -59,13 +59,11 @@ type Tile = {
   dirty: boolean;
   /** Full tile clear+repaint (layout, ids, geometry). */
   dirtyFull: boolean;
-  /** Catalog slot indices whose skip bit flipped — incremental repaint only. */
-  skipFlipIndices: number[];
   /**
-   * Device-pixel snap from the last full paintTile. Skip paints reuse this so
-   * they never resize the buffer (canvas.width/height assignment clears it).
+   * Content-space snap from the last full `paintTile`, for ticket blits inside
+   * the tile (scroll-independent). Skip paints reuse it so they never resize
+   * the buffer — assigning canvas.width/height clears it.
    */
-  /** Content-space snap for ticket blits inside the tile (scroll-independent). */
   snap: {
     dpr: number;
     minY: number;
@@ -236,7 +234,6 @@ export class CanvasPool {
       if (!bandChanged) continue;
       tile.dirty = true;
       tile.dirtyFull = false;
-      tile.skipFlipIndices = [];
     }
     return true;
   }
@@ -357,7 +354,6 @@ export class CanvasPool {
     tile.canvas.height = 0;
     tile.dirty = true;
     tile.dirtyFull = true;
-    tile.skipFlipIndices = [];
     tile.snap = null;
   }
 
@@ -412,7 +408,6 @@ export class CanvasPool {
     if (blocked()) return false;
     tile.dirty = false;
     tile.dirtyFull = false;
-    tile.skipFlipIndices = [];
     return true;
   }
 
@@ -543,7 +538,6 @@ export class CanvasPool {
           lastUsed: 0,
           dirty: true,
           dirtyFull: true,
-          skipFlipIndices: [],
           snap: null,
         };
         this.tiles[i] = tile;
@@ -558,7 +552,6 @@ export class CanvasPool {
       if (rangeChanged || geomChanged) {
         tile.dirty = true;
         tile.dirtyFull = true;
-        tile.skipFlipIndices = [];
         tile.snap = null;
       }
 
@@ -613,39 +606,50 @@ export class CanvasPool {
     const bh = Math.max(1, Math.round(tile.cssH * snap.dpr));
     const sctx = this.takeScratch(bw, bh);
     if (!sctx) return;
-    const scratch = sctx.canvas;
-    const boxes = catalogCellBoxes(snap.dpr);
-    for (let i = tile.start; i < tile.end; i++) {
-      if (gen !== this.paintGen) return;
-      const slot = this.slots[i]!;
-      const ticket = this.ticketsById.get(slot.id);
-      if (!ticket || this.skipIds.has(slot.id)) continue;
-      this.paintSlotOnTile(sctx, slot, ticket, snap, layout, boxes);
-    }
+    if (!this.paintTileSlots(sctx, tile, gen, snap, layout)) return;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(scratch, 0, 0);
+    ctx.drawImage(sctx.canvas, 0, 0);
     this.punchSkipHoles(ctx, tile, snap);
   }
 
-  private paintSlotOnTile(
+  /**
+   * Paint every slot in the tile's range that the live DOM is not showing.
+   *
+   * The painter is resolved once for the whole range, not per ticket: svg-all
+   * paints in device space and the legacy blit installs a DPR transform of its
+   * own, so mixing them per slot would mean a `setTransform` per ticket — one
+   * of the costliest calls in this loop. Returns false when a newer paint
+   * generation superseded this one mid-range.
+   */
+  private paintTileSlots(
     ctx: CanvasRenderingContext2D,
-    slot: TicketSlot,
-    ticket: Ticket,
+    tile: Tile,
+    gen: number,
     snap: NonNullable<Tile["snap"]>,
-    layout: ReturnType<typeof getActiveLayout>,
-    boxes: { x: number; y: number; w: number; h: number }[],
-  ): void {
-    if (this.skipIds.has(slot.id)) return;
-    const dpr = snap.dpr;
-    const { cardWidth } = layout;
-    const { x: originX, y: originY } = this.slotOriginOnTile(slot, snap);
-    if (isCatalogSvgPaintReady()) {
-      paintCatalogTicketSvgAll(ctx, ticket, originX, originY, layout, dpr);
-    } else if (!hasCatalogSvgPaintPack()) {
-      paintCatalogTicket(ctx, ticket, originX, originY, cardWidth, dpr, boxes);
+    layout: CatalogLayout,
+  ): boolean {
+    const svgAll = isCatalogSvgPaintReady();
+    // A resize caught between layouts: the pack has warmed for another card
+    // width, and the legacy blit's chrome carries that layout's separators.
+    // Leaving the range blank is better than painting the wrong recipe.
+    if (!svgAll && hasCatalogSvgPaintPack()) return true;
+
+    const boxes = svgAll ? null : catalogCellBoxes(snap.dpr);
+    if (svgAll) {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      ctx.imageSmoothingEnabled = false;
     }
-    // Else a resize is between layouts: leave the slot blank until the pack warms.
+    for (let i = tile.start; i < tile.end; i++) {
+      if (gen !== this.paintGen) return false;
+      const slot = this.slots[i]!;
+      const ticket = this.ticketsById.get(slot.id);
+      if (!ticket || this.skipIds.has(slot.id)) continue;
+      const { x, y } = this.slotOriginOnTile(slot, snap);
+      if (svgAll) paintCatalogTicketSvgAll(ctx, ticket, x, y, layout, snap.dpr);
+      else paintCatalogTicket(ctx, ticket, x, y, layout.cardWidth, snap.dpr, boxes!);
+    }
+    return true;
   }
 
   private paintTile(tile: Tile, gen: number, force = false): void {
@@ -672,7 +676,6 @@ export class CanvasPool {
     c.style.height = `${bh / dpr}px`;
     c.style.transform = `translate3d(0, ${minY}px, 0)`;
 
-    const boxes = catalogCellBoxes(dpr);
     const snap = tile.snap;
 
     let paintCtx: CanvasRenderingContext2D;
@@ -691,13 +694,7 @@ export class CanvasPool {
       paintCtx = sctx;
     }
 
-    for (let i = tile.start; i < tile.end; i++) {
-      if (gen !== this.paintGen) return;
-      const slot = this.slots[i]!;
-      const ticket = this.ticketsById.get(slot.id);
-      if (!ticket || this.skipIds.has(slot.id)) continue;
-      this.paintSlotOnTile(paintCtx, slot, ticket, snap, layout, boxes);
-    }
+    if (!this.paintTileSlots(paintCtx, tile, gen, snap, layout)) return;
 
     if (scratch) {
       ctx.setTransform(1, 0, 0, 1, 0, 0);

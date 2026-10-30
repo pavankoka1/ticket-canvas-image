@@ -20,15 +20,17 @@ import {
   clipTicketRoundRectDevice,
   isCatalogSvgAllHostInkReady,
   paintSvgAllCatalogTicketInk,
+  paintSvgAllCompareTicket,
   warmSvgAllHostBadgeBitmaps,
   warmSvgAllMultiplierHosts,
+  type SvgAllPaintContext,
 } from "../../../catalog/compareSvgAllPaint";
 import { loadSvgMultiplierAssets } from "../../../catalog/compareSvgMultiplier";
 import { measureHeaderGlyphDeviceXsBatch, stampHeaderGlyphsAtDeviceX } from "../../../catalog/compareGlyphAtlas";
 import { styleCompareTicketDom } from "../../../catalog/compareDomAlign";
 import { TicketCard } from "../../dom/ticketCardElement";
 import { MAX_TICKETS } from "../../constants";
-import { isWinTicket, type Ticket } from "../../model/tickets";
+import { isWinTicket, ticketHasBadgeInk, type Ticket } from "../../model/tickets";
 
 let paintPack: ComparePaintPack | null = null;
 let paintPackLayoutKey = "";
@@ -247,23 +249,57 @@ export function prewarmCatalogSvgPaintJit(layout: CatalogLayout): void {
   scratch.height = 1;
   const ctx = scratch.getContext("2d");
   if (!ctx) return;
+  ctx.imageSmoothingEnabled = false;
   paintCatalogTicketSvgAll(ctx, JIT_WARM_TICKET, 0, 0, layout, activeDpr());
 }
 
-/** Temporary: `chromePixelProbe` compares the baked sprite edge with the tile edge. */
-export function catalogChromeSpriteForProbe(face: string): HTMLCanvasElement | null {
-  return paintPack?.catalogChrome.get(face)?.bitmap ?? null;
-}
+/** Layout and dpr each pool card's scaffolding was last built for. */
+const preparedFor = new WeakMap<HTMLElement, string>();
 
 export function prepareCatalogDomCard(card: TicketCard): void {
-  if (!isCatalogSvgPaintReady(getActiveLayout())) return;
   const layout = getActiveLayout();
+  if (!isCatalogSvgPaintReady(layout)) return;
+  const dpr = activeDpr();
   card.dom.classList.add(SVG_FACE_CLASS);
-  prepareCompareCard(card, layout, activeDpr());
+  // `prepareCompareCard` writes cell geometry, CSS vars and badge-host boxes,
+  // none of which depend on the ticket — but it runs for every card the pool
+  // rebinds, which is the whole band on a scroll settle or a shuffle. Only the
+  // ink below has to be redone each time.
+  const key = `${catalogLayoutCacheKey(layout)}|${dpr}`;
+  if (preparedFor.get(card.dom) !== key) {
+    prepareCompareCard(card, layout, dpr);
+    preparedFor.set(card.dom, key);
+  }
   refreshSvgOverlayInk(card.dom);
 }
 
-/** Paint one catalog tile ticket with the compare svg-all sprite stack. */
+let paintContext: SvgAllPaintContext | null = null;
+
+/**
+ * Sprite pack plus this layout's cell grid, rebuilt only when one of them
+ * changes. `resolveCellBoxModel` allocates six cell boxes per call, which is
+ * measurable when the tile loop runs it once per ticket.
+ */
+function catalogPaintContext(
+  pack: ComparePaintPack,
+  layout: CatalogLayout,
+  dpr: number,
+): SvgAllPaintContext {
+  if (paintContext?.pack === pack && paintContext.layout === layout && paintContext.dpr === dpr) {
+    return paintContext;
+  }
+  const model = resolveCellBoxModel(layout, dpr);
+  paintContext = { pack, layout, dpr, cells: model.cells, cellW: model.cellW };
+  return paintContext;
+}
+
+/**
+ * Paint one catalog tile ticket with the compare svg-all sprite stack.
+ *
+ * `ctx` must already be in device space — identity transform, smoothing off.
+ * `CanvasPool.paintTileSlots` establishes that once for the whole tile range
+ * rather than per ticket; `setTransform` is one of the costliest calls here.
+ */
 export function paintCatalogTicketSvgAll(
   ctx: CanvasRenderingContext2D,
   ticket: Ticket,
@@ -277,42 +313,36 @@ export function paintCatalogTicketSvgAll(
   // DOM. Callers choose the fallback; painting nothing is better than painting wrong.
   if (!pack?.headerGlyphs || pack.catalogChrome.size < 3) return;
 
-  const model = resolveCellBoxModel(layout, dpr);
   const face = ticket.disabled ? "disabled" : isWinTicket(ticket) ? "gold" : "normal";
   const chrome = pack.catalogChrome.get(face);
   if (!chrome) return;
 
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.imageSmoothingEnabled = false;
   const m = layout.metrics;
   // Chrome carries its own rounded corners. Clipping it again antialiases the arc
   // twice, so only the dab/multiplier ink is clipped (that is what can overflow).
   ctx.drawImage(chrome.bitmap, originX, originY);
-  ctx.save();
-  clipTicketRoundRectDevice(
-    ctx,
-    originX,
-    originY,
-    layout.cardWidth,
-    m.cardHeight,
-    m.radius,
-    dpr,
-  );
 
-  paintSvgAllCatalogTicketInk(
-    ctx,
-    ticket,
-    pack,
-    layout,
-    model.cells.map((c) => c.x),
-    model.cellW,
-    face,
-    originX,
-    originY,
-    dpr,
-    model.cells,
-  );
-  ctx.restore();
+  const context = catalogPaintContext(pack, layout, dpr);
+
+  // Cell digits sit inside the body band, clear of the corner arcs, so a ticket
+  // with no dab or multiplier needs neither the clip nor the save/restore that
+  // carries it — that is ten of the twenty-one canvas calls a plain ticket makes.
+  if (ticketHasBadgeInk(ticket)) {
+    ctx.save();
+    clipTicketRoundRectDevice(
+      ctx,
+      originX,
+      originY,
+      layout.cardWidth,
+      m.cardHeight,
+      m.radius,
+      dpr,
+    );
+    paintSvgAllCatalogTicketInk(ctx, context, ticket, face, originX, originY);
+    ctx.restore();
+  } else {
+    paintSvgAllCompareTicket(ctx, context, ticket, face, originX, originY);
+  }
 
   const winText = isWinTicket(ticket) && ticket.win ? ticket.win : "";
   const headerLayout = measureHeaderDeviceLayout(ticket, layout, dpr);

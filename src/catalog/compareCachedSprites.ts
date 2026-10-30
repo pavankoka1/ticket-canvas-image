@@ -7,6 +7,7 @@ import {
   applyCellBoxCssVars,
   badgeHostDevice,
   resolveCellBoxModel,
+  type CellBox,
 } from '../ticketCatalog/layout/cellBoxModel';
 import { alignCompareStackOrigin, styleCompareTicketDom } from './compareDomAlign';
 import { usesSvgMultiplier, usesSvgText } from './compareRenderMode';
@@ -1555,7 +1556,7 @@ export async function assembleCompareSprites(live: HTMLElement, ticket: Ticket, 
     },
   }));
   if (usesSvgText()) {
-    return assembleWithOverlay(live, ticket, layout, dpr, pack, chrome.bitmap, model.cells.map(c => c.x), model.cellW, liveKey);
+    return assembleWithOverlay(live, ticket, layout, dpr, pack, chrome.bitmap, model.cells, model.cellW, liveKey);
   }
   const headerPart = (selector: string): CompareRasterPart => ({
     crop: { x: 0, y: 0, width: layout.cardWidth, height: m.headerHeight },
@@ -1640,7 +1641,7 @@ async function assembleWithOverlay(
   dpr: number,
   pack: Pack,
   chrome: HTMLCanvasElement,
-  cellX: number[],
+  cells: readonly CellBox[],
   cellW: number,
   liveKey: string,
 ): Promise<HTMLCanvasElement> {
@@ -1652,7 +1653,7 @@ async function assembleWithOverlay(
   if (!ctx) throw new Error('Compare 2D context unavailable');
   ctx.imageSmoothingEnabled = false;
   ctx.drawImage(chrome, 0, 0);
-  paintSvgAllCompareTicket(ctx, ticket, pack, layout, cellX, cellW, face, 0, 0, dpr);
+  paintSvgAllCompareTicket(ctx, { pack, layout, dpr, cells, cellW }, ticket, face, 0, 0);
   const glyphs = await ensureHeaderGlyphs(live, layout, dpr, pack);
   const winText = isWinTicket(ticket) && ticket.win ? ticket.win : '';
   await stampHeaderGlyphs(ctx, live, ticket.no, winText, face, dpr, glyphs, async (_k, s) => trimSprite(s), liveKey);

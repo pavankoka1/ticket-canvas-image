@@ -330,15 +330,17 @@ export class TicketCatalogController {
   }
 
   /** Skip set for canvas: ids that actually have a DOM card (after rebind). */
-  private domSkipIds(): Set<string> {
+  /** `CanvasPool` copies what it is given, so neither branch copies again. */
+  private domSkipIds(): ReadonlySet<string> {
     const dom = this.dom;
     if (dom?.isReady) {
       const bound = dom.boundIds();
-      if (bound.size > 0) return new Set(bound);
+      if (bound.size > 0) return bound;
     }
-    return new Set(
-      this.bandForScroll(this.host.scroll.scrollTop).dom.map((s) => s.id),
-    );
+    const band = this.bandForScroll(this.host.scroll.scrollTop).dom;
+    const ids = new Set<string>();
+    for (const slot of band) ids.add(slot.id);
+    return ids;
   }
 
   private syncDom(

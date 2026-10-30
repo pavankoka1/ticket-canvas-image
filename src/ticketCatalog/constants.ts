@@ -9,8 +9,8 @@ export const DOM_POOL_SIZE_MOBILE = 28;
 /** Hard cap for the catalog add button on `/`. */
 export const MAX_TICKETS = 1000;
 
-/** Tickets per canvas tile (100–200 budget). */
-export const CANVAS_TILE_TICKETS = 150;
+/** Tickets per canvas tile below dpr 3. */
+export const CANVAS_TILE_TICKETS = 70;
 
 /** Pool size for the live DOM band. */
 export function domPoolSize(isMobile: boolean): number {
@@ -22,11 +22,16 @@ export function domPoolSize(isMobile: boolean): number {
  * (DPR_CAP is 4). Also shrink when `navigator.deviceMemory` reports ≤2GB —
  * that signal is Chrome/Android only; missing → keep the dpr-based default.
  *
- * At dpr 3 a 100-ticket tile is ~27MB, and one tile is also the unit a scroll
- * has to repaint before it can be shown. Smaller tiles keep both numbers down.
+ * A tile is also the unit of repaint, so its height is really a ratio against
+ * the scrollport: everything above that ratio is painted and never seen. These
+ * counts put a tile at roughly two scrollports on both the phone and desktop
+ * bands. Going wider does not save memory — `CANVAS_TILE_RETAIN_BYTES` holds
+ * the same total either way, in fewer, coarser pieces — and it costs the draw,
+ * which repaints every in-view tile from nothing once the gesture gives the
+ * canvas back (601ms → 329ms of a throttled six-ball round at 20).
  */
 export function canvasTileTickets(dpr: number): number {
-  let n = dpr >= 3 ? 40 : CANVAS_TILE_TICKETS;
+  let n = dpr >= 3 ? 20 : CANVAS_TILE_TICKETS;
   const mem = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
   if (mem != null && mem <= 2) n = Math.min(n, 40);
   return n;

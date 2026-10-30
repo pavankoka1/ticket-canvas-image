@@ -86,6 +86,15 @@ export function isWinTicket(t: Ticket): boolean {
   return t.hits.length >= WIN_MATCH_THRESHOLD;
 }
 
+/** Any cell carries a dab or multiplier badge — the only ink that can overflow the card. */
+export function ticketHasBadgeInk(ticket: Ticket): boolean {
+  if (ticket.hits.length > 0) return true;
+  for (const cell in ticket.multipliers) {
+    if (ticket.multipliers[Number(cell)]) return true;
+  }
+  return false;
+}
+
 /** Cell multiplier (handles numeric keys on `multipliers` records). */
 export function ticketCellMultiplier(ticket: Ticket, cell: number): number {
   const direct = ticket.multipliers[cell];

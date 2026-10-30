@@ -342,6 +342,19 @@ function buildTicketOverlayInkChildren(root: HTMLElement, dpr: number): SVGEleme
   return children;
 }
 
+let chromeIdSeq = 0;
+
+/**
+ * Unique suffix for this overlay's gradient and clip ids. A counter, not a
+ * timestamp plus `Math.random()`: two overlays built in the same millisecond
+ * were relying on five random base-36 characters not to collide, and the
+ * shuffle rebuilds overlays for the whole band at once.
+ */
+function nextChromeId(): string {
+  chromeIdSeq += 1;
+  return `c${chromeIdSeq}`;
+}
+
 /** Build the overlay for `root` from its CSS variables and inline geometry. */
 export function buildTicketOverlay(root: HTMLElement, dpr = activeDpr()): SVGSVGElement {
   const face = overlayFace(root);
@@ -351,7 +364,7 @@ export function buildTicketOverlay(root: HTMLElement, dpr = activeDpr()): SVGSVG
   const model = resolveCellBoxModel(layout, dpr);
   const cellW = model.cellW;
   const children: SVGElement[] = [];
-  const chromeId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+  const chromeId = nextChromeId();
   if (root.classList.contains(SVG_FACE_CLASS) && cellW > 0) {
     children.push(...buildTicketChromeSvg(W, layout.metrics, face, chromeId, dpr));
   } else if (cellW > 0) {
