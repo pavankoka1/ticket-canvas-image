@@ -71,7 +71,11 @@ function play(
   return anim;
 }
 
-function playOverlay(el: SVGGElement, keyframes: Keyframe[], opts: KeyframeAnimationOptions): void {
+function playOverlay(
+  el: SVGGElement,
+  keyframes: Keyframe[],
+  opts: KeyframeAnimationOptions,
+): Animation {
   const anim = el.animate(keyframes, { ...opts, fill: "forwards" });
   const settle = () => {
     anim.cancel();
@@ -79,7 +83,20 @@ function playOverlay(el: SVGGElement, keyframes: Keyframe[], opts: KeyframeAnima
     el.style.removeProperty("transform");
   };
   void anim.finished.then(settle, settle);
+  return anim;
 }
+
+/**
+ * Resolves once every animation of the gesture has ended, cancelled included.
+ * A `setTimeout` measured from this task would come due early: WAAPI dates an
+ * animation from the next frame, which on a busy phone is well past one frame.
+ */
+function whenGestureEnds(anims: readonly Animation[]): Promise<void> {
+  const ended = anims.map((anim) => anim.finished.then(noop, noop));
+  return Promise.all(ended).then(noop);
+}
+
+function noop(): void {}
 
 function overlayTranslatePrefix(el: SVGGElement): string {
   const match = /translate\(([-\d.]+)\s+([-\d.]+)\)/.exec(el.getAttribute("transform") ?? "");
@@ -116,7 +133,7 @@ function multTextKeyframes(at: string): Keyframe[] {
 }
 
 /** `buildDipScaleAnimation`: hold, 1 → 0.94 → 1 on the `scale` property. */
-function playDip(root: HTMLElement, multiplier: boolean): void {
+function playDip(root: HTMLElement, multiplier: boolean, anims: Animation[]): void {
   const end = multiplier ? MULT_DIP_END_MS : TICKET_DIP_END_MS;
   const start = multiplier ? MULT_DIP_START_MS : TICKET_DIP_START_MS;
   const bottom = multiplier ? MULT_DIP_BOTTOM_MS : TICKET_DIP_BOTTOM_MS;
@@ -131,44 +148,49 @@ function playDip(root: HTMLElement, multiplier: boolean): void {
   );
   const settle = () => anim.cancel();
   void anim.finished.then(settle, settle);
+  anims.push(anim);
 }
 
-function playMultBadge(card: TicketCard, cell: number): void {
+function playMultBadge(card: TicketCard, cell: number, anims: Animation[]): void {
   const root = card.dom;
   refreshSvgOverlayInk(root);
   const { disc, label } = beginDrawMultiplierMotion(root, cell);
   const discOpts = { duration: DAB_APPEAR_MS, easing: "linear" };
   const textOpts = { duration: MULT_TEXT_SETTLE_MS, easing: "linear" };
   if (disc) {
-    playOverlay(disc, badgePopKeyframes(overlayTranslatePrefix(disc), MULT_DISC_START_SCALE), discOpts);
+    anims.push(
+      playOverlay(disc, badgePopKeyframes(overlayTranslatePrefix(disc), MULT_DISC_START_SCALE), discOpts),
+    );
   } else {
     const host = card.badgeHostAt(cell);
     if (host) {
-      play(host, [
+      anims.push(play(host, [
         { scale: String(MULT_DISC_START_SCALE), opacity: 0 },
         { scale: "1", opacity: 1 },
-      ], discOpts);
+      ], discOpts));
     }
   }
   if (label) {
-    playOverlay(label, multTextKeyframes(overlayTranslatePrefix(label)), textOpts);
+    anims.push(playOverlay(label, multTextKeyframes(overlayTranslatePrefix(label)), textOpts));
   } else {
     const htmlLabel = card.badgeLabelAt(cell);
-    if (htmlLabel) play(htmlLabel, multTextKeyframes(""), textOpts, true);
+    if (htmlLabel) anims.push(play(htmlLabel, multTextKeyframes(""), textOpts, true));
   }
 }
 
-function playDabBadge(card: TicketCard, cell: number): void {
+function playDabBadge(card: TicketCard, cell: number, anims: Animation[]): void {
   beginDrawDabMotion(card.dom, cell);
   const host = card.badgeHostAt(cell);
   if (!host) return;
-  play(
-    host,
-    [
-      { scale: String(DAB_START_SCALE), opacity: 0 },
-      { scale: "1", opacity: 1 },
-    ],
-    { duration: DAB_APPEAR_MS, easing: EASE_OUT_CUBIC },
+  anims.push(
+    play(
+      host,
+      [
+        { scale: String(DAB_START_SCALE), opacity: 0 },
+        { scale: "1", opacity: 1 },
+      ],
+      { duration: DAB_APPEAR_MS, easing: EASE_OUT_CUBIC },
+    ),
   );
 }
 
@@ -178,6 +200,7 @@ function playShineAndSparkles(
   isMult: boolean,
   cardWidth: number,
   cardHeight: number,
+  anims: Animation[],
 ): void {
   const band = card.showShine(cardWidth, cardHeight, isMult);
   const anim = band.animate(
@@ -196,6 +219,7 @@ function playShineAndSparkles(
     () => card.hideShine(),
     () => card.hideShine(),
   );
+  anims.push(anim);
   if (!isMult) return;
   const sparkles = card.sparkles(resolveTicketSparklePlan(getActiveLayout()));
   sparkles.forEach((sparkle, i) => {
@@ -210,6 +234,7 @@ function playShineAndSparkles(
       sparkle.style.opacity = "0";
     };
     void spark.finished.then(settle, settle);
+    anims.push(spark);
   });
 }
 
@@ -243,12 +268,13 @@ export function playTicketDraw(
   card.clearSparkles();
   const token = card.beginMotion();
 
-  playDip(root, isMult);
-  if (isMult) playMultBadge(card, cell);
-  else playDabBadge(card, cell);
-  if (drawPlaysShine(kind, hasWin)) playShineAndSparkles(card, isMult, cardWidth, cardHeight);
+  const anims: Animation[] = [];
+  playDip(root, isMult, anims);
+  if (isMult) playMultBadge(card, cell, anims);
+  else playDabBadge(card, cell, anims);
+  if (drawPlaysShine(kind, hasWin)) playShineAndSparkles(card, isMult, cardWidth, cardHeight, anims);
 
-  window.setTimeout(() => {
+  void whenGestureEnds(anims).then(() => {
     if (card.ownsMotion(token)) {
       refreshSvgOverlayInk(root);
       card.clearSparkles();
@@ -256,6 +282,6 @@ export function playTicketDraw(
       card.endMotion(token);
     }
     onSettled?.();
-  }, settleMs + 50);
+  });
   return settleMs;
 }

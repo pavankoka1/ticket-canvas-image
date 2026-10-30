@@ -22,7 +22,7 @@ import {
   SVG_FACE_CLASS,
   refreshSvgOverlayInk,
 } from './compareSvgText';
-import { getActiveLayout, type CatalogLayout } from '../ticketCatalog/layout/catalogLayout';
+import { getActiveLayout, setCardLayout, type CatalogLayout } from '../ticketCatalog/layout/catalogLayout';
 import { applyTicketCellLayout, TicketCard } from '../ticketCatalog/dom/ticketCardElement';
 import { ensureTicketFontsForLayout } from '../ticketCatalog/layout/ticketFont';
 import { applyTicketCssVars } from '../ticketCatalog/model/ticketPresets';
@@ -54,7 +54,7 @@ export type ComparePaintPack = {
 type Pack = ComparePaintPack;
 
 /** Bump when warm capture or layout/cell geometry semantics change (invalidates IDB sheets). */
-const COMPARE_PACK_SCHEMA = 'v66-badge-clip-edge';
+const COMPARE_PACK_SCHEMA = 'v67-card-layout';
 
 export function comparePackLayoutGeomKey(layout: CatalogLayout, dpr: number): string {
   const model = resolveCellBoxModel(layout, dpr);
@@ -816,6 +816,7 @@ function configureCompareCaptureHost(
 }
 
 export function prepareCompareCard(card: TicketCard, layout: CatalogLayout, dpr: number): void {
+  setCardLayout(card.dom, layout);
   applyTicketCssVars(card.dom, layout.metrics, dpr);
   const model = resolveCellBoxModel(layout, dpr);
   const cells = [...card.dom.querySelectorAll<HTMLElement>('.ticketCard__cell')];
@@ -1261,9 +1262,16 @@ async function warmPackImpl(
 }
 
 function catalogChromeCacheKey(packPrefix: string, face: string): string {
-  const variant = CATALOG_FIGMA_DESKTOP_LOCK ? "svgface-v5" : "html";
+  const variant = CATALOG_FIGMA_DESKTOP_LOCK ? "svgface-v6" : "html";
   return `${packPrefix}|catalog-chrome|${variant}|${face}`;
 }
+
+/**
+ * `ticketDocumentCss` carries `:root{background:#1a1412}` into the raster, which
+ * bakes the page colour outside the card's rounded corners and leaves a light rim
+ * once the tile clips it. The card face comes from the overlay, not the backdrop.
+ */
+const CHROME_CAPTURE_BACKDROP = ':root{background:transparent!important}';
 
 /** Face chrome for catalog tiles (stable key — no live layout-origin fraction). */
 export async function warmCatalogChromeSprites(
@@ -1294,9 +1302,11 @@ export async function warmCatalogChromeSprites(
         if (CATALOG_FIGMA_DESKTOP_LOCK) card.dom.classList.add(SVG_FACE_CLASS);
         prepareCompareCard(card, layout, dpr);
         return capture({
-          css: CATALOG_FIGMA_DESKTOP_LOCK
-            ? '.ticketCard__cell::before{visibility:hidden!important}'
-            : '.ticketCard__cell::before{visibility:visible!important}',
+          css:
+            CHROME_CAPTURE_BACKDROP +
+            (CATALOG_FIGMA_DESKTOP_LOCK
+              ? '.ticketCard__cell::before{visibility:hidden!important}'
+              : '.ticketCard__cell::before{visibility:visible!important}'),
           prepare(root) {
             hideHeader(root);
             root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell) => {

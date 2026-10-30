@@ -27,7 +27,7 @@ import {
   badgeHostInCardCss,
   resolveCellBoxModel,
 } from "../ticketCatalog/layout/cellBoxModel";
-import { getActiveLayout } from "../ticketCatalog/layout/catalogLayout";
+import { layoutForCard } from "../ticketCatalog/layout/catalogLayout";
 import type { TicketMetrics } from "../ticketCatalog/model/ticketPresets";
 import { resolveTicketTextBaselines } from "../ticketCatalog/layout/ticketTextBaselines";
 import {
@@ -79,7 +79,7 @@ export function beginDrawDabMotion(root: HTMLElement, cell: number): void {
   if (!host || host.style.display === "none") return;
   const disabled = root.classList.contains("ticketCard_disabled");
   host.style.backgroundImage = `url("${disabled ? "/dab-disabled.png" : "/dab-full.png"}")`;
-  const layout = getActiveLayout();
+  const layout = layoutForCard(root);
   const model = resolveCellBoxModel(layout, activeDpr());
   const cellBox = model.cells[cell];
   if (cellBox) {
@@ -266,7 +266,7 @@ export function syncSvgOverlayHeaderInk(root: HTMLElement, dpr = activeDpr()): v
   const W = px(root, "--ticket-card-width") || parseFloat(root.style.width);
   const padX = px(root, "--ticket-header-pad-x");
   const metaPx = px(root, "--ticket-meta-font-size");
-  const headerY = resolveTicketTextBaselines(getActiveLayout().metrics, dpr).header;
+  const headerY = resolveTicketTextBaselines(layoutForCard(root).metrics, dpr).header;
   const id = textOf(root.querySelector(".ticketCard__id"));
   const amount = textOf(root.querySelector(".ticketCard__win"));
   upsertOverlayHeaderText(overlay, "end", id, W - padX, headerY, metaPx, COLORS.id[face]);
@@ -280,7 +280,7 @@ function buildTicketOverlayInkChildren(root: HTMLElement, dpr: number): SVGEleme
   const metaPx = px(root, "--ticket-meta-font-size");
   const numberPx = px(root, "--ticket-number-font-size");
   const dab = px(root, "--ticket-dab-size");
-  const layout = getActiveLayout();
+  const layout = layoutForCard(root);
   const model = resolveCellBoxModel(layout, dpr);
   const cellW = model.cellW;
   const children: SVGElement[] = [];
@@ -347,7 +347,7 @@ export function buildTicketOverlay(root: HTMLElement, dpr = activeDpr()): SVGSVG
   const face = overlayFace(root);
   const W = px(root, "--ticket-card-width") || parseFloat(root.style.width);
   const H = px(root, "--ticket-card-height") || parseFloat(root.style.height);
-  const layout = getActiveLayout();
+  const layout = layoutForCard(root);
   const model = resolveCellBoxModel(layout, dpr);
   const cellW = model.cellW;
   const children: SVGElement[] = [];

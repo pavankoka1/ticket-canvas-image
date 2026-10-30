@@ -20,4 +20,9 @@ void ensureTicketFont(16).then(({ face, mbOnest700 }) => {
     return;
   }
   mountTicketCatalog({ root });
+  if (import.meta.env.DEV) {
+    void import("./ticketCatalog/canvas/paint/chromePixelProbe").then(({ installChromePixelProbe }) =>
+      installChromePixelProbe(),
+    );
+  }
 });

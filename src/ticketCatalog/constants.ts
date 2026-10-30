@@ -21,13 +21,25 @@ export function domPoolSize(isMobile: boolean): number {
  * Tickets per tile. Shrink at high dpr so backing-store bytes stay bounded
  * (DPR_CAP is 4). Also shrink when `navigator.deviceMemory` reports ≤2GB —
  * that signal is Chrome/Android only; missing → keep the dpr-based default.
+ *
+ * At dpr 3 a 100-ticket tile is ~27MB, and one tile is also the unit a scroll
+ * has to repaint before it can be shown. Smaller tiles keep both numbers down.
  */
 export function canvasTileTickets(dpr: number): number {
-  let n = dpr >= 3 ? 100 : CANVAS_TILE_TICKETS;
+  let n = dpr >= 3 ? 40 : CANVAS_TILE_TICKETS;
   const mem = (navigator as Navigator & { deviceMemory?: number }).deviceMemory;
-  if (mem != null && mem <= 2) n = Math.min(n, 80);
+  if (mem != null && mem <= 2) n = Math.min(n, 40);
   return n;
 }
+
+/**
+ * Ceiling on live tile backing stores. Tiles cover the whole catalog, so holding
+ * every one costs 27MB per 100 tickets at dpr 3 — 274MB at MAX_TICKETS, which is
+ * past what iOS Safari grants a page. Over the budget WebKit discards backing
+ * stores and the canvas underlay goes blank, so the pool keeps only the tiles
+ * near the scrollport and repaints the others as they come back into view.
+ */
+export const CANVAS_TILE_RETAIN_BYTES = 48 * 1024 * 1024;
 
 /** DOM near-viewport row buffer. */
 export const ROW_BUFFER = 2;

@@ -364,20 +364,30 @@ export class DomPool {
     }
   }
 
-  /** Draw gesture on cards currently in the pool. Scrolled-away tickets stay canvas. */
-  playDraws(hits: readonly DrawHit[]): void {
-    if (!this.ready || hits.length === 0) return;
+  /**
+   * Draw gesture on cards currently in the pool. Scrolled-away tickets stay canvas.
+   * Resolves when the last card's gesture animations have ended, which is what the
+   * shuffle waits on — see `playTicketDraw`.
+   */
+  playDraws(hits: readonly DrawHit[]): Promise<void> {
+    if (!this.ready || hits.length === 0) return Promise.resolve();
     const layout = getActiveLayout();
     const pending: DrawHit[] = [];
     for (const hit of hits) {
       if (this.byId.has(hit.id)) pending.push(hit);
     }
-    if (pending.length === 0) return;
+    if (pending.length === 0) return Promise.resolve();
     this.motionHooks.onMotionStart?.();
     let remaining = pending.length;
+    let settled!: () => void;
+    const allSettled = new Promise<void>((resolve) => {
+      settled = resolve;
+    });
     const oneDone = () => {
       remaining -= 1;
-      if (remaining === 0) this.motionHooks.onMotionEnd?.();
+      if (remaining > 0) return;
+      this.motionHooks.onMotionEnd?.();
+      settled();
     };
     for (const hit of pending) {
       const idx = this.byId.get(hit.id)!;
@@ -390,6 +400,7 @@ export class DomPool {
         oneDone,
       );
     }
+    return allSettled;
   }
 
   /** After layout change, root CSS vars already resize cards — only reset badge overlay keys. */

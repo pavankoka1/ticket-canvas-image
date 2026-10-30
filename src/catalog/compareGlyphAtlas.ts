@@ -6,7 +6,7 @@ import {
   quantizeGlyphDeviceX,
 } from "./compareGlyphEngine";
 import { OVERLAY_CLASS } from "./compareSvgText";
-import { getActiveLayout } from "../ticketCatalog/layout/catalogLayout";
+import { layoutForCard } from "../ticketCatalog/layout/catalogLayout";
 import { resolveTicketTextBaselines } from "../ticketCatalog/layout/ticketTextBaselines";
 import type { CompareRasterPart } from "../ticketCatalog/svg/ticketSvgRaster";
 
@@ -51,8 +51,8 @@ function cssVarPx(root: HTMLElement, name: string): number {
   return parseFloat(root.style.getPropertyValue(name)) || 0;
 }
 
-function headerBaselineY(): number {
-  return resolveTicketTextBaselines(getActiveLayout().metrics).header;
+function headerBaselineY(root: HTMLElement): number {
+  return resolveTicketTextBaselines(layoutForCard(root).metrics).header;
 }
 
 function overlayHeaderText(root: HTMLElement, field: HeaderField): SVGTextElement {
@@ -188,7 +188,7 @@ function batchedGlyphPart(
         if (node.nodeName.toLowerCase() !== "defs") node.remove();
       }
       const metaPx = cssVarPx(root, "--ticket-meta-font-size");
-      const headerY = headerBaselineY();
+      const headerY = headerBaselineY(root);
       for (const slot of slots) {
         const xCss = slot.refXCss + compareGlyphPhaseShiftCss(phase, dpr, phases);
         const t = svgEl("text", {

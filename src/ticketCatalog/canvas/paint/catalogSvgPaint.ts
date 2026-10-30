@@ -29,7 +29,6 @@ import { styleCompareTicketDom } from "../../../catalog/compareDomAlign";
 import { TicketCard } from "../../dom/ticketCardElement";
 import { MAX_TICKETS } from "../../constants";
 import { isWinTicket, type Ticket } from "../../model/tickets";
-import { paintCatalogTicket } from "./catalogPaint";
 
 let paintPack: ComparePaintPack | null = null;
 let paintPackLayoutKey = "";
@@ -83,6 +82,14 @@ function paintPackForLayout(layout: CatalogLayout): ComparePaintPack | null {
   return paintPack;
 }
 
+/**
+ * True once any layout has warmed. From then on the DOM band paints svg-all faces,
+ * so the legacy sprite blit would mix two separator recipes on screen.
+ */
+export function hasCatalogSvgPaintPack(): boolean {
+  return paintPack !== null;
+}
+
 export function isCatalogSvgPaintReady(layout: CatalogLayout = getActiveLayout()): boolean {
   const pack = paintPackForLayout(layout);
   return Boolean(
@@ -116,14 +123,15 @@ export async function ensureCatalogSvgAtlasWarm(
   }
   paintPack = pack;
   paintPackLayoutKey = expectedLayoutKey;
-  const commitHostInk = () => catalogLayoutCacheKey(layout) === expectedLayoutKey;
+  const commitHostInk = () =>
+    catalogLayoutCacheKey(getActiveLayout()) === expectedLayoutKey && activeDpr() === dpr;
   try {
     await warmSvgAllHostBadgeBitmaps(layout, dpr, commitHostInk);
     await warmSvgAllMultiplierHosts(layout, dpr, commitHostInk);
   } catch (err) {
     console.warn("[catalog-svg-warm] host ink optional warm failed; using compare badge atlas", err);
   }
-  if (!isCatalogSvgAllHostInkReady()) {
+  if (!isCatalogSvgAllHostInkReady(layout, dpr)) {
     console.info("[catalog-svg-warm] host ink partial — catalog paint uses compare badge atlas fallback");
   }
   const measureKey = `${layout.metrics.id}|${layout.cardWidth}`;
@@ -131,7 +139,14 @@ export async function ensureCatalogSvgAtlasWarm(
     resetHeaderMeasureState();
   }
   ensureMeasureCardHost(layout);
-  await warmCatalogHeaderDeviceLayouts(layout, dpr, MAX_TICKETS);
+  // Only the first screens block the warm. Measuring all MAX_TICKETS headers is
+  // ~1000 SVG text clones and CTM reads, it is never served from IDB, and it was
+  // the bulk of time-to-first-tile. The rest trickles in while the canvas paints;
+  // `measureHeaderDeviceLayout` still covers any ticket the trickle has not reached.
+  await warmCatalogHeaderDeviceLayouts(layout, dpr, WARM_HEADER_EAGER, expectedLayoutKey);
+  void warmCatalogHeaderDeviceLayouts(layout, dpr, MAX_TICKETS, expectedLayoutKey).catch((err) => {
+    console.warn("[catalog-svg-warm] background header measure stopped", err);
+  });
 }
 
 /**
@@ -182,6 +197,9 @@ function measureHeaderDeviceLayout(ticket: Ticket, layout: CatalogLayout, dpr: n
 
 const WARM_HEADER_BATCH = 250;
 
+/** Headers measured before the canvas is allowed to paint — roughly two tiles. */
+const WARM_HEADER_EAGER = 200;
+
 function yieldWarmIdle(): Promise<void> {
   if (typeof requestIdleCallback === "function") {
     return new Promise((r) => requestIdleCallback(() => r(), { timeout: 200 }));
@@ -194,11 +212,17 @@ async function warmCatalogHeaderDeviceLayouts(
   layout: CatalogLayout,
   dpr: number,
   maxNo: number,
+  expectedLayoutKey = catalogLayoutCacheKey(layout),
 ): Promise<void> {
   for (let start = 1; start <= maxNo; start += WARM_HEADER_BATCH) {
+    if (catalogLayoutCacheKey(getActiveLayout()) !== expectedLayoutKey) return;
     const headers: { no: string; win: string }[] = [];
-    for (let n = start; n < start + WARM_HEADER_BATCH && n <= maxNo; n++) headers.push({ no: String(n), win: "" });
-    measureHeaderDeviceLayouts(headers, layout, dpr);
+    for (let n = start; n < start + WARM_HEADER_BATCH && n <= maxNo; n++) {
+      const no = String(n);
+      if (headerDeviceLayoutCache.has(headerLayoutCacheKey(layout, no, ""))) continue;
+      headers.push({ no, win: "" });
+    }
+    if (headers.length > 0) measureHeaderDeviceLayouts(headers, layout, dpr);
     if (start + WARM_HEADER_BATCH <= maxNo) await yieldWarmIdle();
   }
 }
@@ -226,6 +250,11 @@ export function prewarmCatalogSvgPaintJit(layout: CatalogLayout): void {
   paintCatalogTicketSvgAll(ctx, JIT_WARM_TICKET, 0, 0, layout, activeDpr());
 }
 
+/** Temporary: `chromePixelProbe` compares the baked sprite edge with the tile edge. */
+export function catalogChromeSpriteForProbe(face: string): HTMLCanvasElement | null {
+  return paintPack?.catalogChrome.get(face)?.bitmap ?? null;
+}
+
 export function prepareCatalogDomCard(card: TicketCard): void {
   if (!isCatalogSvgPaintReady(getActiveLayout())) return;
   const layout = getActiveLayout();
@@ -244,11 +273,9 @@ export function paintCatalogTicketSvgAll(
   dpr: number,
 ): void {
   const pack = paintPackForLayout(layout);
-  if (!pack?.headerGlyphs || pack.catalogChrome.size < 3) {
-    const boxes = resolveCellBoxModel(layout, dpr).cells;
-    paintCatalogTicket(ctx, ticket, originX, originY, layout.cardWidth, dpr, boxes);
-    return;
-  }
+  // A pack for another layout paints last layout's separators under this layout's
+  // DOM. Callers choose the fallback; painting nothing is better than painting wrong.
+  if (!pack?.headerGlyphs || pack.catalogChrome.size < 3) return;
 
   const model = resolveCellBoxModel(layout, dpr);
   const face = ticket.disabled ? "disabled" : isWinTicket(ticket) ? "gold" : "normal";
@@ -258,6 +285,9 @@ export function paintCatalogTicketSvgAll(
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.imageSmoothingEnabled = false;
   const m = layout.metrics;
+  // Chrome carries its own rounded corners. Clipping it again antialiases the arc
+  // twice, so only the dab/multiplier ink is clipped (that is what can overflow).
+  ctx.drawImage(chrome.bitmap, originX, originY);
   ctx.save();
   clipTicketRoundRectDevice(
     ctx,
@@ -268,7 +298,6 @@ export function paintCatalogTicketSvgAll(
     m.radius,
     dpr,
   );
-  ctx.drawImage(chrome.bitmap, originX, originY);
 
   paintSvgAllCatalogTicketInk(
     ctx,

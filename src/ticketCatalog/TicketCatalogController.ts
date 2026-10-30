@@ -52,6 +52,8 @@ import type { ToolbarRefs } from "./buildToolbar";
 
 const RESIZE_CANVAS_SETTLE_MS = 300;
 const SCROLL_TOP_EPSILON_PX = 1;
+/** How long past its nominal length a draw gesture may run before we stop waiting. */
+const GESTURE_SETTLE_GRACE_MS = 2000;
 export type TicketCatalogControllerHost = {
   root: HTMLElement;
   ui: ToolbarRefs;
@@ -91,6 +93,8 @@ export class TicketCatalogController {
   private knownIds = new Set<string>();
   private shuffleTimer = 0;
   private roundEndTimer = 0;
+  /** Drops a superseded draw's sort and round result — the next ball owns them. */
+  private drawGen = 0;
   private scrollTimer = 0;
   private resizeCanvasTimer = 0;
   private warmTimer = 0;
@@ -109,6 +113,8 @@ export class TicketCatalogController {
   private resizeCanvasForcePending = false;
   private scrollSettleTimer = 0;
   private scrollMotionActive = false;
+  /** One tile-window follow per frame while the scrollport moves. */
+  private canvasFollowRaf = 0;
   private statsDirtyKey = "";
   /** Canvas cleared for DOM WAAPI — rebuild async after gesture or on scroll cancel. */
   private gestureCanvasSuspended = false;
@@ -156,6 +162,7 @@ export class TicketCatalogController {
     if (this.roundEndTimer) window.clearTimeout(this.roundEndTimer);
     if (this.gestureCanvasTimer) window.clearTimeout(this.gestureCanvasTimer);
     if (this.orientationTimer) window.clearTimeout(this.orientationTimer);
+    if (this.canvasFollowRaf) cancelAnimationFrame(this.canvasFollowRaf);
     this.scrollCleanup?.();
     this.settleGen += 1;
     this.settleInFlight = false;
@@ -251,6 +258,9 @@ export class TicketCatalogController {
     const scrollTop = this.host.scroll.scrollTop;
     const viewH = this.host.scroll.clientHeight;
     await this.canvas.resume();
+    // The shuffle starts as the gesture ends, so it can suspend the canvas again
+    // while we resume. Revealing tiles now would show them under a running FLIP.
+    if (this.gestureCanvasSuspended) return;
     this.canvas.flushDirtyTilesInViewportSync(scrollTop, viewH);
     this.revealCanvas();
   }
@@ -354,8 +364,27 @@ export class TicketCatalogController {
   private syncCanvas(): void {
     const canvas = this.canvas;
     if (!canvas?.isReady) return;
+    // Which tiles keep pixels is a function of the scrollport, so tell the pool
+    // where it is before any paint decides what to allocate.
+    canvas.setViewport(this.host.scroll.scrollTop, this.host.scroll.clientHeight);
     canvas.setCatalog(this.slots, this.ticketsById, this.domSkipIds());
     this.updateStats();
+  }
+
+  /**
+   * Keep the tile window on a moving scrollport, one tile per frame. Tiles far
+   * from the viewport have given their pixels back, so without this a scroll
+   * would travel over blank canvas until it settled.
+   */
+  private followCanvasViewport(): void {
+    if (!this.canvasReady || !this.canvas) return;
+    if (this.host.canvasHost.style.visibility === "hidden") return;
+    if (this.canvasFollowRaf) return;
+    this.canvasFollowRaf = requestAnimationFrame(() => {
+      this.canvasFollowRaf = 0;
+      const scroll = this.host.scroll;
+      this.canvas?.followViewport(scroll.scrollTop, scroll.clientHeight);
+    });
   }
 
   private revealCanvas(): void {
@@ -699,6 +728,7 @@ export class TicketCatalogController {
       this.settleInFlight = false;
     }
     this.cancelGestureCanvasForScroll();
+    this.followCanvasViewport();
     if (this.scrollMotionActive) return;
     this.scrollMotionActive = true;
     if (this.canvasReady) this.canvas?.pause();
@@ -854,6 +884,11 @@ export class TicketCatalogController {
           0,
           this.host.scroll.scrollHeight - this.host.scroll.clientHeight,
         );
+        // Paint where we are going before we go, so the landing is never blank.
+        // The tiles in between paint as the scrollport passes them.
+        if (this.canvasReady) {
+          this.canvas?.primeViewport(maxScroll, this.host.scroll.clientHeight);
+        }
         this.host.scroll.scrollTo({ top: maxScroll, behavior: "smooth" });
         if (bulkScroll) {
           this.bulkScrollResyncTimer = window.setTimeout(() => {
@@ -873,11 +908,7 @@ export class TicketCatalogController {
       if (added.length === 0) return;
       if (this.canvasReady && this.canvas) {
         this.syncCanvas();
-        if (bulkScroll) {
-          void this.canvas.waitForPaint().then(scheduleSmoothScroll);
-        } else {
-          scheduleSmoothScroll?.();
-        }
+        scheduleSmoothScroll?.();
       }
     });
   }
@@ -902,6 +933,7 @@ export class TicketCatalogController {
     this.tickets = [];
     this.knownIds = new Set();
     this.freshIds = new Set();
+    this.drawGen += 1;
     if (this.shuffleTimer) window.clearTimeout(this.shuffleTimer);
     this.shuffleTimer = 0;
     if (this.roundEndTimer) window.clearTimeout(this.roundEndTimer);
@@ -956,34 +988,39 @@ export class TicketCatalogController {
       this.ticketsById,
       resolveTicketSparklePlan(getActiveLayout()).settleMs,
     );
+    if (this.shuffleTimer) window.clearTimeout(this.shuffleTimer);
+    this.shuffleTimer = 0;
+    const gen = ++this.drawGen;
+    // The gesture starts on the next frame, after the canvas suspend drops the tiles,
+    // and WAAPI dates its shine from the frame after that. So the sort and the round
+    // result hang off the gesture's own end rather than a clock started here, which
+    // on a phone comes due while the shine is still sweeping.
     requestAnimationFrame(() => {
+      let gesture: Promise<void> | null = null;
       if (domGesture && this.canvasReady) {
         this.beginGestureCanvasSuspend();
-        this.dom?.playDraws(hits);
+        gesture = this.dom?.playDraws(hits) ?? null;
         this.scheduleGestureCanvasRestore(gestureMs + 50);
       } else {
         this.canvas?.refreshForTicketIds(changedIds);
       }
+      // Fortunamania sorts only while the catalog is scrolled to the top.
+      const plan =
+        this.host.scroll.scrollTop <= SCROLL_TOP_EPSILON_PX
+          ? resolveShufflePlan(gestureMs)
+          : null;
+      this.afterDrawGesture(gesture, plan?.delayMs ?? gestureMs, () => {
+        if (gen !== this.drawGen) return;
+        if (plan) this.runShuffle(plan.durationMs);
+        // The round result (gold or green) lands after the sort, not under it.
+        if (lastBall) {
+          this.roundEndTimer = window.setTimeout(() => {
+            this.roundEndTimer = 0;
+            this.endRound();
+          }, (plan?.durationMs ?? 0) + 100);
+        }
+      });
     });
-    if (this.shuffleTimer) window.clearTimeout(this.shuffleTimer);
-    this.shuffleTimer = 0;
-    let motionEndMs = gestureMs;
-    // Fortunamania sorts only while the catalog is scrolled to the top.
-    if (this.host.scroll.scrollTop <= SCROLL_TOP_EPSILON_PX) {
-      const plan = resolveShufflePlan(gestureMs);
-      motionEndMs = Math.max(motionEndMs, plan.delayMs + plan.durationMs);
-      this.shuffleTimer = window.setTimeout(() => {
-        this.shuffleTimer = 0;
-        this.runShuffle(plan.durationMs);
-      }, plan.delayMs);
-    }
-    // The round result (gold or green) lands after the last ball's gesture, not under it.
-    if (lastBall) {
-      this.roundEndTimer = window.setTimeout(() => {
-        this.roundEndTimer = 0;
-        this.endRound();
-      }, motionEndMs + 100);
-    }
     this.updateStats();
   }
 
@@ -992,6 +1029,32 @@ export class TicketCatalogController {
     finishRound(this.tickets);
     this.syncDom();
     this.canvas?.refreshForTicketIds(new Set(this.tickets.map((t) => t.id)));
+  }
+
+  /**
+   * Runs `after` once the draw gesture's animations have ended. With no gesture to
+   * wait on — every hit ticket is on canvas — `nominalMs` keeps the game's rhythm.
+   * Otherwise the timer is a watchdog: a paused timeline must not strand the round
+   * without its sort or its result.
+   */
+  private afterDrawGesture(
+    gesture: Promise<void> | null,
+    nominalMs: number,
+    after: () => void,
+  ): void {
+    let ran = false;
+    const run = () => {
+      if (ran) return;
+      ran = true;
+      if (this.shuffleTimer) {
+        window.clearTimeout(this.shuffleTimer);
+        this.shuffleTimer = 0;
+      }
+      after();
+    };
+    const waitMs = gesture ? nominalMs + GESTURE_SETTLE_GRACE_MS : nominalMs;
+    this.shuffleTimer = window.setTimeout(run, waitMs);
+    if (gesture) void gesture.then(run);
   }
 
   /** `shuffleAnimationDelayed` body: reorder, rebind the band, FLIP every mover together. */
@@ -1018,7 +1081,9 @@ export class TicketCatalogController {
   }
 
   private clearDraws(): void {
+    this.drawGen += 1;
     if (this.shuffleTimer) window.clearTimeout(this.shuffleTimer);
+    this.shuffleTimer = 0;
     if (this.roundEndTimer) window.clearTimeout(this.roundEndTimer);
     this.roundEndTimer = 0;
     for (const ticket of this.tickets) {

@@ -71,6 +71,23 @@ export function setActiveLayout(next: CatalogLayout): void {
 }
 
 /** Stable key for atlas warm + canvas paint (card width or token offsets invalidate). */
+/** Cards prepared for a layout other than the live one (e.g. rotation prewarm). */
+const offLayoutCards = new WeakMap<Element, CatalogLayout>();
+
+export function setCardLayout(card: Element, layout: CatalogLayout): void {
+  if (catalogLayoutCacheKey(layout) === catalogLayoutCacheKey(active)) offLayoutCards.delete(card);
+  else offLayoutCards.set(card, layout);
+}
+
+/**
+ * Layout a card's overlay is built for. Prewarm captures the other orientation's
+ * cards while the live layout is still active; everything else is the live layout.
+ */
+export function layoutForCard(card: Element | null | undefined): CatalogLayout {
+  const own = card ? offLayoutCards.get(card) : undefined;
+  return own ?? active;
+}
+
 export function catalogLayoutCacheKey(layout: CatalogLayout): string {
   const m = layout.metrics;
   return `${m.id}|${layout.cardWidth}|${layout.columns}|${layout.cardHeight}|${m.cellMarginTop}|${m.numberDrop}|${m.separatorLift}`;

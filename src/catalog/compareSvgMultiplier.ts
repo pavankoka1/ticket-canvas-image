@@ -162,32 +162,38 @@ export function multiplierHostSvg(
   dabSizeCss: number,
   disabled: boolean,
   discHref?: string,
-  /** Sub-pixel host offset (CSS px); the SVG grows by 1px to hold it. */
-  offset?: { x: number; y: number },
 ): SVGSVGElement {
-  const fontPx = (13 * dabSizeCss) / 24;
   const size = dabSizeCss;
-  const box = offset ? size + 1 : size;
-  const disc = discHref;
-  const c = size / 2;
-  const ink: SVGElement[] = [
-    // Disc at explicit coordinates: no CSS background-size resampling of a
-    // fractional host box.
-    ...(disc ? [svgEl("image", { href: disc, x: 0, y: 0, width: size, height: size, preserveAspectRatio: "none" })] : []),
-    multiplierGroup(value, c, c, fontPx, disabled, resolveTicketTextBaselines(getActiveLayout().metrics).multiplier),
-  ];
   return svgEl(
     "svg",
     {
       class: "ticketCard__multiplierSvg",
-      width: box,
-      height: box,
-      viewBox: `0 0 ${box} ${box}`,
+      width: size,
+      height: size,
+      viewBox: `0 0 ${size} ${size}`,
       overflow: "visible",
       "aria-hidden": "true",
     },
-    ...(offset ? [svgEl("g", { transform: `translate(${offset.x} ${offset.y})` }, ...ink)] : ink),
+    ...multiplierHostInk(value, dabSizeCss, disabled, discHref),
   );
+}
+
+/** Disc + label of one host box at (0, 0)–(size, size), in the caller's SVG. */
+export function multiplierHostInk(
+  value: string,
+  dabSizeCss: number,
+  disabled: boolean,
+  discHref?: string,
+): SVGElement[] {
+  const fontPx = (13 * dabSizeCss) / 24;
+  const size = dabSizeCss;
+  const c = size / 2;
+  return [
+    // Disc at explicit coordinates: no CSS background-size resampling of a
+    // fractional host box.
+    ...(discHref ? [svgEl("image", { href: discHref, x: 0, y: 0, width: size, height: size, preserveAspectRatio: "none" })] : []),
+    multiplierGroup(value, c, c, fontPx, disabled, resolveTicketTextBaselines(getActiveLayout().metrics).multiplier),
+  ];
 }
 
 /**

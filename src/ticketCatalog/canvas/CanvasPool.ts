@@ -6,7 +6,11 @@ import {
   getMultiplierLabelPlace,
 } from "./atlas/badgeAtlas";
 import { catalogCellBoxes, paintCatalogTicket } from "./paint/catalogPaint";
-import { isCatalogSvgPaintReady, paintCatalogTicketSvgAll } from "./paint/catalogSvgPaint";
+import {
+  hasCatalogSvgPaintPack,
+  isCatalogSvgPaintReady,
+  paintCatalogTicketSvgAll,
+} from "./paint/catalogSvgPaint";
 import { catalogLaneWidth, getActiveLayout } from "../layout/catalogLayout";
 import { getCellBitmap } from "./atlas/cellAtlas";
 import {
@@ -19,7 +23,11 @@ import {
   idGlyphsReady,
   type GlyphColor,
 } from "./atlas/idDigitAtlas";
-import { BALLS_PER_TICKET, canvasTileTickets } from "../constants";
+import {
+  BALLS_PER_TICKET,
+  CANVAS_TILE_RETAIN_BYTES,
+  canvasTileTickets,
+} from "../constants";
 import { isWinTicket, type Ticket, type TicketSlot } from "../model/tickets";
 import { snappedTicketSeparatorTop } from "../model/ticketPresets";
 
@@ -46,6 +54,8 @@ type Tile = {
   end: number;
   minY: number;
   cssH: number;
+  /** Retain clock at the last paint or viewport pass — the eviction order. */
+  lastUsed: number;
   dirty: boolean;
   /** Full tile clear+repaint (layout, ids, geometry). */
   dirtyFull: boolean;
@@ -65,8 +75,9 @@ type Tile = {
 };
 
 /**
- * Full-catalog canvas underlay as tiles (≈150 tickets each).
- * Scroll never blanks — every ticket is already painted on some tile.
+ * Canvas underlay as tiles. The tiles span the whole catalog, but only those
+ * near the scrollport hold pixels (`CANVAS_TILE_RETAIN_BYTES`) — the rest give
+ * their backing store back and repaint when the viewport comes near again.
  */
 export class CanvasPool {
   private tiles: Tile[] = [];
@@ -81,6 +92,14 @@ export class CanvasPool {
   /** In-flight async flush, including one that already settled. */
   private paintTail: Promise<void> = Promise.resolve();
   private tileLayoutKey = "";
+  /** Scrollport in content px. Tiles outside it are the first to be released. */
+  private viewTop = 0;
+  private viewBottom = 0;
+  private hasView = false;
+  private retainClock = 0;
+  /** One buffer for every tile composite; a canvas per paint doubles peak bytes. */
+  private scratch: HTMLCanvasElement | null = null;
+  private scratchCtx: CanvasRenderingContext2D | null = null;
 
   constructor(host: HTMLElement) {
     this.host = host;
@@ -232,29 +251,131 @@ export class CanvasPool {
   private flushDirtyTilesSync(): void {
     const gen = ++this.paintGen;
     for (const tile of this.tiles) {
-      if (!tile.dirty) continue;
+      if (!tile.dirty || !this.shouldPaint(tile)) continue;
       if (!this.paintOneDirtyTile(tile, gen)) return;
     }
+    this.enforceRetainBudget();
   }
 
   /** Paint dirty tiles intersecting the scrollport (sync) — scroll settle safety net. */
   flushDirtyTilesInViewportSync(scrollTop: number, viewH: number): void {
     if (!this.ready || this.paused) return;
+    this.setViewport(scrollTop, viewH);
     const gen = ++this.paintGen;
-    const top = scrollTop;
-    const bottom = scrollTop + viewH;
     for (const tile of this.tiles) {
-      if (!tile.dirty) continue;
-      const tileBottom = tile.minY + tile.cssH;
-      if (tile.minY >= bottom || tileBottom <= top) continue;
+      if (!tile.dirty || !this.intersectsView(tile)) continue;
       if (!this.paintOneDirtyTile(tile, gen)) return;
+    }
+    this.enforceRetainBudget();
+  }
+
+  /** Where the scrollport is, in content px. Decides which tiles keep pixels. */
+  setViewport(scrollTop: number, viewH: number): void {
+    this.viewTop = scrollTop;
+    this.viewBottom = scrollTop + viewH;
+    this.hasView = true;
+    for (const tile of this.tiles) {
+      if (this.intersectsView(tile)) tile.lastUsed = ++this.retainClock;
     }
   }
 
-  /** Await the current dirty-tile flush (e.g. before smooth-scroll after a bulk add). */
-  waitForPaint(): Promise<void> {
-    if (!this.ready || this.paused) return Promise.resolve();
-    return this.flushDirtyTiles();
+  /**
+   * Paint everything the scrollport covers, now. Used before a programmatic
+   * scroll so the destination is on canvas by the time it arrives, and at scroll
+   * settle. Runs even while paused — the caller is asking for these pixels.
+   */
+  primeViewport(scrollTop: number, viewH: number): void {
+    if (!this.ready) return;
+    this.setViewport(scrollTop, viewH);
+    const gen = ++this.paintGen;
+    for (const tile of this.tiles) {
+      if (!tile.dirty || !this.intersectsView(tile)) continue;
+      if (!this.paintOneDirtyTile(tile, gen, true)) return;
+    }
+  }
+
+  /**
+   * One step of following a moving scrollport: release what it left behind and
+   * paint the nearest tile it is about to reach. Bounded to a single tile so a
+   * repaint cannot stall the scroll — call it once per frame while scrolling.
+   */
+  followViewport(scrollTop: number, viewH: number): void {
+    if (!this.ready) return;
+    this.setViewport(scrollTop, viewH);
+    let next: Tile | null = null;
+    for (const tile of this.tiles) {
+      if (!tile.dirty || !this.intersectsView(tile)) continue;
+      if (!next || tile.minY < next.minY) next = tile;
+    }
+    if (next) this.paintOneDirtyTile(next, ++this.paintGen, true);
+    this.enforceRetainBudget();
+  }
+
+  private intersectsView(tile: Tile): boolean {
+    if (!this.hasView) return true;
+    return tile.minY < this.viewBottom && tile.minY + tile.cssH > this.viewTop;
+  }
+
+  /** A tile paints when it already holds pixels, or when it is about to be seen. */
+  private shouldPaint(tile: Tile): boolean {
+    return tile.canvas.width > 0 || this.intersectsView(tile);
+  }
+
+  private tileBytes(tile: Tile): number {
+    return tile.canvas.width * tile.canvas.height * 4;
+  }
+
+  /**
+   * Give back the backing stores of the coldest tiles until the live set fits
+   * the budget. A tile under the scrollport is never released — it is on screen.
+   */
+  private enforceRetainBudget(): void {
+    let live = 0;
+    const releasable: Tile[] = [];
+    for (const tile of this.tiles) {
+      const bytes = this.tileBytes(tile);
+      if (bytes === 0) continue;
+      live += bytes;
+      if (!this.intersectsView(tile)) releasable.push(tile);
+    }
+    if (live <= CANVAS_TILE_RETAIN_BYTES) return;
+    releasable.sort((a, b) => a.lastUsed - b.lastUsed);
+    for (const tile of releasable) {
+      if (live <= CANVAS_TILE_RETAIN_BYTES) return;
+      live -= this.tileBytes(tile);
+      this.releaseTile(tile);
+    }
+  }
+
+  /**
+   * Drop a tile's pixels, keeping its element and placement. Marked dirty so it
+   * repaints from scratch the next time the scrollport comes near.
+   */
+  private releaseTile(tile: Tile): void {
+    if (tile.canvas.width === 0 && tile.canvas.height === 0) return;
+    tile.canvas.width = 0;
+    tile.canvas.height = 0;
+    tile.dirty = true;
+    tile.dirtyFull = true;
+    tile.skipFlipIndices = [];
+    tile.snap = null;
+  }
+
+  private takeScratch(bw: number, bh: number): CanvasRenderingContext2D | null {
+    if (!this.scratch) {
+      this.scratch = document.createElement("canvas");
+      this.scratchCtx = this.scratch.getContext("2d");
+    }
+    const ctx = this.scratchCtx;
+    if (!ctx) return null;
+    if (this.scratch.width !== bw || this.scratch.height !== bh) {
+      this.scratch.width = bw;
+      this.scratch.height = bh;
+    }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, bw, bh);
+    return ctx;
   }
 
   private flushDirtyTiles(): Promise<void> {
@@ -270,21 +391,25 @@ export class CanvasPool {
     let painted = false;
     for (const tile of this.tiles) {
       if (gen !== this.paintGen || this.paused) return;
-      if (!tile.dirty) continue;
+      if (!tile.dirty || !this.shouldPaint(tile)) continue;
       if (painted) await yieldToMain();
       if (!this.paintOneDirtyTile(tile, gen)) return;
       painted = true;
     }
+    this.enforceRetainBudget();
   }
 
-  private paintOneDirtyTile(tile: Tile, gen: number): boolean {
-    if (gen !== this.paintGen || this.paused) return false;
+  /** `force` paints through a pause — the viewport paths ask for pixels directly. */
+  private paintOneDirtyTile(tile: Tile, gen: number, force = false): boolean {
+    const blocked = () => gen !== this.paintGen || (this.paused && !force);
+    if (blocked()) return false;
+    tile.lastUsed = ++this.retainClock;
     if (tile.dirtyFull || !tile.snap) {
-      this.paintTile(tile, gen);
+      this.paintTile(tile, gen, force);
     } else {
-      this.compositeTileFromSnap(tile, gen);
+      this.compositeTileFromSnap(tile, gen, force);
     }
-    if (gen !== this.paintGen || this.paused) return false;
+    if (blocked()) return false;
     tile.dirty = false;
     tile.dirtyFull = false;
     tile.skipFlipIndices = [];
@@ -339,6 +464,10 @@ export class CanvasPool {
     this.paintGen += 1;
     this.tileLayoutKey = "";
     for (const t of this.tiles) t.canvas.remove();
+    if (this.scratch) {
+      this.scratch.width = 0;
+      this.scratch.height = 0;
+    }
     this.tiles = [];
     this.slots = [];
     this.ticketsById = new Map();
@@ -398,6 +527,9 @@ export class CanvasPool {
         canvas.style.pointerEvents = "none";
         canvas.style.opacity = "1";
         canvas.style.visibility = "visible";
+        // No backing store until the tile is painted — a default canvas is 300×150.
+        canvas.width = 0;
+        canvas.height = 0;
         const ctx = canvas.getContext("2d");
         if (!ctx) continue;
         this.host.appendChild(canvas);
@@ -408,6 +540,7 @@ export class CanvasPool {
           end,
           minY,
           cssH,
+          lastUsed: 0,
           dirty: true,
           dirtyFull: true,
           skipFlipIndices: [],
@@ -469,8 +602,8 @@ export class CanvasPool {
    * One atomic blit per tile after a DOM-band change — avoids per-slot clears
    * visible under throttle (shuffle / scroll settle).
    */
-  private compositeTileFromSnap(tile: Tile, gen: number): void {
-    if (this.paused || gen !== this.paintGen) return;
+  private compositeTileFromSnap(tile: Tile, gen: number, force = false): void {
+    if ((this.paused && !force) || gen !== this.paintGen) return;
     const snap = tile.snap;
     if (!snap) return;
     const ctx = tile.ctx;
@@ -478,14 +611,9 @@ export class CanvasPool {
     const cssW = catalogLaneWidth(layout);
     const bw = Math.max(1, Math.round(cssW * snap.dpr));
     const bh = Math.max(1, Math.round(tile.cssH * snap.dpr));
-    const scratch = document.createElement("canvas");
-    scratch.width = bw;
-    scratch.height = bh;
-    const sctx = scratch.getContext("2d");
+    const sctx = this.takeScratch(bw, bh);
     if (!sctx) return;
-    sctx.setTransform(1, 0, 0, 1, 0, 0);
-    sctx.imageSmoothingEnabled = false;
-    sctx.clearRect(0, 0, bw, bh);
+    const scratch = sctx.canvas;
     const boxes = catalogCellBoxes(snap.dpr);
     for (let i = tile.start; i < tile.end; i++) {
       if (gen !== this.paintGen) return;
@@ -514,13 +642,14 @@ export class CanvasPool {
     const { x: originX, y: originY } = this.slotOriginOnTile(slot, snap);
     if (isCatalogSvgPaintReady()) {
       paintCatalogTicketSvgAll(ctx, ticket, originX, originY, layout, dpr);
-    } else {
+    } else if (!hasCatalogSvgPaintPack()) {
       paintCatalogTicket(ctx, ticket, originX, originY, cardWidth, dpr, boxes);
     }
+    // Else a resize is between layouts: leave the slot blank until the pack warms.
   }
 
-  private paintTile(tile: Tile, gen: number): void {
-    if (this.paused || gen !== this.paintGen) return;
+  private paintTile(tile: Tile, gen: number, force = false): void {
+    if ((this.paused && !force) || gen !== this.paintGen) return;
     const c = tile.canvas;
     const ctx = tile.ctx;
     const layout = getActiveLayout();
@@ -556,14 +685,9 @@ export class CanvasPool {
       ctx.clearRect(0, 0, bw, bh);
       paintCtx = ctx;
     } else {
-      scratch = document.createElement("canvas");
-      scratch.width = bw;
-      scratch.height = bh;
-      const sctx = scratch.getContext("2d");
+      const sctx = this.takeScratch(bw, bh);
       if (!sctx) return;
-      sctx.setTransform(1, 0, 0, 1, 0, 0);
-      sctx.imageSmoothingEnabled = false;
-      sctx.clearRect(0, 0, bw, bh);
+      scratch = sctx.canvas;
       paintCtx = sctx;
     }
 
