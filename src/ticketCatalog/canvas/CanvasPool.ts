@@ -12,6 +12,7 @@ import {
   paintCatalogTicketSvgAll,
 } from "./paint/catalogSvgPaint";
 import { catalogLaneWidth, getActiveLayout, type CatalogLayout } from "../layout/catalogLayout";
+import { snapLayoutOrigin } from "../layout/catalogOriginSnap";
 import { getCellBitmap } from "./atlas/cellAtlas";
 import {
   activeDpr,
@@ -583,11 +584,12 @@ export class CanvasPool {
     snap: NonNullable<Tile["snap"]>,
   ): { x: number; y: number } {
     const dpr = snap.dpr;
-    const sx = Math.round(slot.x * dpr) / dpr;
-    const sy = Math.round(slot.y * dpr) / dpr;
+    const sx = snapLayoutOrigin(slot.x, dpr);
+    const sy = snapLayoutOrigin(slot.y, dpr);
+    const minY = snapLayoutOrigin(snap.minY, dpr);
     return {
       x: Math.round(sx * dpr),
-      y: Math.round((sy - snap.minY) * dpr),
+      y: Math.round((sy - minY) * dpr),
     };
   }
 

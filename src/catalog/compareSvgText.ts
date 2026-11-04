@@ -427,6 +427,12 @@ export function stripOverlayInkKeepChrome(root: HTMLElement): void {
   });
 }
 
+/** Remove separator rects from warm capture — catalog tiles paint seps on the canvas. */
+export function stripCatalogChromeSeparators(root: HTMLElement): void {
+  const chrome = root.querySelector(`:scope > .${OVERLAY_CLASS} .${SVG_CHROME_CLASS}`);
+  chrome?.querySelectorAll("rect").forEach((el) => el.remove());
+}
+
 /** Number opaque warm keeps cell digits in the overlay but drops header id/amount. */
 export function stripCompareOverlayHeader(root: HTMLElement, headerHeightCss: number): void {
   const overlay = root.querySelector(`:scope > .${OVERLAY_CLASS}`);

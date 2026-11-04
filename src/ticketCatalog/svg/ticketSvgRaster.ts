@@ -26,6 +26,21 @@ function stripHtmlMultiplierLabelsForRaster(root: HTMLElement): void {
   overlay.querySelector("defs")?.remove();
 }
 
+function isTicketCatalogRasterCssVar(property: string): boolean {
+  return property.startsWith("--ticket-") || property.startsWith("--catalog-");
+}
+
+function compareRasterProbeEnabled(): boolean {
+  return !import.meta.env.PROD;
+}
+
+let compareRasterProbeLogged = false;
+
+function compareSvgDecodeUsesDataUrl(): boolean {
+  if (import.meta.env.PROD) return false;
+  return new URLSearchParams(window.location.search).get("compareSvgDataUrl") === "1";
+}
+
 const FONT_URL = "/fonts/onest-700.woff2";
 
 let fontFacePromise: Promise<string> | null = null;
@@ -607,10 +622,12 @@ export async function rasterizeCompareTicketSvg(
   const layoutRect = { ...rect, width: cssWidth, height: cssHeight };
   const clone = buildStylesheetRasterClone(card, layoutRect, 0, 0);
   stripHtmlMultiplierLabelsForRaster(clone);
+  let copiedCssVars = 0;
   for (let i = 0; i < computed.length; i++) {
     const property = computed.item(i);
-    if (property.startsWith("--")) {
+    if (isTicketCatalogRasterCssVar(property)) {
       clone.style.setProperty(property, computed.getPropertyValue(property));
+      copiedCssVars += 1;
     }
   }
   clone.style.visibility = "visible";
@@ -649,33 +666,57 @@ export async function rasterizeCompareTicketSvg(
     svg.setAttribute('height', String(fullHeight));
     svg.setAttribute('viewBox', `0 0 ${fullWidth} ${fullHeight}`);
     const fullBlob = new Blob([new XMLSerializer().serializeToString(svg)], { type: 'image/svg+xml' });
+    if (compareRasterProbeEnabled() && !compareRasterProbeLogged) {
+      compareRasterProbeLogged = true;
+      console.info("[raster-probe]", {
+        blobBytes: fullBlob.size,
+        copiedCssVars,
+        cropped: true,
+        fullPx: `${fullWidth}x${fullHeight}`,
+        dpr,
+      });
+    }
     const full = await decodeCompareSvgBlob(fullBlob);
     canvas = document.createElement('canvas');
     canvas.width = Math.round(crop.width * dpr);
     canvas.height = Math.round(crop.height * dpr);
     canvas.getContext('2d')!.drawImage(full, Math.round(crop.x * dpr), Math.round(crop.y * dpr), canvas.width, canvas.height, 0, 0, canvas.width, canvas.height);
-  } else canvas = await decodeCompareSvgBlob(blob);
+  } else {
+    if (compareRasterProbeEnabled() && !compareRasterProbeLogged) {
+      compareRasterProbeLogged = true;
+      console.info("[raster-probe]", {
+        blobBytes: blob.size,
+        copiedCssVars,
+        cropped: false,
+        fullPx: `${fullWidth}x${fullHeight}`,
+        dpr,
+      });
+    }
+    canvas = await decodeCompareSvgBlob(blob);
+  }
   rasterSvgBlobs.set(canvas, blob);
   return canvas;
 }
 
-/** Compare uses a self-contained data URL so pixel diagnostics remain readable. */
+/** Compare SVG → canvas. Uses `FileReader` data URLs (untainted for `getImageData`). `?compareSvgDataUrl=1` uses charset data URL (debug). */
 export async function decodeCompareSvgBlob(blob: Blob): Promise<HTMLCanvasElement> {
   const img = new Image();
-  img.src = blob.type.includes('svg')
-    ? `data:image/svg+xml;charset=utf-8,${encodeURIComponent(await blob.text())}`
-    : await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result));
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(blob);
-      });
+  if (isSvgBlob(blob) && compareSvgDecodeUsesDataUrl()) {
+    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(await blob.text())}`;
+  } else {
+    img.src = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(blob);
+    });
+  }
   await img.decode();
-  const canvas = document.createElement('canvas');
+  const canvas = document.createElement("canvas");
   canvas.width = img.naturalWidth;
   canvas.height = img.naturalHeight;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error('Compare 2D context unavailable');
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Compare 2D context unavailable");
   ctx.drawImage(img, 0, 0);
   return canvas;
 }

@@ -3,6 +3,14 @@ import { ticketTextBaselinesKey } from '../ticketCatalog/layout/ticketTextBaseli
 import { loadSprites, saveSpritesBatch } from '../ticketCatalog/canvas/atlas/atlasStore';
 import { encodeCompareCanvasPng } from './comparePersistEncodeClient';
 import {
+  addWarmPersistEncodeMs,
+  logWarmCompareProfile,
+  resetWarmCompareProfile,
+  setWarmIdbPrefetchMs,
+  timeWarmRaster,
+  warmCompareProfileSnapshot,
+} from './warmCompareProfile';
+import {
   activeDpr,
   applyCellBoxCssVars,
   badgeHostDevice,
@@ -13,13 +21,13 @@ import { alignCompareStackOrigin, styleCompareTicketDom } from './compareDomAlig
 import { usesSvgMultiplier, usesSvgText } from './compareRenderMode';
 import { applySvgMultiplier, loadSvgMultiplierAssets, svgMultiplierAssetsReady } from './compareSvgMultiplier';
 import { paintSvgAllCompareTicket } from './compareSvgAllPaint';
-import { CATALOG_FIGMA_DESKTOP_LOCK } from '../ticketCatalog/model/catalogFigmaDesktop';
 import {
   applySvgText,
   OVERLAY_CLASS,
   stripCompareOverlayHeader,
   stripCompareOverlayHeaderAndCellNumbers,
   stripOverlayInkKeepChrome,
+  stripCatalogChromeSeparators,
   SVG_FACE_CLASS,
   refreshSvgOverlayInk,
 } from './compareSvgText';
@@ -55,7 +63,7 @@ export type ComparePaintPack = {
 type Pack = ComparePaintPack;
 
 /** Bump when warm capture or layout/cell geometry semantics change (invalidates IDB sheets). */
-const COMPARE_PACK_SCHEMA = 'v67-card-layout';
+const COMPARE_PACK_SCHEMA = 'v70-catalog-sep-device-paint';
 
 export function comparePackLayoutGeomKey(layout: CatalogLayout, dpr: number): string {
   const model = resolveCellBoxModel(layout, dpr);
@@ -131,6 +139,15 @@ export async function flushComparePersistQueue(): Promise<void> {
   }
 }
 
+async function timedEncodeCompareCanvasPng(canvas: HTMLCanvasElement): Promise<Blob | null> {
+  const t0 = performance.now();
+  try {
+    return await encodeCompareCanvasPng(canvas);
+  } finally {
+    addWarmPersistEncodeMs(performance.now() - t0);
+  }
+}
+
 function scheduleFlushPersistQueue(): void {
   if (persistDrain) return;
   persistDrain = (async () => {
@@ -146,7 +163,7 @@ function scheduleFlushPersistQueue(): void {
               if ('sheetKey' in item) {
                 const captured = item.captured;
                 const png =
-                  captured && !preferPng ? null : await encodeCompareCanvasPng(item.sheet);
+                  captured && !preferPng ? null : await timedEncodeCompareCanvasPng(item.sheet);
                 if (!png && !captured) throw new Error('Compare sheet persist encode failed');
                 const meta: CompareSheetMeta = {
                   sheetUnion: item.sheetUnion,
@@ -159,7 +176,7 @@ function scheduleFlushPersistQueue(): void {
               }
               const captured = item.captured;
               const png =
-                captured && !preferPng ? null : await encodeCompareCanvasPng(item.bitmap);
+                captured && !preferPng ? null : await timedEncodeCompareCanvasPng(item.bitmap);
               if (!png && !captured) throw new Error('Compare sprite persist encode failed');
               const blob = preferPng && png ? png : (png ?? captured!);
               return {
@@ -177,6 +194,12 @@ function scheduleFlushPersistQueue(): void {
     } finally {
       persistDrain = null;
       if (persistQueue.length > 0) scheduleFlushPersistQueue();
+      else {
+        const snap = warmCompareProfileSnapshot();
+        if (snap.persistEncodes > 0) {
+          logWarmCompareProfile('persist-idle', { schema: COMPARE_PACK_SCHEMA });
+        }
+      }
     }
   })();
 }
@@ -785,6 +808,15 @@ async function parallelCaptures<T>(jobs: (() => Promise<T>)[], width = 3): Promi
   return out;
 }
 
+function warmCapture(
+  root: HTMLElement,
+  dpr: number,
+  m: import('../ticketCatalog/model/ticketPresets').TicketMetrics,
+  part: CompareRasterPart,
+): Promise<HTMLCanvasElement> {
+  return timeWarmRaster(() => rasterizeCompareTicketSvg(root, dpr, m, part));
+}
+
 function cropFromWarmSheet(
   sheet: HTMLCanvasElement,
   union: { x: number; y: number; width: number; height: number },
@@ -827,11 +859,12 @@ export function prepareCompareCard(card: TicketCard, layout: CatalogLayout, dpr:
     const badge = cell.querySelector<HTMLElement>('.ticketCard__badgeHost');
     if (!badge) return;
     const box = badgeHostDevice(model.cells[i]!, layout.metrics.dabSize, dpr);
-    Object.assign(badge.style, {
-      left: `${box.leftCss}px`, top: `${box.topCss}px`,
-      width: `${box.sizeCss}px`, height: `${box.sizeCss}px`,
-      backgroundSize: 'contain', backgroundPosition: '0 0',
-    });
+    badge.style.width = `${box.sizeCss}px`;
+    badge.style.height = `${box.sizeCss}px`;
+    badge.style.removeProperty("left");
+    badge.style.removeProperty("top");
+    badge.style.removeProperty("transform");
+    badge.style.backgroundSize = "contain";
   });
   // svg-all draws the label inside the card overlay instead.
   applySvgMultiplier(card.dom, usesSvgMultiplier() && !usesSvgText());
@@ -888,7 +921,9 @@ async function warmPackImpl(
     const layoutGeomKey = comparePackLayoutGeomKey(layout, dpr);
     const skipIdb = opts?.skipIdb === true;
     resetPackWarmRamCaches(key);
+    const idbT0 = performance.now();
     if (!skipIdb) await prefetchPackSheets(key, dpr, layoutGeomKey);
+    setWarmIdbPrefetchMs(performance.now() - idbT0);
 
     const host = document.createElement('div');
     host.style.cssText = 'position:fixed;left:-10000px;top:0;visibility:hidden;pointer-events:none';
@@ -902,7 +937,7 @@ async function warmPackImpl(
     const numberPatches = new Map<string, NumberPatch>();
     const inkByNumber = new Map<string, DeviceRect>();
     const badges = new Map<string, Sprite>();
-    const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(card.dom, dpr, m, part);
+    const capture = (part: CompareRasterPart) => warmCapture(card.dom, dpr, m, part);
     let captures = 0;
     try {
       const warmNumberInkBatch = async (disabled: boolean, batch: number): Promise<number> => {
@@ -930,7 +965,7 @@ async function warmPackImpl(
         batchHost.append(batchCard.dom);
         document.body.append(batchHost);
         configureCompareCaptureHost(batchHost, batchCard, layout, dpr);
-        const batchCapture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(batchCard.dom, dpr, m, part);
+        const batchCapture = (part: CompareRasterPart) => warmCapture(batchCard.dom, dpr, m, part);
         try {
           const ticket = sourceTicket(disabled, balls[0]!);
           ticket.balls = balls as number[];
@@ -1023,7 +1058,7 @@ async function warmPackImpl(
         batchHost.append(batchCard.dom);
         document.body.append(batchHost);
         configureCompareCaptureHost(batchHost, batchCard, layout, dpr);
-        const batchCapture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(batchCard.dom, dpr, m, part);
+        const batchCapture = (part: CompareRasterPart) => warmCapture(batchCard.dom, dpr, m, part);
         try {
           const ticket = sourceTicket(disabled, balls[0]!);
           ticket.balls = balls as number[];
@@ -1100,7 +1135,7 @@ async function warmPackImpl(
         const batchCard = new TicketCard();
         batchHost.append(batchCard.dom);
         document.body.append(batchHost);
-        const batchCapture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(batchCard.dom, dpr, m, part);
+        const batchCapture = (part: CompareRasterPart) => warmCapture(batchCard.dom, dpr, m, part);
         try {
           const ticket = sourceTicket(face === 'disabled');
           ticket.hits = [...BADGE_WARM_CELLS];
@@ -1256,15 +1291,22 @@ async function warmPackImpl(
         invalidatePackDecodedSheets(key, dpr);
         return warmPackImpl(layout, dpr, key, { skipIdb: true });
       }
-      console.info('[atlas-warm]', { preset, prefix: key, captures, ms: Math.round(performance.now() - warmT0), skipIdb });
+      console.info('[atlas-warm]', {
+        preset,
+        prefix: key,
+        captures,
+        ms: Math.round(performance.now() - warmT0),
+        skipIdb,
+        ...warmCompareProfileSnapshot(),
+      });
+      logWarmCompareProfile('compare-pack', { preset, captures, skipIdb, schema: COMPARE_PACK_SCHEMA });
       scheduleFlushPersistQueue();
       return { numberPatches, badges, catalogChrome: new Map(), prefix: key };
     } finally { host.remove(); }
 }
 
 function catalogChromeCacheKey(packPrefix: string, face: string): string {
-  const variant = CATALOG_FIGMA_DESKTOP_LOCK ? "svgface-v6" : "html";
-  return `${packPrefix}|catalog-chrome|${variant}|${face}`;
+  return `${packPrefix}|catalog-chrome|svg-vector-v2|${face}`;
 }
 
 /**
@@ -1273,6 +1315,12 @@ function catalogChromeCacheKey(packPrefix: string, face: string): string {
  * once the tile clips it. The card face comes from the overlay, not the backdrop.
  */
 const CHROME_CAPTURE_BACKDROP = ':root{background:transparent!important}';
+
+/** Live svg-face recipe: vector overlay chrome only (no HTML ::before or flat card fill). */
+const CHROME_CAPTURE_VECTOR_CSS =
+  CHROME_CAPTURE_BACKDROP +
+  '.ticketCard,.ticketCard__header,.ticketCard__body{background:none!important;box-shadow:none!important}' +
+  '.ticketCard__cell::before{visibility:hidden!important}';
 
 /** Face chrome for catalog tiles (stable key — no live layout-origin fraction). */
 export async function warmCatalogChromeSprites(
@@ -1288,7 +1336,7 @@ export async function warmCatalogChromeSprites(
   document.body.append(host);
   configureCompareCaptureHost(host, card, layout, dpr);
   const m = layout.metrics;
-  const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(card.dom, dpr, m, part);
+  const capture = (part: CompareRasterPart) => warmCapture(card.dom, dpr, m, part);
   try {
     for (const face of ['normal', 'gold', 'disabled'] as const) {
       const cacheKey = catalogChromeCacheKey(pack.prefix, face);
@@ -1300,14 +1348,11 @@ export async function warmCatalogChromeSprites(
         }
         card.bind(ticket, 0, 0, layout);
         forceBadgeFace(card, face);
-        if (CATALOG_FIGMA_DESKTOP_LOCK) card.dom.classList.add(SVG_FACE_CLASS);
+        card.dom.classList.add(SVG_FACE_CLASS);
         prepareCompareCard(card, layout, dpr);
+        applySvgText(card.dom, true, dpr);
         return capture({
-          css:
-            CHROME_CAPTURE_BACKDROP +
-            (CATALOG_FIGMA_DESKTOP_LOCK
-              ? '.ticketCard__cell::before{visibility:hidden!important}'
-              : '.ticketCard__cell::before{visibility:visible!important}'),
+          css: CHROME_CAPTURE_VECTOR_CSS,
           prepare(root) {
             hideHeader(root);
             root.querySelectorAll<HTMLElement>('.ticketCard__cell').forEach((cell) => {
@@ -1316,12 +1361,8 @@ export async function warmCatalogChromeSprites(
             root.querySelectorAll<HTMLElement>('.ticketCard__badgeHost').forEach((el) => {
               el.style.visibility = 'hidden';
             });
-            if (CATALOG_FIGMA_DESKTOP_LOCK) {
-              root.classList.add(SVG_FACE_CLASS);
-              stripOverlayInkKeepChrome(root);
-            } else {
-              removeOverlay(root);
-            }
+            stripOverlayInkKeepChrome(root);
+            stripCatalogChromeSeparators(root);
           },
         });
       });
@@ -1337,13 +1378,27 @@ export async function warmCatalogChromeSprites(
 export async function warmCatalogCompareAtlas(
   layout: CatalogLayout,
   dpr: number,
+  logPhase?: (label: string) => void,
 ): Promise<ComparePaintPack> {
+  resetWarmCompareProfile();
+  const t0 = performance.now();
   const pack = await preloadComparePack(layout, dpr);
+  logPhase?.(`compare-pack ${Math.round(performance.now() - t0)}ms`);
   if (!pack.catalogChrome) pack.catalogChrome = new Map();
+  const chromeT0 = performance.now();
   await warmCatalogChromeSprites(layout, dpr, pack);
+  logPhase?.(`chrome ${Math.round(performance.now() - chromeT0)}ms`);
   if (!pack.headerGlyphs) {
+    const glyphT0 = performance.now();
     pack.headerGlyphs = await warmHeaderGlyphsOffscreen(pack, layout, dpr);
+    logPhase?.(`glyphs ${Math.round(performance.now() - glyphT0)}ms`);
   }
+  logWarmCompareProfile('atlas-complete', {
+    preset: layout.metrics.id,
+    dpr,
+    devicePixelRatio: window.devicePixelRatio,
+    schema: COMPARE_PACK_SCHEMA,
+  });
   return pack;
 }
 
@@ -1385,7 +1440,7 @@ async function warmHeaderGlyphsOffscreen(pack: Pack, layout: CatalogLayout, dpr:
   configureCompareCaptureHost(host, card, layout, dpr);
   const m = layout.metrics;
   const layoutGeomKey = comparePackLayoutGeomKey(layout, dpr);
-  const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(card.dom, dpr, m, part);
+  const capture = (part: CompareRasterPart) => warmCapture(card.dom, dpr, m, part);
   const bindFace = (face: 'normal' | 'gold' | 'disabled', idChar: string, winChar: string) => {
     const ticket = sourceTicket(face === 'disabled');
     ticket.no = idChar || '0';
@@ -1482,7 +1537,7 @@ async function ensureHeaderGlyphs(
       alignCompareStackOrigin(host);
       const m = layout.metrics;
       const layoutGeomKey = comparePackLayoutGeomKey(layout, dpr);
-      const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(card.dom, dpr, m, part);
+      const capture = (part: CompareRasterPart) => warmCapture(card.dom, dpr, m, part);
       const bindFace = (face: 'normal' | 'gold' | 'disabled', idChar: string, winChar: string) => {
         const ticket = sourceTicket(face === 'disabled');
         ticket.no = idChar || '0';
@@ -1536,7 +1591,7 @@ async function ensureHeaderGlyphs(
 export async function assembleCompareSprites(live: HTMLElement, ticket: Ticket, layout: CatalogLayout, dpr: number): Promise<HTMLCanvasElement> {
   const pack = await preloadComparePack(layout, dpr);
   const m = layout.metrics;
-  const capture = (part: CompareRasterPart) => rasterizeCompareTicketSvg(live, dpr, m, part);
+  const capture = (part: CompareRasterPart) => warmCapture(live, dpr, m, part);
   const model = resolveCellBoxModel(layout, dpr);
   const face = ticket.disabled ? 'disabled' : isWinTicket(ticket) ? 'gold' : 'normal';
   // Live-card captures depend on the card's layout-origin fraction (WebKit text

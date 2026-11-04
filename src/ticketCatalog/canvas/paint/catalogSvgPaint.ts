@@ -15,8 +15,10 @@ import {
   warmCatalogCompareAtlas,
 } from "../../../catalog/compareCachedSprites";
 import { refreshSvgOverlayInk, SVG_FACE_CLASS } from "../../../catalog/compareSvgText";
+import { paintTicketSeparatorsDevice } from "../../svg/ticketSvgChrome";
 import { setCompareRenderMode } from "../../../catalog/compareRenderMode";
 import {
+  blitCatalogChromeBitmap,
   clipTicketRoundRectDevice,
   isCatalogSvgAllHostInkReady,
   paintSvgAllCatalogTicketInk,
@@ -114,11 +116,12 @@ export async function warmCatalogAtlasForPrewarm(layout: CatalogLayout): Promise
 export async function ensureCatalogSvgAtlasWarm(
   layout: CatalogLayout,
   expectedLayoutKey = catalogLayoutCacheKey(layout),
+  logPhase?: (label: string) => void,
 ): Promise<void> {
   setCompareRenderMode("svg-all");
   await loadSvgMultiplierAssets();
   const dpr = activeDpr();
-  const pack = await warmCatalogCompareAtlas(layout, dpr);
+  const pack = await warmCatalogCompareAtlas(layout, dpr, logPhase);
   if (catalogLayoutCacheKey(getActiveLayout()) !== expectedLayoutKey) {
     console.warn("[catalog-svg-warm] layout changed during warm — keeping prior paint pack");
     return;
@@ -308,6 +311,7 @@ export function paintCatalogTicketSvgAll(
   layout: CatalogLayout,
   dpr: number,
 ): void {
+  ctx.globalCompositeOperation = "source-over";
   const pack = paintPackForLayout(layout);
   // A pack for another layout paints last layout's separators under this layout's
   // DOM. Callers choose the fallback; painting nothing is better than painting wrong.
@@ -318,9 +322,28 @@ export function paintCatalogTicketSvgAll(
   if (!chrome) return;
 
   const m = layout.metrics;
-  // Chrome carries its own rounded corners. Clipping it again antialiases the arc
-  // twice, so only the dab/multiplier ink is clipped (that is what can overflow).
-  ctx.drawImage(chrome.bitmap, originX, originY);
+  // Match DOM ticket silhouette (`--ticket-radius` outer box). Masks FO decode fringe
+  // so stacked DOM svg-face aligns with canvas chrome at the card edge.
+  ctx.save();
+  clipTicketRoundRectDevice(
+    ctx,
+    originX,
+    originY,
+    layout.cardWidth,
+    m.cardHeight,
+    m.radius,
+    dpr,
+  );
+  blitCatalogChromeBitmap(
+    ctx,
+    chrome.bitmap,
+    originX,
+    originY,
+    layout.cardWidth,
+    m.cardHeight,
+    dpr,
+  );
+  ctx.restore();
 
   const context = catalogPaintContext(pack, layout, dpr);
 
@@ -357,5 +380,17 @@ export function paintCatalogTicketSvgAll(
     originY,
     headerLayout.id,
     headerLayout.amt,
+  );
+
+  // After body ink — number/badge atlases bleed into the sep column at cell.x + cellW;
+  // repaint ticks on top (same x as DOM overlay, deterministic per ticket).
+  paintTicketSeparatorsDevice(
+    ctx,
+    originX,
+    originY,
+    layout,
+    m,
+    face,
+    dpr,
   );
 }

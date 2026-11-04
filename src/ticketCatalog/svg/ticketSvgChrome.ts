@@ -4,6 +4,8 @@
  */
 
 import { svgEl } from "../../catalog/compareSvgMultiplier";
+import type { CatalogLayout } from "../layout/catalogLayout";
+import { resolveCellBoxModel, ticketCssToBuffer } from "../layout/cellBoxModel";
 import { ticketCellLeft } from "../layout/ticketCellGeometry";
 import {
   parseTicketShadow,
@@ -65,6 +67,35 @@ function bodyBandPath(cardWidth: number, headerH: number, bodyH: number, r: numb
   if (cr <= 0) return `M 0 ${y0} H ${w} V ${y0 + h} H 0 Z`;
   const y1 = y0 + h;
   return `M 0 ${y0} H ${w} V ${y1 - cr} A ${cr} ${cr} 0 0 1 ${w - cr} ${y1} H ${cr} A ${cr} ${cr} 0 0 1 0 ${y1 - cr} V ${y0} Z`;
+}
+
+export type TicketChromeFace = Face;
+
+/** Column separators at paint time — same x as `cell[i].x + cellW` (matches ink clip). */
+export function paintTicketSeparatorsDevice(
+  ctx: CanvasRenderingContext2D,
+  originX: number,
+  originY: number,
+  layout: CatalogLayout,
+  metrics: TicketMetrics,
+  face: TicketChromeFace,
+  dpr: number,
+): void {
+  const model = resolveCellBoxModel(layout, dpr);
+  const y = snappedTicketSeparatorTop(metrics, dpr);
+  const h = metrics.separatorHeight;
+  const sepDev = Math.max(1, ticketCssToBuffer(metrics.separatorWidth, dpr));
+  const ht = Math.max(1, ticketCssToBuffer(h, dpr));
+  const y0 = originY + ticketCssToBuffer(y, dpr);
+  ctx.save();
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = separatorFill(face);
+  for (let i = 0; i < 5; i++) {
+    const xCss = model.cells[i]!.x + model.cellW;
+    const x = originX + ticketCssToBuffer(xCss, dpr);
+    ctx.fillRect(x, y0, sepDev, ht);
+  }
+  ctx.restore();
 }
 
 /** Five column separators: `.ticketCard__cell:not(:first-child)::before` (card CSS px). */

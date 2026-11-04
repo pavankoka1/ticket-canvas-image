@@ -173,9 +173,9 @@ export function badgeHostDevice(
 ): DeviceBox & { leftCss: number; topCss: number; sizeCss: number } {
   const x0 = cell.x * dpr;
   const y0 = cell.y * dpr;
-  const size = Math.max(1, Math.round(dabSizeCss * dpr));
   const cx = (cell.cx ?? cell.x + cell.w / 2) * dpr;
   const cy = (cell.cy ?? cell.y + cell.h / 2) * dpr;
+  const size = Math.max(1, Math.round(dabSizeCss * dpr));
   const x = Math.round(cx - size / 2);
   const y = Math.round(cy - size / 2);
   return {

@@ -4,7 +4,7 @@
  * badge-body sprites at headerHeight, number patches, then header glyphs.
  */
 
-import { badgeHostDevice, resolveCellBoxModel, type CellBox } from "../ticketCatalog/layout/cellBoxModel";
+import { badgeHostDevice, resolveCellBoxModel, ticketCssToBuffer, type CellBox } from "../ticketCatalog/layout/cellBoxModel";
 import type { CatalogLayout } from "../ticketCatalog/layout/catalogLayout";
 import { ensureTicketFontsForLayout } from "../ticketCatalog/layout/ticketFont";
 import { applyTicketCssVars } from "../ticketCatalog/model/ticketPresets";
@@ -244,6 +244,25 @@ export function clipTicketRoundRectDevice(
   ctx.clip();
 }
 
+/** Warmed vector chrome — 1:1 device blit (no accidental scale from bitmap size drift). */
+export function blitCatalogChromeBitmap(
+  ctx: CanvasRenderingContext2D,
+  bitmap: HTMLCanvasElement,
+  originX: number,
+  originY: number,
+  cardWidthCss: number,
+  cardHeightCss: number,
+  dpr: number,
+): void {
+  const dw = Math.round(cardWidthCss * dpr);
+  const dh = Math.round(cardHeightCss * dpr);
+  if (bitmap.width === dw && bitmap.height === dh) {
+    ctx.drawImage(bitmap, originX, originY);
+    return;
+  }
+  ctx.drawImage(bitmap, 0, 0, bitmap.width, bitmap.height, originX, originY, dw, dh);
+}
+
 export type SvgAllTicketFace = "normal" | "gold" | "disabled";
 
 /**
@@ -264,6 +283,46 @@ export type SvgAllPaintContext = {
 };
 
 const EMPTY_CELLS: ReadonlySet<number> = new Set();
+
+function cellInkColumnDevice(
+  originX: number,
+  cell: CellBox,
+  cellWCss: number,
+  dpr: number,
+): { x0: number; x1: number } {
+  const x0 = originX + ticketCssToBuffer(cell.x, dpr);
+  const x1 = originX + ticketCssToBuffer(cell.x + cellWCss, dpr);
+  return { x0, x1 };
+}
+
+function blitNumberPatchInCell(
+  ctx: CanvasRenderingContext2D,
+  bitmap: HTMLCanvasElement,
+  patchDx: number,
+  patchDy: number,
+  originX: number,
+  bandY: number,
+  cell: CellBox,
+  cellWCss: number,
+  dpr: number,
+): void {
+  const { x0, x1 } = cellInkColumnDevice(originX, cell, cellWCss, dpr);
+  let destX = originX + ticketCssToBuffer(cell.x, dpr) + patchDx;
+  const destY = bandY + patchDy;
+  let srcX = 0;
+  let srcW = bitmap.width;
+  if (destX < x0) {
+    const trim = x0 - destX;
+    srcX += trim;
+    srcW -= trim;
+    destX = x0;
+  }
+  if (destX + srcW > x1) {
+    srcW = x1 - destX;
+  }
+  if (srcW <= 0 || srcX >= bitmap.width) return;
+  ctx.drawImage(bitmap, srcX, 0, srcW, bitmap.height, destX, destY, srcW, bitmap.height);
+}
 
 /**
  * Badge bands and cell digits for one ticket, at a device-pixel origin.
@@ -290,15 +349,20 @@ export function paintSvgAllCompareTicket(
     if (!ticket.hits.includes(i) && !mult) continue;
     const badge = pack.badges.get(`${face}|${mult || 1}`);
     if (!badge) continue;
+    const cell = cells[i]!;
+    const { x1 } = cellInkColumnDevice(originX, cell, cellW, dpr);
+    const destX = originX + ticketCssToBuffer(cell.x, dpr);
+    const drawW = Math.min(width, Math.max(0, x1 - destX));
+    if (drawW <= 0) continue;
     ctx.drawImage(
       badge.bitmap,
       pad,
       0,
       width,
       badge.bitmap.height,
-      originX + Math.round(cells[i]!.x * dpr),
+      destX,
       bandY,
-      width,
+      drawW,
       badge.bitmap.height,
     );
   }
@@ -308,10 +372,17 @@ export function paintSvgAllCompareTicket(
     const ball = ticket.balls[i] ?? 0;
     const patch = pack.numberPatches.get(`${Boolean(ticket.disabled)}|${face}|${ball}`);
     if (!patch) continue;
-    ctx.drawImage(
+    const cell = cells[i]!;
+    blitNumberPatchInCell(
+      ctx,
       patch.sprite.bitmap,
-      originX + Math.round(cells[i]!.x * dpr) + patch.dx,
-      bandY + patch.dy,
+      patch.dx,
+      patch.dy,
+      originX,
+      bandY,
+      cell,
+      cellW,
+      dpr,
     );
   }
 }
@@ -331,7 +402,7 @@ export function paintSvgAllCatalogTicketInk(
   originX: number,
   originY: number,
 ): void {
-  const { layout, dpr, cells } = context;
+  const { layout, dpr, cells, cellW } = context;
   const m = layout.metrics;
   const dabDisabled = face === "disabled";
 
@@ -362,16 +433,31 @@ export function paintSvgAllCatalogTicketInk(
   // sprites that shows at the dab's corners, so they cover only the rest.
   paintSvgAllCompareTicket(ctx, context, ticket, face, originX, originY, new Set(hosts.keys()));
 
-  for (const { sprite, host } of hosts.values()) {
+  for (const [cellIndex, { sprite, host }] of hosts.entries()) {
+    const cell = cells[cellIndex]!;
+    const { x0, x1 } = cellInkColumnDevice(originX, cell, cellW, dpr);
+    let destX = originX + host.x;
+    let sx = sprite.sx;
+    let sw = host.w;
+    if (destX < x0) {
+      const trim = x0 - destX;
+      sx += trim;
+      sw -= trim;
+      destX = x0;
+    }
+    if (destX + sw > x1) {
+      sw = x1 - destX;
+    }
+    if (sw <= 0) continue;
     ctx.drawImage(
       sprite.bitmap,
-      sprite.sx,
+      sx,
       sprite.sy,
-      host.w,
+      sw,
       host.h,
-      originX + host.x,
+      destX,
       originY + host.y,
-      host.w,
+      sw,
       host.h,
     );
   }

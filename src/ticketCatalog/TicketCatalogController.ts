@@ -125,6 +125,10 @@ export class TicketCatalogController {
   private overflowingStart: boolean | null = null;
   private landscapePrewarmArmed = false;
   private landscapePrewarmScheduled = false;
+  /** Origin for `[catalog-warm]` phase logs on this mount. */
+  private warmLogT0 = 0;
+  /** Origin for `[catalog-resize]` logs on the current resize / layout pass. */
+  private resizeLogT0 = 0;
 
   constructor(host: TicketCatalogControllerHost) {
     this.host = host;
@@ -305,8 +309,16 @@ export class TicketCatalogController {
 
   /** ResizeObserver — apply layout in the same frame (avoid one frame of stale card width). */
   private onCatalogFrameResize(observedInlineSize?: number): void {
+    if (this.resizeLogT0 === 0) this.resizeLogT0 = performance.now();
     this.measureScrollGeometry();
     this.ensurePools();
+    const layout = this.resolveLayout();
+    this.resizeLog("frame-resize", {
+      paintKey: catalogLayoutCacheKey(layout),
+      observedW: observedInlineSize ?? this.availableWidth,
+      preset: layout.metrics.id,
+      cardW: layout.cardWidth,
+    });
     this.applyLayout({ syncDomBand: true, syncCanvasCatalog: false }, observedInlineSize);
   }
 
@@ -468,6 +480,16 @@ export class TicketCatalogController {
     this.prevLayoutKey = key;
 
     if (layoutChanged) {
+      this.resizeLogT0 = performance.now();
+      this.resizeLog("layout-change", {
+        fromKey: this.prevLayoutKey || "(initial)",
+        toKey: key,
+        preset: layout.metrics.id,
+        cardW: layout.cardWidth,
+        columns: layout.columns,
+        canvasReady: this.canvasReady,
+        prevPaintKey: this.prevPaintLayoutKey,
+      });
       this.lastBandFingerprint = "";
       if (this.prevPaintLayoutKey) {
         this.hideCanvas();
@@ -528,13 +550,21 @@ export class TicketCatalogController {
     const key = catalogLayoutCacheKey(getActiveLayout());
 
     if (forceRebuild || key !== this.prevPaintLayoutKey) {
+      this.resizeLog("canvas-settle", {
+        forceRebuild,
+        paintKey: key,
+        prevPaintKey: this.prevPaintLayoutKey,
+        canvasReady: this.canvasReady,
+      });
       this.prevPaintLayoutKey = key;
       if (forceRebuild) {
         this.canvas?.clear();
       }
       if (!this.canvasReady) {
+        this.resizeLog("canvas-path", { path: "schedule-atlas-warm", paintKey: key });
         this.scheduleAtlasWarm();
       } else {
+        this.resizeLog("canvas-path", { path: "layout-resync-ready", paintKey: key });
         const pendingHide = this.syncDom();
         this.finishDomRebind(pendingHide);
         this.syncCanvas();
@@ -544,6 +574,7 @@ export class TicketCatalogController {
       return;
     }
 
+    this.resizeLog("canvas-path", { path: "same-key-reveal", paintKey: key });
     this.revealCanvas();
   }
 
@@ -551,16 +582,33 @@ export class TicketCatalogController {
     const layoutNow = getActiveLayout();
     const warmKey = catalogLayoutCacheKey(layoutNow);
     const gen = ++this.atlasGen;
+    this.warmLogT0 = performance.now();
+    this.warmLog("warm-start");
     void (async () => {
       try {
         await ensureTicketFontsForLayout(layoutNow.metrics);
-        if (gen !== this.atlasGen) return;
-        if (catalogLayoutCacheKey(layoutNow) !== warmKey) return;
-        await ensureCatalogSvgAtlasWarm(layoutNow, warmKey);
-        if (gen !== this.atlasGen) return;
-        if (catalogLayoutCacheKey(layoutNow) !== warmKey) return;
+        this.warmLog("fonts-done");
+        if (gen !== this.atlasGen) {
+          this.resizeLog("warm-aborted", { reason: "atlasGen-after-fonts", warmGen: gen });
+          return;
+        }
+        if (catalogLayoutCacheKey(layoutNow) !== warmKey) {
+          this.resizeLog("warm-aborted", { reason: "layout-key-mismatch-after-fonts", warmKey });
+          return;
+        }
+        await ensureCatalogSvgAtlasWarm(layoutNow, warmKey, (phase) => this.warmLog(phase));
+        this.warmLog("atlas-done");
+        if (gen !== this.atlasGen) {
+          this.resizeLog("warm-aborted", { reason: "atlasGen-after-atlas", warmGen: gen });
+          return;
+        }
+        if (catalogLayoutCacheKey(layoutNow) !== warmKey) {
+          this.resizeLog("warm-aborted", { reason: "layout-key-mismatch-after-atlas", warmKey });
+          return;
+        }
         prewarmCatalogSvgPaintJit(layoutNow);
         this.canvasReady = true;
+        this.warmLog("canvas-ready");
         this.prevPaintLayoutKey = catalogLayoutCacheKey(layoutNow);
         this.syncCellBoxCssVarsOnHosts();
         this.dom?.refreshSvgDomOverlays();
@@ -815,9 +863,12 @@ export class TicketCatalogController {
     // Presets key off innerWidth × innerHeight, so a height-only resize can change metrics too.
     const onViewportChange = () => {
       this.hideCanvas();
+      this.resizeLogT0 = performance.now();
+      this.resizeLog("viewport-resize", { innerW: window.innerWidth, innerH: window.innerHeight });
       if (this.orientationTimer) window.clearTimeout(this.orientationTimer);
       this.orientationTimer = window.setTimeout(() => {
         this.orientationTimer = 0;
+        this.resizeLog("viewport-settle", { ms: Math.round(performance.now() - this.resizeLogT0) });
         this.measureScrollGeometry();
         this.applyLayout({ syncDomBand: true, syncCanvasCatalog: this.canvasReady });
       }, RESIZE_CANVAS_SETTLE_MS);
@@ -1179,5 +1230,19 @@ export class TicketCatalogController {
     for (const btn of ui.ticketAdds.querySelectorAll<HTMLButtonElement>("[data-add-count]")) {
       btn.disabled = this.tickets.length >= MAX_TICKETS;
     }
+  }
+
+  private warmLog(label: string): void {
+    console.info("[catalog-warm]", label, { ms: Math.round(performance.now() - this.warmLogT0) });
+  }
+
+  /** Filter DevTools on `[catalog-resize]` — POC uses frame RO + viewport settle (no FM css-only path). */
+  private resizeLog(label: string, detail: Record<string, unknown> = {}): void {
+    console.info("[catalog-resize]", label, {
+      ms: this.resizeLogT0 ? Math.round(performance.now() - this.resizeLogT0) : 0,
+      atlasGen: this.atlasGen,
+      canvasReady: this.canvasReady,
+      ...detail,
+    });
   }
 }

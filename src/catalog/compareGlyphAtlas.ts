@@ -9,6 +9,7 @@ import { OVERLAY_CLASS } from "./compareSvgText";
 import { layoutForCard } from "../ticketCatalog/layout/catalogLayout";
 import { resolveTicketTextBaselines } from "../ticketCatalog/layout/ticketTextBaselines";
 import type { CompareRasterPart } from "../ticketCatalog/svg/ticketSvgRaster";
+import { warmCompareProfileSnapshot } from "./warmCompareProfile";
 
 export const AMOUNT_GLYPHS = "0123456789$,.";
 const GLYPH_REF_X0 = 6;
@@ -364,7 +365,13 @@ export async function warmHeaderGlyphPack(
     resolveSprite,
   );
 
-  console.info("[atlas-warm]", { preset, prefix: key, captures, ms: Math.round(performance.now() - warmT0) });
+  console.info("[atlas-warm]", {
+    preset,
+    prefix: key,
+    captures,
+    ms: Math.round(performance.now() - warmT0),
+    ...warmCompareProfileSnapshot(),
+  });
   return { id, amount, phases };
 }
 

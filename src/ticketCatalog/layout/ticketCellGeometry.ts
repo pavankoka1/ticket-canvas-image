@@ -6,7 +6,7 @@
  * left(i) = snap(i × (exactW + separatorWidth))
  * cellW   = snap(exactW)   (one width for every cell, so per-ball sprites are shared)
  * top     = snap(header + bodyPaddingY + cellMarginTop + numberDrop)
- * cx, cy  = exact flex cell centre (badge hosts centre here, like the game's 50% / 50%)
+ * cx, cy  = snapped cell box centre (x + w/2, y + h/2 — badge hosts centre here)
  */
 
 import { getActiveLayout, type CatalogLayout } from "./catalogLayout";
@@ -44,19 +44,19 @@ export function resolveTicketCellGeometry(
   const cardW = layout.cardWidth;
   const cellW = Math.max(1, snapCss((cardW - 5 * sep) / 6, dpr));
   const cellH = snapCss(m.cellHeight, dpr);
-  const exactW = Math.max(1, (cardW - 5 * sep) / 6);
-  const cy = m.headerHeight + m.bodyPaddingY + m.cellMarginTop + m.numberDrop + m.cellHeight / 2;
   const numberTop = snappedTicketNumberTop(m, dpr);
   const bodyPaddingY = numberTop - m.headerHeight;
+  const cy = numberTop + cellH / 2;
 
   const numbers: CellBox[] = [];
   for (let i = 0; i < 6; i++) {
+    const x = ticketCellLeft(i, cardW, sep, dpr);
     numbers.push({
-      x: ticketCellLeft(i, cardW, sep, dpr),
+      x,
       y: numberTop,
       w: cellW,
       h: cellH,
-      cx: i * (exactW + sep) + exactW / 2,
+      cx: x + cellW / 2,
       cy,
     });
   }

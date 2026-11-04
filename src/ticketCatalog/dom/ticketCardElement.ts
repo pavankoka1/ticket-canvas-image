@@ -229,12 +229,12 @@ export class TicketCard {
     if (!cell) return;
     const dpr = activeDpr();
     const box = badgeHostDevice(cell, layout.metrics.dabSize, dpr);
-    host.style.left = `${box.leftCss}px`;
-    host.style.top = `${box.topCss}px`;
     host.style.width = `${box.sizeCss}px`;
     host.style.height = `${box.sizeCss}px`;
-    host.style.transform = "none";
     host.style.margin = "0";
+    host.style.removeProperty("left");
+    host.style.removeProperty("top");
+    host.style.removeProperty("transform");
     applyBadgeChrome(host, box, isMult, dpr);
   }
 

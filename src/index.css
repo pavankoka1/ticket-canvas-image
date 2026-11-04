@@ -495,6 +495,7 @@ button:disabled {
   border-radius: 1px;
   background: rgb(177 151 151 / 50%);
   pointer-events: none;
+  visibility: hidden;
 }
 
 /* Hit state is semantic only — the dab disc covers the number once it lands. */
@@ -503,23 +504,24 @@ button:disabled {
 }
 
 /* —— Dab / multiplier badge (ported from fortunamania Ticket.module.css) —— */
+/* Match fortunamania Ticket.module.css — sub-pixel centre in the cell box. */
 .ticketCard__badgeHost {
   z-index: 1;
   position: absolute;
   display: flex;
-  top: 0;
-  left: 0;
+  top: 50%;
+  left: 50%;
   width: var(--ticket-dab-size, 24px);
   height: var(--ticket-dab-size, 24px);
   margin: 0;
-  background-position: 0 0;
+  background-position: center;
   background-repeat: no-repeat;
   overflow: visible;
   pointer-events: none;
   background-size: contain;
   align-items: center;
   justify-content: center;
-  transform: none;
+  transform: translate(-50%, -50%);
   transform-origin: center center;
 }
 

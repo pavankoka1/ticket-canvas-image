@@ -1,5 +1,5 @@
-import type { TicketMetrics } from "../model/ticketPresets";
-import { activeDpr } from "./cellBoxModel";
+import { snappedTicketBodyPaddingY, type TicketMetrics } from "../model/ticketPresets";
+import { activeDpr, snapCss } from "./cellBoxModel";
 import { isWebKitEngine } from "./catalogOriginSnap";
 
 /** Where Fortunamania's HTML ticket puts its text baselines on this engine, in CSS px. */
@@ -18,8 +18,8 @@ const cache = new Map<string, TicketTextBaselines>();
 /**
  * The SVG overlay places text at explicit baselines, so they must be read from the
  * real line boxes: half-leading and ascent rounding differ between Blink and WebKit,
- * and no em constant matches both. The probe is a copy of FM `Ticket.module.css`
- * fed the raw (unsnapped) tokens. Header and number baselines are then snapped the
+ * and no em constant matches both. The probe matches catalog DOM: snapped body
+ * padding from `applyTicketDprVars`. Header and number baselines are then snapped the
  * way each engine paints HTML text: Blink rounds the baseline to a whole CSS px
  * (measured at DPR 2 and 3), WebKit to the device pixel. The multiplier label is
  * rotated, so its baseline is left exact.
@@ -40,7 +40,7 @@ export function resolveTicketTextBaselines(m: TicketMetrics, dpr = activeDpr()):
   ].join("|");
   const hit = cache.get(key);
   if (hit) return hit;
-  const raw = measureFmBaselines(m);
+  const raw = measureFmBaselines(m, dpr);
   const snap = isWebKitEngine() ? (v: number) => Math.round(v * dpr) / dpr : Math.round;
   const out = { header: snap(raw.header), number: snap(raw.number), multiplier: raw.multiplier };
   const multPx = (13 * m.dabSize) / 24;
@@ -70,8 +70,10 @@ function baselineMark(): HTMLElement {
   return el("span", "display:inline-block;width:0;height:0;vertical-align:baseline");
 }
 
-function measureFmBaselines(m: TicketMetrics): TicketTextBaselines {
+function measureFmBaselines(m: TicketMetrics, dpr: number): TicketTextBaselines {
   const multPx = (13 * m.dabSize) / 24;
+  const bodyPad = snappedTicketBodyPaddingY(m, dpr);
+  const cellH = snapCss(m.cellHeight, dpr);
   const idMark = baselineMark();
   const header = el(
     "div",
@@ -110,11 +112,10 @@ function measureFmBaselines(m: TicketMetrics): TicketTextBaselines {
   const body = el(
     "div",
     "position:relative;display:flex;flex-flow:row;flex-shrink:0;align-items:flex-start;" +
-      `justify-content:flex-start;box-sizing:border-box;height:${m.bodyHeight}px;padding:${m.bodyPaddingY}px 0`,
+      `justify-content:flex-start;box-sizing:border-box;height:${m.bodyHeight}px;padding:${bodyPad}px 0`,
     el(
       "span",
-      `position:relative;display:flex;top:${m.numberDrop}px;height:${m.cellHeight}px;` +
-        `margin-top:${m.cellMarginTop}px;min-width:0;font-size:${m.numberFontSize}px;font-weight:700;` +
+      `position:relative;display:flex;height:${cellH}px;margin-top:0;min-width:0;font-size:${m.numberFontSize}px;font-weight:700;` +
         `line-height:${m.numberLineHeight}px;flex:1 1 0;align-items:center;justify-content:center`,
       el("span", "", "88", numberMark),
     ),

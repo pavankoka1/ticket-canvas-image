@@ -13,6 +13,8 @@ Decided in `src/main.tsx` before render. Not React Router.
 
 First paint waits on `ensureTicketFont`. No `StrictMode` (it double-fired SnapDOM atlas captures).
 
+Warm / resize timing (compare with FM): filter console on `[catalog-warm]`, `[catalog-resize]`, and `[atlas-warm]` (compare pack captures + `skipIdb`).
+
 ## Trust
 
 - This file is the architecture source. `README.md` only covers how to run and what to click.
