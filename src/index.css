@@ -364,6 +364,10 @@ button:disabled {
   opacity: 1;
   /* Stacking context above canvas before FLIP/WAAPI sublayers (Safari). */
   isolation: isolate;
+}
+
+/* Promote only during scroll / WAAPI — permanent will-change costs ~1k UpdateLayer/s while scrolling. */
+.catalog__dom.catalog__dom_motion {
   transform: translateZ(0);
   will-change: transform;
 }
@@ -983,6 +987,15 @@ button:disabled {
 .ticketCard_svgFace .ticketCard__header,
 .ticketCard_svgFace .ticketCard__body {
   background: transparent !important;
+}
+
+/* Shell matches vector chrome (`PALETTE.disabled.shell`) — no peach/catalog rim in AA gaps. */
+.ticketCard_svgFace.ticketCard_disabled {
+  background: #0d5b58 !important;
+}
+
+.ticketCard_svgFace.ticketCard_win:not(.ticketCard_disabled) {
+  background: #ffd65c !important;
 }
 
 .ticketCard_svgFace .ticketCard__cell:not(:first-child)::before,

@@ -304,6 +304,22 @@ export class TicketCard {
     if (disabled) this.dom.classList.add("ticketCard_disabled");
   }
 
+  /** Drop compare/svg-all inline layout from `prepareCompareCard` on layout settle. */
+  releaseComparePrepareInlineState(): void {
+    this.dom.classList.remove("ticketCard_compare");
+    for (const cell of this.cellEls) {
+      cell.querySelectorAll<HTMLElement>(".ticketCard__badgeHost").forEach((host) => {
+        host.style.removeProperty("left");
+        host.style.removeProperty("top");
+        host.style.removeProperty("width");
+        host.style.removeProperty("height");
+        host.style.removeProperty("background-size");
+        host.style.removeProperty("background-position");
+      });
+    }
+    this.cellBadgeKey.fill("");
+  }
+
   /** Rest pose at the snapped slot (set inline after a move; do not rely on WAAPI fill). */
   snapTo(x: number, y: number): void {
     const { x: sx, y: sy } = snapSlot(x, y);

@@ -161,6 +161,18 @@ export function showsGoldFace(ticket: Ticket): boolean {
 }
 
 /**
+ * Which face a card paints. `gold` is a paying ticket, `disabled` one that can no
+ * longer win; both are distinct recipes in the sprite atlas, not CSS states.
+ */
+export type TicketFace = "normal" | "gold" | "disabled";
+
+/** `disabled` wins over `gold`, matching `showsGoldFace`. */
+export function ticketFace(ticket: Ticket): TicketFace {
+  if (ticket.disabled) return "disabled";
+  return isWinTicket(ticket) ? "gold" : "normal";
+}
+
+/**
  * Longest draw gesture in this batch (`noteDrawGesture` → `takeGestureDelay`) — decides
  * the shared shuffle delay. `multShineSettleMs` is the layout's sparkle run end.
  */

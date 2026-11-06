@@ -113,8 +113,6 @@ export class TicketCatalogController {
   private resizeCanvasForcePending = false;
   private scrollSettleTimer = 0;
   private scrollMotionActive = false;
-  /** One tile-window follow per frame while the scrollport moves. */
-  private canvasFollowRaf = 0;
   private statsDirtyKey = "";
   /** Canvas cleared for DOM WAAPI — rebuild async after gesture or on scroll cancel. */
   private gestureCanvasSuspended = false;
@@ -166,7 +164,6 @@ export class TicketCatalogController {
     if (this.roundEndTimer) window.clearTimeout(this.roundEndTimer);
     if (this.gestureCanvasTimer) window.clearTimeout(this.gestureCanvasTimer);
     if (this.orientationTimer) window.clearTimeout(this.orientationTimer);
-    if (this.canvasFollowRaf) cancelAnimationFrame(this.canvasFollowRaf);
     this.scrollCleanup?.();
     this.settleGen += 1;
     this.settleInFlight = false;
@@ -219,9 +216,11 @@ export class TicketCatalogController {
     this.dom.setMotionHooks({
       onMotionStart: () => {
         this.domMotions += 1;
+        this.updateDomCompositorLayer();
       },
       onMotionEnd: () => {
         this.domMotions = Math.max(0, this.domMotions - 1);
+        this.updateDomCompositorLayer();
         if (this.gestureCanvasSuspended) void this.finishGestureCanvasRestore();
       },
     });
@@ -383,22 +382,6 @@ export class TicketCatalogController {
     canvas.setViewport(this.host.scroll.scrollTop, this.host.scroll.clientHeight);
     canvas.setCatalog(this.slots, this.ticketsById, this.domSkipIds());
     this.updateStats();
-  }
-
-  /**
-   * Keep the tile window on a moving scrollport, one tile per frame. Tiles far
-   * from the viewport have given their pixels back, so without this a scroll
-   * would travel over blank canvas until it settled.
-   */
-  private followCanvasViewport(): void {
-    if (!this.canvasReady || !this.canvas) return;
-    if (this.host.canvasHost.style.visibility === "hidden") return;
-    if (this.canvasFollowRaf) return;
-    this.canvasFollowRaf = requestAnimationFrame(() => {
-      this.canvasFollowRaf = 0;
-      const scroll = this.host.scroll;
-      this.canvas?.followViewport(scroll.scrollTop, scroll.clientHeight);
-    });
   }
 
   private revealCanvas(): void {
@@ -715,10 +698,12 @@ export class TicketCatalogController {
         return;
       }
       this.scrollMotionActive = false;
+      this.updateDomCompositorLayer();
       this.enqueueDomHide(pendingHide);
       const canvas = this.canvas;
       const hidden = this.host.canvasHost.style.visibility === "hidden";
       if (!this.canvasReady || !canvas || hidden) {
+        canvas?.releaseScrollRetainHold();
         this.settleInFlight = false;
         this.flushDomHideQueue();
         return;
@@ -744,6 +729,7 @@ export class TicketCatalogController {
       if (!this.canvas) {
         this.dom?.hideEvictedSlots(pendingHide);
         this.scrollMotionActive = false;
+        this.updateDomCompositorLayer();
         this.settleInFlight = false;
         return;
       }
@@ -767,7 +753,10 @@ export class TicketCatalogController {
     }
   }
 
-  /** Pause canvas on the first scroll event of a gesture; native scrollbar needs no JS. */
+  /**
+   * Scroll gesture: compositor + top-fade only. Tile eviction and DOM/canvas
+   * band work wait for scrollend (+ SCROLL_BAND_SETTLE_MS).
+   */
   private onScrollWhileMoving(): void {
     if (this.scrollSettleTimer) {
       window.clearTimeout(this.scrollSettleTimer);
@@ -778,9 +767,13 @@ export class TicketCatalogController {
       this.settleInFlight = false;
     }
     this.cancelGestureCanvasForScroll();
-    this.followCanvasViewport();
+    const scroll = this.host.scroll;
+    if (this.canvasReady && this.canvas) {
+      this.canvas.holdRetainBudgetForScroll(scroll.scrollTop, scroll.clientHeight);
+    }
     if (this.scrollMotionActive) return;
     this.scrollMotionActive = true;
+    this.updateDomCompositorLayer();
     if (this.canvasReady) this.canvas?.pause();
   }
 
@@ -859,6 +852,12 @@ export class TicketCatalogController {
     this.host.scroll.classList.toggle("ticketCatalog_isOverflowingStart", on);
   }
 
+  /** Layer promotion on the DOM pool only while scrolling or running WAAPI. */
+  private updateDomCompositorLayer(): void {
+    const promote = this.scrollMotionActive || this.domMotions > 0;
+    this.host.domHost.classList.toggle("catalog__dom_motion", promote);
+  }
+
   private bindViewport(): void {
     // Presets key off innerWidth × innerHeight, so a height-only resize can change metrics too.
     const onViewportChange = () => {
@@ -932,24 +931,25 @@ export class TicketCatalogController {
 
       const delay = animate ? APPEAR_MS : 0;
       const runSmoothScrollToBottom = () => {
-        this.scrollTimer = 0;
-        const maxScroll = Math.max(
-          0,
-          this.host.scroll.scrollHeight - this.host.scroll.clientHeight,
-        );
-        // Paint where we are going before we go, so the landing is never blank.
-        // The tiles in between paint as the scrollport passes them.
-        if (this.canvasReady) {
-          this.canvas?.primeViewport(maxScroll, this.host.scroll.clientHeight);
-        }
-        this.host.scroll.scrollTo({ top: maxScroll, behavior: "smooth" });
-        if (bulkScroll) {
-          this.bulkScrollResyncTimer = window.setTimeout(() => {
-            this.bulkScrollResyncTimer = 0;
-            this.lastBandFingerprint = "";
-            this.queueBandResync();
-          }, 900);
-        }
+        void (async () => {
+          this.scrollTimer = 0;
+          const maxScroll = Math.max(
+            0,
+            this.host.scroll.scrollHeight - this.host.scroll.clientHeight,
+          );
+          if (this.canvasReady && this.canvas) {
+            await this.canvas.flushEntireCatalog();
+            this.canvas.primeViewport(maxScroll, this.host.scroll.clientHeight);
+          }
+          this.host.scroll.scrollTo({ top: maxScroll, behavior: "smooth" });
+          if (bulkScroll) {
+            this.bulkScrollResyncTimer = window.setTimeout(() => {
+              this.bulkScrollResyncTimer = 0;
+              this.lastBandFingerprint = "";
+              this.queueBandResync();
+            }, 900);
+          }
+        })();
       };
 
       scheduleSmoothScroll = () => {
@@ -961,6 +961,7 @@ export class TicketCatalogController {
       if (added.length === 0) return;
       if (this.canvasReady && this.canvas) {
         this.syncCanvas();
+        void this.canvas?.flushEntireCatalog();
         scheduleSmoothScroll?.();
       }
     });

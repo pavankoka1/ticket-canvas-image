@@ -63,7 +63,7 @@ export type ComparePaintPack = {
 type Pack = ComparePaintPack;
 
 /** Bump when warm capture or layout/cell geometry semantics change (invalidates IDB sheets). */
-const COMPARE_PACK_SCHEMA = 'v70-catalog-sep-device-paint';
+const COMPARE_PACK_SCHEMA = 'v73-disabled-shell-edge';
 
 export function comparePackLayoutGeomKey(layout: CatalogLayout, dpr: number): string {
   const model = resolveCellBoxModel(layout, dpr);
@@ -1306,7 +1306,7 @@ async function warmPackImpl(
 }
 
 function catalogChromeCacheKey(packPrefix: string, face: string): string {
-  return `${packPrefix}|catalog-chrome|svg-vector-v2|${face}`;
+  return `${packPrefix}|catalog-chrome|svg-vector-v5|${face}`;
 }
 
 /**

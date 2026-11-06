@@ -35,6 +35,16 @@ export function ticketCellLeft(i: number, cardWidth: number, sep: number, dpr: n
   return snapCss(i * (exactW + sep), dpr);
 }
 
+/** Separator between cell `index` and `index + 1` — matches DOM `::before` on cell `index + 1`. */
+export function ticketSeparatorLeft(
+  index: number,
+  cardWidth: number,
+  sep: number,
+  dpr: number,
+): number {
+  return ticketCellLeft(index + 1, cardWidth, sep, dpr) - sep;
+}
+
 export function resolveTicketCellGeometry(
   layout: CatalogLayout,
   dpr = activeDpr(),

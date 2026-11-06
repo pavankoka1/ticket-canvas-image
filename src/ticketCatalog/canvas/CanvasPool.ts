@@ -74,9 +74,10 @@ type Tile = {
 };
 
 /**
- * Canvas underlay as tiles. The tiles span the whole catalog, but only those
- * near the scrollport hold pixels (`CANVAS_TILE_RETAIN_BYTES`) — the rest give
- * their backing store back and repaint when the viewport comes near again.
+ * Canvas underlay as tiles spanning the full catalog. Every ticket is painted
+ * on canvas except ids in `skipIds` (live DOM band — punched transparent so DOM
+ * shows through). Far tiles may still give back backing stores under
+ * `CANVAS_TILE_RETAIN_BYTES`; they repaint on the next flush.
  */
 export class CanvasPool {
   private tiles: Tile[] = [];
@@ -96,6 +97,11 @@ export class CanvasPool {
   private viewBottom = 0;
   private hasView = false;
   private retainClock = 0;
+  /**
+   * While the user scrolls, do not release tile backing stores — scrolling is
+   * compositor-only over pixels already on canvas. Eviction resumes on settle.
+   */
+  private retainBudgetHeld = false;
   /** One buffer for every tile composite; a canvas per paint doubles peak bytes. */
   private scratch: HTMLCanvasElement | null = null;
   private scratchCtx: CanvasRenderingContext2D | null = null;
@@ -140,6 +146,7 @@ export class CanvasPool {
     viewport?: { scrollTop: number; viewH: number },
   ): Promise<void> {
     if (!this.ready) return Promise.resolve();
+    this.retainBudgetHeld = false;
     const skipChanged = this.applySkip(skipIds);
     if (!skipChanged && !this.paused) return this.paintTail;
     this.paused = false;
@@ -186,7 +193,7 @@ export class CanvasPool {
     this.skipIds = new Set(skipIds);
     this.syncTiles();
     this.markContentDirty(prevSlots, prevSkipIds);
-    if (!this.paused) this.flushDirtyTilesSync();
+    if (!this.paused) void this.flushDirtyTiles();
   }
 
   /** Dirty a tile only if a slot it covers changed id, position, or skip state. */
@@ -249,22 +256,29 @@ export class CanvasPool {
   private flushDirtyTilesSync(): void {
     const gen = ++this.paintGen;
     for (const tile of this.tiles) {
-      if (!tile.dirty || !this.shouldPaint(tile)) continue;
+      if (!this.needsPaint(tile)) continue;
       if (!this.paintOneDirtyTile(tile, gen)) return;
     }
     this.enforceRetainBudget();
   }
 
-  /** Paint dirty tiles intersecting the scrollport (sync) — scroll settle safety net. */
+  /** Sync paint for tiles under the scrollport — settle / gesture safety net. */
   flushDirtyTilesInViewportSync(scrollTop: number, viewH: number): void {
     if (!this.ready || this.paused) return;
     this.setViewport(scrollTop, viewH);
     const gen = ++this.paintGen;
     for (const tile of this.tiles) {
-      if (!tile.dirty || !this.intersectsView(tile)) continue;
+      if (!this.intersectsView(tile) || !this.needsPaint(tile)) continue;
       if (!this.paintOneDirtyTile(tile, gen)) return;
     }
     this.enforceRetainBudget();
+  }
+
+  /** Paint every tile that still lacks pixels or is dirty — await before scrolling. */
+  async flushEntireCatalog(): Promise<void> {
+    if (!this.ready) return;
+    this.paused = false;
+    await this.flushDirtyTiles();
   }
 
   /** Where the scrollport is, in content px. Decides which tiles keep pixels. */
@@ -287,25 +301,21 @@ export class CanvasPool {
     this.setViewport(scrollTop, viewH);
     const gen = ++this.paintGen;
     for (const tile of this.tiles) {
-      if (!tile.dirty || !this.intersectsView(tile)) continue;
+      if (!this.intersectsView(tile) || !this.needsPaint(tile)) continue;
       if (!this.paintOneDirtyTile(tile, gen, true)) return;
     }
   }
 
-  /**
-   * One step of following a moving scrollport: release what it left behind and
-   * paint the nearest tile it is about to reach. Bounded to a single tile so a
-   * repaint cannot stall the scroll — call it once per frame while scrolling.
-   */
-  followViewport(scrollTop: number, viewH: number): void {
+  /** Hold tile pixels for the scroll gesture; only updates retain LRU. */
+  holdRetainBudgetForScroll(scrollTop: number, viewH: number): void {
     if (!this.ready) return;
+    this.retainBudgetHeld = true;
     this.setViewport(scrollTop, viewH);
-    let next: Tile | null = null;
-    for (const tile of this.tiles) {
-      if (!tile.dirty || !this.intersectsView(tile)) continue;
-      if (!next || tile.minY < next.minY) next = tile;
-    }
-    if (next) this.paintOneDirtyTile(next, ++this.paintGen, true);
+  }
+
+  /** Drop scroll hold without repainting — used when a gesture is cancelled. */
+  releaseScrollRetainHold(): void {
+    this.retainBudgetHeld = false;
     this.enforceRetainBudget();
   }
 
@@ -314,9 +324,9 @@ export class CanvasPool {
     return tile.minY < this.viewBottom && tile.minY + tile.cssH > this.viewTop;
   }
 
-  /** A tile paints when it already holds pixels, or when it is about to be seen. */
-  private shouldPaint(tile: Tile): boolean {
-    return tile.canvas.width > 0 || this.intersectsView(tile);
+  /** Every catalog tile gets a backing store; DOM-band ids stay punched out. */
+  private needsPaint(tile: Tile): boolean {
+    return tile.dirty || tile.canvas.width === 0;
   }
 
   private tileBytes(tile: Tile): number {
@@ -328,6 +338,7 @@ export class CanvasPool {
    * the budget. A tile under the scrollport is never released — it is on screen.
    */
   private enforceRetainBudget(): void {
+    if (this.retainBudgetHeld) return;
     let live = 0;
     const releasable: Tile[] = [];
     for (const tile of this.tiles) {
@@ -388,7 +399,7 @@ export class CanvasPool {
     let painted = false;
     for (const tile of this.tiles) {
       if (gen !== this.paintGen || this.paused) return;
-      if (!tile.dirty || !this.shouldPaint(tile)) continue;
+      if (!this.needsPaint(tile)) continue;
       if (painted) await yieldToMain();
       if (!this.paintOneDirtyTile(tile, gen)) return;
       painted = true;
